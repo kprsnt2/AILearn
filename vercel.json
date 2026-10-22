@@ -1,0 +1,27 @@
+{
+  "cleanUrls": false,
+  "trailingSlash": false,
+  "headers": [
+    {
+      "source": "/_shell.css",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=600" }]
+    },
+    {
+      "source": "/_shell.js",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=600" }]
+    },
+    {
+      "source": "/_sync.js",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=600" }]
+    },
+    {
+      "source": "/(track-[abcd]|resources|about|agi|tools)/(.*).html",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=300" }]
+    }
+  ],
+  "redirects": [
+    { "source": "/papers", "destination": "/resources/papers.html", "permanent": false },
+    { "source": "/videos", "destination": "/resources/videos.html", "permanent": false },
+    { "source": "/learning", "destination": "/index.html", "permanent": false }
+  ]
+}
