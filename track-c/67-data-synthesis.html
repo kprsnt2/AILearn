@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c67">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L67 &middot; Synthetic data and agent-environment synthesis &mdash; AILearn</title>
+<meta name="description" content="Environments as (state, actions, transitions, verifier): the generator, the three audits, difficulty binning, and the coverage claim you can actually check.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L67</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L67 &middot; Synthetic data and agent-environment synthesis</h1>
+  <p class="lede">You cannot hand-label trajectories for every tool sequence and every error state. You can write a generator that produces task, environment and verifier together &mdash; and then the only question is whether its acceptance test still tells you anything.</p>
+  <div class="chips">
+    <span class="chip">~27 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: env generator for one task family</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">environment synthesis</span>
+  <span class="pill">task generator</span>
+  <span class="pill">final-state assertion</span>
+  <span class="pill">null-action test</span>
+  <span class="pill">reference solution</span>
+  <span class="pill">difficulty binning</span>
+  <span class="pill">seeded determinism</span>
+  <span class="pill">template leakage</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c67-s1">1 &middot; Why it exists <a class="hook" href="#c67-s1">#</a></h2>
+
+    <p>An agent that is good at twelve tasks is untested on the thirteenth. You cannot hand-label trajectories
+    for every tool sequence, every error state, every recovery path &mdash; the combinatorics alone kill it, and
+    expert trajectories cost far more than expert answers. The failure is <strong>environment scarcity</strong>:
+    there is no place to <em>try</em> the behaviour you want to train.</p>
+
+    <p>The answer that scaled is not cleverer annotation, it is <em>programmatic world generation</em>. Rather
+    than writing trajectories, you write a generator that produces <strong>tasks + a runnable environment +
+    a verifier</strong> together, so that success is measurable without a human. <span class="asof">state as of
+    2026-10</span> DeepSeek-V3.2 (Dec 2025 release) is described as introducing a massive agent training-data
+    synthesis method covering <strong>1,800+ environments and 85k+ complex instructions</strong>, and as the first
+    DeepSeek model to integrate thinking directly into tool-use. The number that matters is not the count; it
+    is that 1,800 environments is a <em>coverage</em> claim you can audit task by task.</p>
+
+    <div class="callout boss">
+      <p>Synthetic data has exactly one honest quality metric: <em>does the acceptance test tell you something
+      the model did not already know?</em> A generator that produces 1.8M trajectories with a verifier that the
+      current policy already passes 99% of the time has produced a million copies of the same lesson. Yield,
+      coverage, and difficulty distribution are the audit, not volume.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c67-s2">2 &middot; The mental model <a class="hook" href="#c67-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> an environment is a triple (state, actions, verifier). A task family
+    is a generator over that triple. You are not producing data; you are producing a <em>testable distribution</em>,
+    and then sampling from it until the pass rate is in the band where learning happens.</p>
+
+    <div class="formula">
+      env = ( S, A, &delta;: S&times;A &rarr; S, &nbsp;V: trajectory &rarr; [0,1] )
+      <span class="note">S is the state space, A the action space (tool calls), &delta; the deterministic transition, V the verifier. Determinism is what makes it a test rather than a game.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Layer you can synthesise</th><th>What you write</th><th>What it buys</th><th>Where it breaks</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Task instances</strong></td><td>Parameterised templates with random seeds</td><td>Unlimited fresh eval items</td><td>Template leakage: models learn the template, not the task</td></tr>
+        <tr><td><strong>State space</strong></td><td>A fake database, filesystem, or API with seeded state</td><td>Error states you cannot produce in prod</td><td>Simulator bugs become the reward (lesson 75)</td></tr>
+        <tr><td><strong>Tool responses</strong></td><td>Deterministic stubs with fault injection</td><td>Recovery from timeouts, 500s, malformed JSON</td><td>Stubs are too clean; real APIs are messier</td></tr>
+        <tr><td><strong>Verifier</strong></td><td>Assertions on final state, not on the transcript</td><td>Correctness without a human</td><td>Assertions cover the state you thought of</td></tr>
+        <tr><td><strong>Instruction mix</strong></td><td>Templates &times; personas &times; ambiguity levels</td><td>Robustness to phrasing</td><td>Persona stereotypes leak into behaviour</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "a testable distribution" gets right</h4><p>It makes coverage countable and
+      difficulty measurable. You can bin environments by pass rate, and route the ones in the 30-70% band to
+      training, the easy ones to regression, and the zero-yield ones to a diagnosis queue.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Reality is not a parameterised template. The parts of the
+      task that are hardest to synthesise &mdash; ambiguous instructions, adversarial users, partially broken
+      dependencies &mdash; are exactly the parts that break production agents, so a synthetic suite is
+      systematically easier than the world.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c67-s3">3 &middot; The mechanism <a class="hook" href="#c67-s3">#</a></h2>
+
+    <p>Write the verifier first, then the environment, then the instruction template. That order exists
+    because a verifier is the only component whose failure invalidates everything else.</p>
+
+    <div class="formula">
+      accepted(trajectory) &nbsp;&#8660;&nbsp; assert<sub>1</sub>(S<sub>final</sub>) &nbsp;&and;&nbsp; &hellip; &nbsp;&and;&nbsp; assert<sub>n</sub>(S<sub>final</sub>) &nbsp;and optionally&nbsp; budget(s) &le; B
+      <span class="note">Assert on FINAL STATE, not on the transcript. Transcript assertions reward narrating the work; state assertions reward doing it.</span>
+    </div>
+
+    <p>The three audits every generated environment must pass:</p>
+    <ol>
+      <li><strong>Reference solution exists.</strong> A scripted policy passes the environment. If you cannot
+          write a passing solution by hand, the task is not well-posed.</li>
+      <li><strong>Null action fails.</strong> Doing nothing scores zero. If the empty trajectory passes, the
+          verifier is satisfied by the initial state.</li>
+      <li><strong>Seeded determinism.</strong> The same seed produces the same initial state and the same
+          verifier outcome across runs and machines.</li>
+    </ol>
+<div class="code" data-lang="python">
+<span class="cm"># L67: generate one task family and audit it before trusting the environment.</span>
+<span class="cm"># Environment = (state, actions, transition, verifier). Pure stdlib.</span>
+<span class="kw">import</span> random
+
+FIELDS = [<span class="st">"amount"</span>, <span class="st">"currency"</span>, <span class="st">"status"</span>]
+
+
+<span class="kw">def</span> make_task(seed):
+    rng = random.Random(seed)
+    target = {<span class="st">"amount"</span>: rng.choice([<span class="nm">100</span>, <span class="nm">250</span>, <span class="nm">400</span>, <span class="nm">999</span>]),
+              <span class="st">"currency"</span>: rng.choice([<span class="st">"EUR"</span>, <span class="st">"USD"</span>, <span class="st">"GBP"</span>]),
+              <span class="st">"status"</span>: rng.choice([<span class="st">"paid"</span>, <span class="st">"pending"</span>])}
+    asked = list(FIELDS)
+    rng.shuffle(asked)
+    text = <span class="st">"Update the record: set "</span> + <span class="st">", "</span>.join(f<span class="st">"{f}={target[f]}"</span> <span class="kw">for</span> f <span class="kw">in</span> asked) + <span class="st">"."</span>
+    <span class="kw">return</span> {<span class="st">"initial"</span>: {<span class="st">"amount"</span>: <span class="nm">0</span>, <span class="st">"currency"</span>: <span class="st">"USD"</span>, <span class="st">"status"</span>: <span class="st">"new"</span>},
+            <span class="st">"target"</span>: target, <span class="st">"text"</span>: text}
+
+
+<span class="kw">def</span> verify(state, task):
+    <span class="st">""</span><span class="st">"Assert on FINAL STATE only. The transcript is irrelevant."</span><span class="st">""</span>
+    <span class="kw">return</span> all(state[f] == task[<span class="st">"target"</span>][f] <span class="kw">for</span> f <span class="kw">in</span> FIELDS)
+
+
+<span class="kw">def</span> reference_solution(task):
+    s = dict(task[<span class="st">"initial"</span>])
+    s.update(task[<span class="st">"target"</span>])
+    <span class="kw">return</span> s
+
+
+<span class="kw">def</span> partial_agent(task):
+    s = dict(task[<span class="st">"initial"</span>])
+    s[<span class="st">"amount"</span>] = task[<span class="st">"target"</span>][<span class="st">"amount"</span>]
+    s[<span class="st">"status"</span>] = task[<span class="st">"target"</span>][<span class="st">"status"</span>]
+    <span class="kw">return</span> s                                    <span class="cm"># forgot currency</span>
+
+
+<span class="kw">def</span> echo_agent(task):
+    <span class="st">""</span><span class="st">"Transcript-only agent: claims the work, changes nothing."</span><span class="st">""</span>
+    <span class="kw">return</span> dict(task[<span class="st">"initial"</span>])
+
+
+N = <span class="nm">3000</span>
+ref = null = partial = echo = <span class="nm">0</span>
+<span class="kw">for</span> seed <span class="kw">in</span> range(N):
+    t = make_task(seed)
+    ref += verify(reference_solution(t), t)
+    null += verify(dict(t[<span class="st">"initial"</span>]), t)
+    partial += verify(partial_agent(t), t)
+    echo += verify(echo_agent(t), t)
+
+<span class="kw">print</span>(f<span class="st">"AUDIT over {N} generated tasks"</span>)
+<span class="kw">print</span>(f<span class="st">"  reference solution passes : {ref / N:&gt;6.1%}   (must be 100%)"</span>)
+<span class="kw">print</span>(f<span class="st">"  null action passes        : {null / N:&gt;6.1%}   (must be 0%)"</span>)
+<span class="kw">print</span>(f<span class="st">"  partial agent             : {partial / N:&gt;6.1%}   (must be 0% for a strict verifier)"</span>)
+<span class="kw">print</span>(f<span class="st">"  echo agent                : {echo / N:&gt;6.1%}   (must be 0%)"</span>)
+
+<span class="kw">print</span>(<span class="st">"\npass rate of the family as agent competence increases:"</span>)
+<span class="kw">for</span> label, k <span class="kw">in</span> ((<span class="st">"fixes 0 of 3 fields"</span>, <span class="nm">0</span>), (<span class="st">"fixes 1 of 3 fields"</span>, <span class="nm">1</span>),
+                 (<span class="st">"fixes 2 of 3 fields"</span>, <span class="nm">2</span>), (<span class="st">"fixes 3 of 3 fields"</span>, <span class="nm">3</span>)):
+    ok = <span class="nm">0</span>
+    <span class="kw">for</span> seed <span class="kw">in</span> range(N):
+        t = make_task(seed)
+        state = dict(t[<span class="st">"initial"</span>])
+        <span class="kw">for</span> f <span class="kw">in</span> FIELDS[:k]:
+            state[f] = t[<span class="st">"target"</span>][f]
+        ok += verify(state, t)
+    <span class="kw">print</span>(f<span class="st">"  {label:&lt;20} {ok / N:&gt;6.1%}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nseeded determinism: same seed -&gt; same task?"</span>,
+      make_task(<span class="nm">42</span>) == make_task(<span class="nm">42</span>), <span class="st">"| different seed -&gt; different task?"</span>,
+      make_task(<span class="nm">42</span>)[<span class="st">"target"</span>] != make_task(<span class="nm">43</span>)[<span class="st">"target"</span>])
+</div><div class="code out-block" data-lang="output">
+AUDIT over 3000 generated tasks
+  reference solution passes : 100.0%   (must be 100%)
+  null action passes        :   0.0%   (must be 0%)
+  partial agent             :  34.0%   (must be 0% for a strict verifier)
+  echo agent                :   0.0%   (must be 0%)
+
+pass rate of the family as agent competence increases:
+  fixes 0 of 3 fields    0.0%
+  fixes 1 of 3 fields    0.0%
+  fixes 2 of 3 fields    0.0%
+  fixes 3 of 3 fields  100.0%
+
+seeded determinism: same seed -&gt; same task? True | different seed -&gt; different task? True
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c67-s4">4 &middot; Your hands <a class="hook" href="#c67-s4">#</a></h2>
+
+    <p>Three labs: generate tasks for one family and audit the three properties, bin the family by difficulty,
+    and compute how much of the generated set is actually training signal.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; audit your generator with four canned agents</h4>
+      <p>One task family, four agents: a reference solution, a null action, a partial agent that fixes two of three fields, and an echo agent that claims the work and changes nothing. The verifier asserts on final state only.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L67: generate one task family and audit it before trusting the environment.</span>
+<span class="cm"># Environment = (state, actions, transition, verifier). Pure stdlib.</span>
+<span class="kw">import</span> random
+
+FIELDS = [<span class="st">"amount"</span>, <span class="st">"currency"</span>, <span class="st">"status"</span>]
+
+
+<span class="kw">def</span> make_task(seed):
+    rng = random.Random(seed)
+    target = {<span class="st">"amount"</span>: rng.choice([<span class="nm">100</span>, <span class="nm">250</span>, <span class="nm">400</span>, <span class="nm">999</span>]),
+              <span class="st">"currency"</span>: rng.choice([<span class="st">"EUR"</span>, <span class="st">"USD"</span>, <span class="st">"GBP"</span>]),
+              <span class="st">"status"</span>: rng.choice([<span class="st">"paid"</span>, <span class="st">"pending"</span>])}
+    asked = list(FIELDS)
+    rng.shuffle(asked)
+    text = <span class="st">"Update the record: set "</span> + <span class="st">", "</span>.join(f<span class="st">"{f}={target[f]}"</span> <span class="kw">for</span> f <span class="kw">in</span> asked) + <span class="st">"."</span>
+    <span class="kw">return</span> {<span class="st">"initial"</span>: {<span class="st">"amount"</span>: <span class="nm">0</span>, <span class="st">"currency"</span>: <span class="st">"USD"</span>, <span class="st">"status"</span>: <span class="st">"new"</span>},
+            <span class="st">"target"</span>: target, <span class="st">"text"</span>: text}
+
+
+<span class="kw">def</span> verify(state, task):
+    <span class="st">""</span><span class="st">"Assert on FINAL STATE only. The transcript is irrelevant."</span><span class="st">""</span>
+    <span class="kw">return</span> all(state[f] == task[<span class="st">"target"</span>][f] <span class="kw">for</span> f <span class="kw">in</span> FIELDS)
+
+
+<span class="kw">def</span> reference_solution(task):
+    s = dict(task[<span class="st">"initial"</span>])
+    s.update(task[<span class="st">"target"</span>])
+    <span class="kw">return</span> s
+
+
+<span class="kw">def</span> partial_agent(task):
+    s = dict(task[<span class="st">"initial"</span>])
+    s[<span class="st">"amount"</span>] = task[<span class="st">"target"</span>][<span class="st">"amount"</span>]
+    s[<span class="st">"status"</span>] = task[<span class="st">"target"</span>][<span class="st">"status"</span>]
+    <span class="kw">return</span> s                                    <span class="cm"># forgot currency</span>
+
+
+<span class="kw">def</span> echo_agent(task):
+    <span class="st">""</span><span class="st">"Transcript-only agent: claims the work, changes nothing."</span><span class="st">""</span>
+    <span class="kw">return</span> dict(task[<span class="st">"initial"</span>])
+
+
+N = <span class="nm">3000</span>
+ref = null = partial = echo = <span class="nm">0</span>
+<span class="kw">for</span> seed <span class="kw">in</span> range(N):
+    t = make_task(seed)
+    ref += verify(reference_solution(t), t)
+    null += verify(dict(t[<span class="st">"initial"</span>]), t)
+    partial += verify(partial_agent(t), t)
+    echo += verify(echo_agent(t), t)
+
+<span class="kw">print</span>(f<span class="st">"AUDIT over {N} generated tasks"</span>)
+<span class="kw">print</span>(f<span class="st">"  reference solution passes : {ref / N:&gt;6.1%}   (must be 100%)"</span>)
+<span class="kw">print</span>(f<span class="st">"  null action passes        : {null / N:&gt;6.1%}   (must be 0%)"</span>)
+<span class="kw">print</span>(f<span class="st">"  partial agent             : {partial / N:&gt;6.1%}   (must be 0% for a strict verifier)"</span>)
+<span class="kw">print</span>(f<span class="st">"  echo agent                : {echo / N:&gt;6.1%}   (must be 0%)"</span>)
+
+<span class="kw">print</span>(<span class="st">"\npass rate of the family as agent competence increases:"</span>)
+<span class="kw">for</span> label, k <span class="kw">in</span> ((<span class="st">"fixes 0 of 3 fields"</span>, <span class="nm">0</span>), (<span class="st">"fixes 1 of 3 fields"</span>, <span class="nm">1</span>),
+                 (<span class="st">"fixes 2 of 3 fields"</span>, <span class="nm">2</span>), (<span class="st">"fixes 3 of 3 fields"</span>, <span class="nm">3</span>)):
+    ok = <span class="nm">0</span>
+    <span class="kw">for</span> seed <span class="kw">in</span> range(N):
+        t = make_task(seed)
+        state = dict(t[<span class="st">"initial"</span>])
+        <span class="kw">for</span> f <span class="kw">in</span> FIELDS[:k]:
+            state[f] = t[<span class="st">"target"</span>][f]
+        ok += verify(state, t)
+    <span class="kw">print</span>(f<span class="st">"  {label:&lt;20} {ok / N:&gt;6.1%}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nseeded determinism: same seed -&gt; same task?"</span>,
+      make_task(<span class="nm">42</span>) == make_task(<span class="nm">42</span>), <span class="st">"| different seed -&gt; different task?"</span>,
+      make_task(<span class="nm">42</span>)[<span class="st">"target"</span>] != make_task(<span class="nm">43</span>)[<span class="st">"target"</span>])
+</div><div class="code out-block" data-lang="output">
+AUDIT over 3000 generated tasks
+  reference solution passes : 100.0%   (must be 100%)
+  null action passes        :   0.0%   (must be 0%)
+  partial agent             :  34.0%   (must be 0% for a strict verifier)
+  echo agent                :   0.0%   (must be 0%)
+
+pass rate of the family as agent competence increases:
+  fixes 0 of 3 fields    0.0%
+  fixes 1 of 3 fields    0.0%
+  fixes 2 of 3 fields    0.0%
+  fixes 3 of 3 fields  100.0%
+
+seeded determinism: same seed -&gt; same task? True | different seed -&gt; different task? True
+</div>
+      <p class="expect">Reference 100%, null action 0%, echo 0% &mdash; the three audits pass. The partial agent passes 34%, which is the subtle finding: this verifier is all-or-nothing on three independent fields, so a partial attempt succeeds whenever the two fields it did fix happen to be the task's full requirement. If the family intends 'all three required', the verifier is correct; if it intends 'fix what is asked', the generator is producing ambiguous tasks. Either way, the number is now visible.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; read the difficulty curve, not the average</h4>
+      <p>The second block prints the family's pass rate as a competent agent fixes 0, 1, 2 and 3 fields.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L67: generate one task family and audit it before trusting the environment.</span>
+<span class="cm"># Environment = (state, actions, transition, verifier). Pure stdlib.</span>
+<span class="kw">import</span> random
+
+FIELDS = [<span class="st">"amount"</span>, <span class="st">"currency"</span>, <span class="st">"status"</span>]
+
+
+<span class="kw">def</span> make_task(seed):
+    rng = random.Random(seed)
+    target = {<span class="st">"amount"</span>: rng.choice([<span class="nm">100</span>, <span class="nm">250</span>, <span class="nm">400</span>, <span class="nm">999</span>]),
+              <span class="st">"currency"</span>: rng.choice([<span class="st">"EUR"</span>, <span class="st">"USD"</span>, <span class="st">"GBP"</span>]),
+              <span class="st">"status"</span>: rng.choice([<span class="st">"paid"</span>, <span class="st">"pending"</span>])}
+    asked = list(FIELDS)
+    rng.shuffle(asked)
+    text = <span class="st">"Update the record: set "</span> + <span class="st">", "</span>.join(f<span class="st">"{f}={target[f]}"</span> <span class="kw">for</span> f <span class="kw">in</span> asked) + <span class="st">"."</span>
+    <span class="kw">return</span> {<span class="st">"initial"</span>: {<span class="st">"amount"</span>: <span class="nm">0</span>, <span class="st">"currency"</span>: <span class="st">"USD"</span>, <span class="st">"status"</span>: <span class="st">"new"</span>},
+            <span class="st">"target"</span>: target, <span class="st">"text"</span>: text}
+
+
+<span class="kw">def</span> verify(state, task):
+    <span class="st">""</span><span class="st">"Assert on FINAL STATE only. The transcript is irrelevant."</span><span class="st">""</span>
+    <span class="kw">return</span> all(state[f] == task[<span class="st">"target"</span>][f] <span class="kw">for</span> f <span class="kw">in</span> FIELDS)
+
+
+<span class="kw">def</span> reference_solution(task):
+    s = dict(task[<span class="st">"initial"</span>])
+    s.update(task[<span class="st">"target"</span>])
+    <span class="kw">return</span> s
+
+
+<span class="kw">def</span> partial_agent(task):
+    s = dict(task[<span class="st">"initial"</span>])
+    s[<span class="st">"amount"</span>] = task[<span class="st">"target"</span>][<span class="st">"amount"</span>]
+    s[<span class="st">"status"</span>] = task[<span class="st">"target"</span>][<span class="st">"status"</span>]
+    <span class="kw">return</span> s                                    <span class="cm"># forgot currency</span>
+
+
+<span class="kw">def</span> echo_agent(task):
+    <span class="st">""</span><span class="st">"Transcript-only agent: claims the work, changes nothing."</span><span class="st">""</span>
+    <span class="kw">return</span> dict(task[<span class="st">"initial"</span>])
+
+
+N = <span class="nm">3000</span>
+ref = null = partial = echo = <span class="nm">0</span>
+<span class="kw">for</span> seed <span class="kw">in</span> range(N):
+    t = make_task(seed)
+    ref += verify(reference_solution(t), t)
+    null += verify(dict(t[<span class="st">"initial"</span>]), t)
+    partial += verify(partial_agent(t), t)
+    echo += verify(echo_agent(t), t)
+
+<span class="kw">print</span>(f<span class="st">"AUDIT over {N} generated tasks"</span>)
+<span class="kw">print</span>(f<span class="st">"  reference solution passes : {ref / N:&gt;6.1%}   (must be 100%)"</span>)
+<span class="kw">print</span>(f<span class="st">"  null action passes        : {null / N:&gt;6.1%}   (must be 0%)"</span>)
+<span class="kw">print</span>(f<span class="st">"  partial agent             : {partial / N:&gt;6.1%}   (must be 0% for a strict verifier)"</span>)
+<span class="kw">print</span>(f<span class="st">"  echo agent                : {echo / N:&gt;6.1%}   (must be 0%)"</span>)
+
+<span class="kw">print</span>(<span class="st">"\npass rate of the family as agent competence increases:"</span>)
+<span class="kw">for</span> label, k <span class="kw">in</span> ((<span class="st">"fixes 0 of 3 fields"</span>, <span class="nm">0</span>), (<span class="st">"fixes 1 of 3 fields"</span>, <span class="nm">1</span>),
+                 (<span class="st">"fixes 2 of 3 fields"</span>, <span class="nm">2</span>), (<span class="st">"fixes 3 of 3 fields"</span>, <span class="nm">3</span>)):
+    ok = <span class="nm">0</span>
+    <span class="kw">for</span> seed <span class="kw">in</span> range(N):
+        t = make_task(seed)
+        state = dict(t[<span class="st">"initial"</span>])
+        <span class="kw">for</span> f <span class="kw">in</span> FIELDS[:k]:
+            state[f] = t[<span class="st">"target"</span>][f]
+        ok += verify(state, t)
+    <span class="kw">print</span>(f<span class="st">"  {label:&lt;20} {ok / N:&gt;6.1%}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nseeded determinism: same seed -&gt; same task?"</span>,
+      make_task(<span class="nm">42</span>) == make_task(<span class="nm">42</span>), <span class="st">"| different seed -&gt; different task?"</span>,
+      make_task(<span class="nm">42</span>)[<span class="st">"target"</span>] != make_task(<span class="nm">43</span>)[<span class="st">"target"</span>])
+</div><div class="code out-block" data-lang="output">
+AUDIT over 3000 generated tasks
+  reference solution passes : 100.0%   (must be 100%)
+  null action passes        :   0.0%   (must be 0%)
+  partial agent             :  34.0%   (must be 0% for a strict verifier)
+  echo agent                :   0.0%   (must be 0%)
+
+pass rate of the family as agent competence increases:
+  fixes 0 of 3 fields    0.0%
+  fixes 1 of 3 fields    0.0%
+  fixes 2 of 3 fields    0.0%
+  fixes 3 of 3 fields  100.0%
+
+seeded determinism: same seed -&gt; same task? True | different seed -&gt; different task? True
+</div>
+      <p class="expect">The curve is a cliff, not a slope: 0% until 3 of 3, then 100%. A cliff family gives the group baseline nothing to work with on most tasks (lesson 56's zero-variance problem) and no partial credit. Families that train well have a graded middle &mdash; vary the number of fields, or add partial-credit checks for intermediate state, and the histogram fills in the 30-70% band.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the provenance record for a generated environment</h4>
+      <p>Store these five fields per environment family. Without them the family cannot be trusted as an eval, let alone as a reward source.</p>
+      <div class="code" data-lang="json">
+{"family": "record-update-v3",
+ "generator": {"module": "gen_record.py", "sha256": "...", "seeds": [0, 2999]},
+ "verifier": {"module": "verify_record.py", "sha256": "..."},
+ "audit": {"reference_pass": 1.00, "null_action_pass": 0.00,
+           "partial_agent_pass": 0.34, "current_policy_pass": 0.41},
+ "band_histogram": {"0-30%": 0.12, "30-70%": 0.55, "70-100%": 0.33}}
+      </div>
+      <p class="expect">If <code>current_policy_pass</code> is above about 0.95, the family is a regression test, not training data."
+      If it is below about 0.05, it is a difficulty ceiling you should investigate rather than train on. The histogram is what tells"
+      you which, and it costs one line to compute.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c67-s5">5 &middot; Failure modes <a class="hook" href="#c67-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Verifier satisfied by the initial state.</strong> Symptom: null-action trajectory passes; the agent learns to do nothing, politely.</li>
+        <li><strong>Transcript assertions.</strong> Symptom: agents that narrate the right actions without performing them pass; check by running the tool-call log, not the text.</li>
+        <li><strong>Template leakage.</strong> Symptom: huge gains on the synthetic eval, no gain on a hand-written holdout with different phrasing.</li>
+        <li><strong>Simulator bug as reward.</strong> Symptom: success rate above 95% on tasks the reference solution finds hard; someone's stub returns the expected value.</li>
+        <li><strong>Difficulty collapse.</strong> Symptom: 80% of generated tasks are trivial for the current model; zero-variance groups dominate and the run costs money without learning.</li>
+        <li><strong>Unseeded nondeterminism.</strong> Symptom: the same seed gives different verifier outcomes; flaky environments produce noisy rewards and irreproducible eval numbers.</li>
+        <li><strong>Instruction ambiguity.</strong> Symptom: two reasonable agents produce different final states and both are "right"; the verifier picks one arbitrarily.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>For every generated environment family, store: the generator version and seed, the verifier hash,
+      the reference-solution result, the null-action result, and the current-policy pass rate. An environment
+      without those five fields cannot be trusted as an eval, let alone as a reward source &mdash; and 1,800 of them
+      is only impressive if all 1,800 have them.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c67-s6">6 &middot; Connects to <a class="hook" href="#c67-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a>,
+    <a class="tag-c" href="70-tool-use-training.html">L70 &middot; Tool use training</a>,
+    <a class="tag-c" href="66-distilling-reasoning.html">L66 &middot; Distilling reasoning</a>.</p>
+    <p><strong>Unlocks:</strong> agentic RL at scale, and eval suites you can regenerate.</p>
+
+    <ul>
+      <li><a class="tag-c" href="71-agentic-rl.html">L71 &middot; Agentic RL</a> &mdash; the training loop that consumes these environments.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; simulator bugs as the canonical example.</li>
+      <li><a class="tag-d" href="../track-d/88-evals.html">L88 &middot; Evals</a> &mdash; fresh generated instances as an anti-contamination source.</li>
+      <li><a class="tag-d" href="../track-d/84-safety-sandboxing.html">L84 &middot; Sandboxing</a> &mdash; the containment needed before any of this runs unattended.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c67-s7">7 &middot; Self-check <a class="hook" href="#c67-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Your generator produces 1,000 tasks and the current policy passes 96% of them. What is wrong, and what is the number to compute?</p>
+        <details><summary>Reveal answer</summary><p>Almost all of the generated set is in the saturated band: pass rates near 1 mean zero-variance groups and no learning signal(lesson 56). Compute the pass-rate histogram across bins and the share in the 30-70% band. Then either raise task difficulty,add harder variants, or use these as regression tests rather than training data.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why must the verifier assert on final state rather than on the transcript?</p>
+        <details><summary>Reveal answer</summary><p>Because the transcript is generated text and can assert anything. A transcript-only verifier rewards describing theaction; a state verifier rewards performing it. The only exception is when the transcript IS the product (a report, an email),in which case the transcript is the final state and gets its own structured assertions.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Quantitative: 1,800 environments, 85,000 instructions. How many instructions per environment on average, and what is the audit risk if the distribution is uneven?</p>
+        <details><summary>Reveal answer</summary><p>About 47 instructions per environment on average. If the distribution is long-tailed &mdash; a few environments with thousandsand many with one &mdash; then the '1,800 environments' coverage claim is a claim about the head, not the tail, and the agent willbe trained mostly on a small number of task shapes. Audit: print the histogram of instructions per environment and the numberof environments with fewer than 10.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: agent passes the synthetic suite at 88% and the hand-written holdout at 51%. Name three candidate causes and the check for each.</p>
+        <details><summary>Reveal answer</summary><p>(a) Template leakage: check whether holdout prompts share templates with training. (b) Simulator cleanliness: check whetherthe synthetic suite injects faults; a holdout with messy real APIs will fail. (c) Instruction phrasing: check ambiguity andverbosity of the holdout's prompts. Each check is a property of the data, not of the model.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What is the null-action test and why is it non-negotiable?</p>
+        <details><summary>Reveal answer</summary><p>A deliberately empty trajectory must score zero. If it passes, the verifier is satisfied by the initial state, and thecheapest successful policy is to do nothing &mdash; which the optimiser will find within a few hundred steps. It is non-negotiablebecause it is cheap, it catches the most catastrophic class of verifier bug, and it never gives false positives.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="66-distilling-reasoning.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L66 &middot; Distilling reasoning: rejection sampling and trace recycling</span></a>
+    <a class="next" href="68-self-feedback.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L68 &middot; RL with self-feedback and its failure modes</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

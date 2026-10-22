@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b47">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L47 · Native Multimodal: Vision Encoding Into the Token Stream — AILearn</title>
+<meta name="description" content="An image costs tokens, and patch size decides how many. Patchify a 1024&times;1024 image into 4,096 tokens or 1,024, price the difference, and understand why native multimodal beats bolting on an adapter.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L47</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L47 &middot; Native Multimodal: Vision Encoding Into the Token Stream</h1>
+  <p class="lede">A 1024&times;1024 image at patch size 16 is 4,096 tokens &mdash; more than a long article, and it hits the KV cache, prefill and concurrency bills exactly like text. Patch size, resolution and adapter design are cost decisions disguised as quality decisions.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: patchify an image, count tokens</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">patchify</span>
+  <span class="pill">patch size vs tokens</span>
+  <span class="pill">vision encoder</span>
+  <span class="pill">projector / adapter</span>
+  <span class="pill">native multimodal</span>
+  <span class="pill">image token budget</span>
+  <span class="pill">resolution trade-off</span>
+  <span class="pill">cross-modal attention cost</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b47-s1">1 &middot; Why it exists <a class="hook" href="#b47-s1">#</a></h2>
+
+    <p>An image is not free input. A language model consumes tokens, so the first thing any multimodal system must decide is
+    how much of the image to turn into tokens &mdash; and that decision propagates straight into the bills from L33 to L45.</p>
+
+    <p>The canonical approach splits an image into fixed-size patches and treats each patch as a token. For an image of
+    P&times;P pixels with patch size s, the token count is</p>
+    <div class="formula">
+      tokens = (P / s)&sup2;
+      <span class="note">This is a square of the resolution-to-patch ratio, so halving patch size multiplies tokens by 4, and doubling resolution also multiplies tokens by 4. Token cost is quadratic in the thing everyone wants more of (detail).</span>
+    </div>
+
+    <p>Worked: a 1024&times;1024 image at s = 16 gives (1024/16)&sup2; = 64&sup2; = <strong>4,096 tokens</strong>. At s = 32 it is
+    32&sup2; = <strong>1,024 tokens</strong> &mdash; a 4&times; difference for the same image. Now check it against the cache
+    arithmetic: at 70,272 B/token that single image occupies 4,096 &times; 70,272 = 274.5 MiB of KV cache at patch 16 versus
+    68.62 MiB at patch 32. Ten images in one request would need 2.68 GiB versus 0.67 GiB of cache &mdash; the difference between
+    serving 100 concurrent users and 400.</p>
+
+    <p>The failure mode that motivated <em>native</em> multimodal architectures: bolting a separate vision encoder onto a
+    frozen language model creates a seam where visual information must be squeezed through an adapter trained on far less data
+    than either side. It works for describing photos and fails on the tasks that matter &mdash; reading a table in a screenshot,
+    comparing two diagrams, following a chart's axis. 2026 frontier models that advertise native multimodal training process
+    images in the same token stream as text, sharing the attention and cache machinery.</p>
+
+    <div class="callout boss">
+      <p>An image is a token bill. Patch size and resolution decide the bill, the adapter decides how much of the image survives
+      the trip into the model, and only native training removes the seam between them.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b47-s2">2 &middot; The mental model <a class="hook" href="#b47-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> reading a document through a grid of peepholes. Few large peepholes mean cheap
+    reading and coarse understanding; many small peepholes mean expensive reading and fine detail. You choose the grid before
+    you look, and you cannot un-choose it later.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>The token budget is set by a structural choice made up front, and
+      the trade is detail against cost. It also gets position right: each patch needs to know where it is, so positional encoding
+      must be 2-D.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Patches are not independent peepholes: attention lets patches see each other, so
+      the model reconstructs spatial relations &mdash; which is why coarse patches sometimes work surprisingly well on layout questions
+      while failing on small text. And an image's patch count does not include the cost of <em>resizing</em> the image
+      intelligently, which is where real systems spend most of their engineering.</p></div>
+    </div>
+
+    <h3>The three architectures, ranked by seam</h3>
+    <table class="table">
+      <thead><tr><th>Architecture</th><th>How visual data enters</th><th>Seam</th></tr></thead>
+      <tbody>
+        <tr><td>Frozen LLM + vision adapter</td><td>Separate image encoder &rarr; projector &rarr; prefix tokens</td><td>Large: the adapter must teach the LLM a new modality with limited data</td></tr>
+        <tr><td>Adapter + fine-tuned LLM</td><td>Same, but the LLM is trained jointly on multimodal data</td><td>Moderate: joint training closes most of the gap</td></tr>
+        <tr><td>Native multimodal</td><td>Images tokenised into the same stream, trained from pretraining</td><td>Minimal: one model, one objective, one cache</td></tr>
+      </tbody>
+    </table>
+    <p>The 2026 line makes the native claim explicitly. DeepSeek-V4.1-Flash (552B MoE, 8B active input / 16B active output,
+    Causal Encoder&ndash;Decoder) is described as native multimodal <span class="asof">state as of 2026-10</span>, which is the
+    architectural statement that image tokens are not an afterthought bolted onto a text model.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b47-s3">3 &middot; The mechanism <a class="hook" href="#b47-s3">#</a></h2>
+
+    <h3>Step 1: patchify</h3>
+    <p>Split the image into non-overlapping s&times;s patches, flatten each into a vector of s&sup2;&times;channels values, and
+    project it to the model's d<sub>model</sub>. That projection is the only new parameters required, and it is small:
+    s&sup2;&times;C &times; d<sub>model</sub>. At s = 16, C = 3, d<sub>model</sub> = 4096 that is 768 &times; 4,096 =
+    <strong>3,145,728 &asymp; 3.15M parameters</strong> &mdash; negligible next to the language model, which is exactly why the naive
+    approach looks cheap and then underperforms.</p>
+
+    <h3>Step 2: count tokens, and price them</h3>
+    <table class="table">
+      <thead><tr><th>Image</th><th>Patch size</th><th>Tokens</th><th>KV cache at 70,272 B/token</th><th>Prefill FLOPs at 13B active</th></tr></thead>
+      <tbody>
+        <tr><td>448&times;448</td><td>14</td><td>1,024</td><td>68.62 MiB</td><td>2.66&times;10<sup>13</sup></td></tr>
+        <tr><td>1024&times;1024</td><td>32</td><td>1,024</td><td>68.62 MiB</td><td>2.66&times;10<sup>13</sup></td></tr>
+        <tr><td>1024&times;1024</td><td>16</td><td>4,096</td><td>274.5 MiB</td><td>1.065&times;10<sup>14</sup></td></tr>
+        <tr><td>2048&times;2048</td><td>16</td><td>16,384</td><td><strong>1,098.0 MiB</strong></td><td>4.26&times;10<sup>14</sup></td></tr>
+        <tr><td>1120&times;1120</td><td>14</td><td>6,400</td><td>428.9 MiB</td><td>1.66&times;10<sup>14</sup></td></tr>
+      </tbody>
+    </table>
+    <p>The 2,048&times;2,048 row is the one to remember: a single high-resolution image costs 1,098 MiB of cache and
+    4.26&times;10<sup>14</sup> prefill FLOPs &mdash; 1.08 seconds on one GPU at 40% MFU, for <em>one image</em>. Twenty such
+    images in a document request is 21.4 GiB of cache and 21.4 seconds of prefill. That is a product decision, and it is being made
+    by whoever chooses the default resolution in the client.</p>
+
+    <h3>Step 3: the adapter, and why it is where quality is lost</h3>
+    <p>Between the vision encoder and the language model sits a projector, typically an MLP or a cross-attention block. It has
+    two jobs that conflict:</p>
+    <ul>
+      <li><strong>Map</strong> visual features into the language model's embedding space (a representation change).</li>
+      <li><strong>Compress</strong> &mdash; often a resampler reduces N patch tokens to M &lt; N query tokens, which is the main
+      lever for controlling cost.</li>
+    </ul>
+    <p>Compression is where information is lost, and it is lossy in the same way the KV cache rank cap is (L33): a fixed number
+    of query tokens cannot represent arbitrary visual detail. Table-reading and dense-text tasks are exactly where this shows
+    up, because they need many independent small details rather than global scene understanding.</p>
+
+    <h3>Step 4: the cost lands on every downstream lesson</h3>
+    <p>Once image tokens are ordinary tokens, every previous cost model applies without modification:</p>
+    <ul>
+      <li><strong>Prefill</strong> (L35) is 2N<sub>active</sub> per token &mdash; images are expensive prompts.</li>
+      <li><strong>KV cache</strong> (L33) holds image tokens exactly like text: 70,272 B each, and they are typically
+      <em>cache-hitting</em> across turns, which makes prefix caching (L45) unusually valuable for image conversations.</li>
+      <li><strong>Concurrency</strong> (L44) drops in proportion to images per request.</li>
+      <li><strong>Quantization</strong> (L40) applies to image tokens' cached states with no special case.</li>
+    </ul>
+    <p>That is the practical argument for native multimodal: when the architecture is one stack, the cost model is one stack.
+    Adapters create <em>two</em> cost models &mdash; encoder compute plus language-model tokens &mdash; and two failure surfaces.</p>
+
+    <div class="callout audit">
+      <p>Log <strong>image tokens</strong> as a first-class metric, separated from text tokens, in every request trace. A
+      workload that "doubled its token spend" is usually a client change to default resolution. Without per-modality token
+      accounting you cannot see it, and no amount of model-side optimisation will recover it.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b47-s4">4 &middot; Your hands <a class="hook" href="#b47-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; patchify a real image and count the tokens</h4>
+      <p>Do it on an actual image, not a number. This makes the token bill concrete and gives you the accounting you should
+      emit per request.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># pip install pillow</span>
+<span class="fn">from</span> PIL <span class="kw">import</span> Image
+
+<span class="kw">def</span> <span class="fn">patch_tokens</span>(path, patch=<span class="nm">16</span>):
+    img = Image.open(path).convert(<span class="st">"RGB"</span>)
+    W, H = img.size
+    pw, ph = W // patch, H // patch
+    n = pw * ph
+    <span class="fn">print</span>(<span class="st">f"{path}: {W}x{H}, patch {patch} -> {pw}x{ph} grid = {n:,} tokens"</span>)
+    <span class="fn">print</span>(<span class="st">f"  cache at 70,272 B/token: {n*70272/1024**2:.1f} MiB"</span>)
+    <span class="fn">print</span>(<span class="st">f"  prefill FLOPs (13B active): {2*13e9*n:.3e}"</span>)
+    <span class="kw">return</span> n
+
+<span class="fn">patch_tokens</span>(<span class="st">"screenshot.png"</span>, <span class="nm">16</span>)
+<span class="fn">patch_tokens</span>(<span class="st">"screenshot.png"</span>, <span class="nm">32</span>)
+      </div>
+      <p class="expect">A 1024&times;1024 screenshot: 64&times;64 = 4,096 tokens (274.5 MiB cache) at patch 16, and
+      32&times;32 = 1,024 tokens (68.62 MiB) at patch 32. Run it on your own screenshots and compute the monthly token bill for your
+      actual image volume &mdash; that is the number that decides whether you need a resampler.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the token-budget planner</h4>
+      <p>Given a detail requirement and a budget, solve for patch size. This is the calculation that should precede any
+      multimodal product decision.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">plan</span>(P, budget_tokens, max_patch=<span class="nm">64</span>):
+    <span class="cm"># smallest patch (most detail) that fits the token budget</span>
+    <span class="kw">for</span> s <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">8</span>, max_patch + <span class="nm">1</span>, <span class="nm">2</span>):
+        n = (P // s) ** <span class="nm">2</span>
+        <span class="kw">if</span> n &lt;= budget_tokens:
+            <span class="kw">return</span> s, n
+    <span class="kw">return</span> <span class="kw">None</span>, 0
+
+<span class="kw">for</span> P <span class="kw">in</span> (<span class="nm">448</span>, <span class="nm">1024</span>, <span class="nm">2048</span>):
+    <span class="kw">for</span> budget <span class="kw">in</span> (<span class="nm">256</span>, <span class="nm">1024</span>, <span class="nm">4096</span>):
+        s, n = <span class="fn">plan</span>(P, budget)
+        <span class="fn">print</span>(<span class="st">f"{P}px budget={budget:5d} -> patch={s} ({n} tokens, {P/s:.0f}px per patch)"</span>)
+      </div>
+      <p class="expect">At 1024px with a 1,024-token budget the planner chooses patch 32 &mdash; 32 pixels per patch, which is
+      enough for scene understanding and too coarse for 10px text. With a 4,096 budget it chooses patch 16 (4,096 tokens exactly).
+      At 2048px the same budgets give patch 64 and patch 32 &mdash; the planner trades resolution for patch size automatically,
+      which is precisely the decision a product team needs to see. The planner turns a
+      vague &ldquo;we need better image understanding&rdquo; into a specific cost line, and shows the CEO exactly what detail
+      buys.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; images versus text in one context budget</h4>
+      <p>Compare an image-heavy request against a text-heavy one. The point is that images are not a separate budget line
+      &mdash; they compete directly with documents.</p>
+      <div class="code" data-lang="bash">
+python -c "
+tok=70272; tokens_per_page=500
+for imgs,patch in ((1,16),(4,16),(20,16),(1,32)):
+    img_tokens=(1024//patch)**2*imgs
+    pdf_pages=(128000-img_tokens)//tokens_per_page
+    print(f'{imgs} images @patch{patch} = {img_tokens:6,} tokens ({img_tokens*tok/1024**3:.2f} GiB cache) -> room for {pdf_pages:5,} PDF pages in 128k')
+"
+      </div>
+      <p class="expect">One 1024px image at patch 16 leaves room for 247 PDF pages in a 128k window; four images leave 223; twenty
+      images consume 81,920 tokens and leave only 92 pages. Cache cost for twenty images is 5.36 GiB &mdash; comparable to a
+      single 78k-token text prompt. <strong>The budget is shared, and images are the expensive side.</strong></p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b47-s5">5 &middot; Failure modes <a class="hook" href="#b47-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Resolution creep.</strong> Symptom: token spend doubles while request volume is flat, because a client update
+        raised default image resolution. Log image tokens per request and alert on changes.</li>
+        <li><strong>Adapter compression hiding detail loss.</strong> Symptom: model describes a chart's trend correctly and
+        misreads its axis labels. The resampler kept scene-level information and discarded small text. Raise resolution or use a
+        detail-preserving tokenisation for text-heavy images.</li>
+        <li><strong>Vision encoder cost not attributed.</strong> Symptom: cloud bills contain GPU time your token accounting does
+        not explain. A separate encoder is a second compute system; it needs its own metric.</li>
+        <li><strong>Cache invalidation on image re-order.</strong> Symptom: image conversations have much lower prefix-cache hit
+        rates than text ones because the client sends images in a different order each turn. Fix the ordering.</li>
+        <li><strong>Testing on natural photos only.</strong> Symptom: strong demo quality, poor production quality, because
+        production traffic is screenshots, scanned forms and dashboards &mdash; the dense-text cases where patch resolution is
+        exactly the binding constraint.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b47-s6">6 &middot; Connects to <a class="hook" href="#b47-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L33 (cache), L35 (prefill), L45 (caching). &nbsp; <strong>Unlocks:</strong> multimodal
+    agent design and the vision-document pipeline in Track D.</p>
+    <ul>
+      <li><a class="tag-b" href="33-mla.html">L33 &middot; MLA</a> &mdash; 70,272 bytes per token, image or text.</li>
+      <li><a class="tag-b" href="35-long-context.html">L35 &middot; Long context</a> &mdash; prefill cost per token.</li>
+      <li><a class="tag-b" href="41-distillation.html">L41 &middot; Distillation</a> &mdash; how a small vision-capable student is built.</li>
+      <li><a class="tag-b" href="37-encoder-decoder.html">L37 &middot; Encoder&ndash;decoder</a> &mdash; the architecture behind the native-multimodal claim.</li>
+      <li><a class="tag-d" href="../track-d/85-rag-retrieval.html">L85 &middot; RAG retrieval</a> &mdash; where image tokens compete with retrieved text.</li>
+      <li><a class="tag-d" href="../track-d/91-cost-latency.html">L91 &middot; Cost &amp; latency budgets</a> &mdash; the per-modality accounting this lesson demands.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b47-s7">7 &middot; Self-check <a class="hook" href="#b47-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A 1536&times;1536 image at patch size 16. How many tokens, how much KV cache at 70,272 B/token, and what happens if patch size doubles to 32?</p>
+        <details><summary>Reveal answer</summary><p>(1536/16)&sup2; = 96&sup2; = <strong>9,216 tokens</strong>; cache = 9,216 &times; 70,272 = 617.6 MiB. At patch 32:
+        (1536/32)&sup2; = 48&sup2; = <strong>2,304 tokens</strong>; cache = 154.4 MiB. Quadrupling-less: the token count falls 4&times; exactly,
+        because token count is (P/s)&sup2; and s doubled.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> You have a 128k context, one 1024px image at patch 16, and want to include PDF pages at ~500 tokens each. How many pages fit, and how does that change at patch 32?</p>
+        <details><summary>Reveal answer</summary><p>Patch 16: 4,096 image tokens leaves 131,072 &minus; 4,096 = 126,976 tokens &rarr; 253 pages. Patch 32: 1,024
+        image tokens leaves 130,048 &rarr; 260 pages. So halving visual detail buys only 7 extra pages (2.7%) &mdash; but costs half the
+        image fidelity. That asymmetry is the argument for spending tokens on images only when the task needs detail.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: the model reads tables in screenshots correctly in demos and fails on the same screenshots in production. Name the two most likely causes.</p>
+        <details><summary>Reveal answer</summary><p>(a) Resolution or patch size differs between demo and production pipelines (the client downscales, or the serving config
+        defaults to a coarser patch); (b) the production images differ in type &mdash; different renderer, DPI, compression artefacts, or
+        scaling that makes small text sub-patch. Check by logging the actual pixel dimensions and token counts per request rather than
+        assuming the pipeline is identical.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is prefix caching especially valuable for image conversations?</p>
+        <details><summary>Reveal answer</summary><p>Image tokens are typically <em>static</em> across turns &mdash; the user references the same screenshot while asking
+        follow-up questions &mdash; and they are expensive (4,096 tokens each at patch 16). So they sit in the cached prefix and are paid
+        once. A text conversation where the user retypes context gets less benefit because more of the prompt changes. In practice,
+        image-heavy chat is the highest-value cache workload after long system prompts.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What does "native multimodal" actually buy, architecturally, over a bolted-on vision adapter?</p>
+        <details><summary>Reveal answer</summary><p>Three things: (1) one cost model instead of two compute systems; (2) joint training so the vision representation is optimised
+        for the tasks the language model must solve, rather than for a proxy objective then adapted; (3) no capacity bottleneck at the
+        adapter, which is usually a small projection trained on comparatively little data. The cost is that pretraining must carry image
+        data from the start, which is a much larger commitment than fine-tuning an adapter.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="46-ssm-hybrids.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L46 &middot; SSMs, RWKV &amp; hybrid attention</span></a>
+    <a class="next" href="48-residual-stream.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L48 &middot; The residual stream as shared memory</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

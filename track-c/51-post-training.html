@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c51">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L51 &middot; Post-training map: SFT &rarr; preferences &rarr; RL &rarr; RLHF vs RLVR &mdash; AILearn</title>
+<meta name="description" content="The post-training ladder as signal engineering: which signal each rung needs, what it cannot fix, and an executable decision procedure.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L51</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L51 &middot; Post-training map: SFT &rarr; preferences &rarr; RL &rarr; RLHF vs RLVR</h1>
+  <p class="lede">A model that is right 88% of the time fails in four structurally different ways, and each one needs a different <em>signal</em>, not a bigger fine-tune. This page turns &quot;what do I tune?&quot; into a six-rule function you can run on your own defect list.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: decision tree for what to tune</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">SFT</span>
+  <span class="pill">preference pairs</span>
+  <span class="pill">learned reward model</span>
+  <span class="pill">verifiable reward</span>
+  <span class="pill">KL tether</span>
+  <span class="pill">reference policy</span>
+  <span class="pill">rollout sampling</span>
+  <span class="pill">audit bracket</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c51-s1">1 &middot; Why it exists <a class="hook" href="#c51-s1">#</a></h2>
+
+    <p>A team ships a model that is <em>right 88% of the time</em> and still cannot be put behind an
+    unattended agent, because the other 12% fails in four structurally different ways: it emits
+    malformed JSON, it refuses a benign clinical question, it answers in a tone the compliance team
+    rejects, and it states a fee schedule that does not exist. Four defects, one model, and the
+    reflex is "fine-tune it". That reflex is what wastes a quarter.</p>
+
+    <p>Each of those four defects is a different <strong>supervision signal you do not have yet</strong>.
+    Malformed output needs demonstrations of the format. Tone needs comparisons, not answers.
+    Arithmetic needs a grader that can score an answer without a human. A missing fact needs
+    retrieval, because no amount of tuning will put a client PDF into the weights. Post-training is
+    not one process; it is a ladder where each rung requires you to have manufactured a signal the
+    rung below cannot supply.</p>
+
+    <div class="callout boss">
+      <p>Post-training is signal engineering. You never "make the model better" &mdash; you install a
+      <em>measurable preference</em> over outputs, and the method you pick is decided entirely by what
+      kind of comparison you can manufacture <em>cheaply and honestly</em>: a demonstration, a pairwise
+      label, a learned scorer, or a program that just runs the answer.</p>
+    </div>
+
+    <p><span class="asof">state as of 2026-10</span> &mdash; the current frontier mostly ships this ladder in
+    the order SFT &rarr; RLVR &rarr; distillation, with preference learning used where the reward is taste
+    rather than truth. DeepSeek-R1 (arXiv:2501.12948) is the clearest published instance: SFT
+    cold-start, then GRPO against verifiable rewards, then rejection-sampled distillation into
+    smaller models.</p>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c51-s2">2 &middot; The mental model <a class="hook" href="#c51-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> think of a raw pretrained model as a function that only knows
+    <em>Plausible Next Token</em>. Post-training installs a second, cheap-to-evaluate function called a
+    <em>proxy for Good</em>, and then pushes the policy uphill on the proxy while tethering it to the
+    original distribution. Three things have to be in place: the proxy, the push, and the tether.</p>
+
+    <table class="table">
+      <thead><tr><th>Rung</th><th>Proxy for Good you must manufacture</th><th>Shelf life</th><th>What it cannot fix</th></tr></thead>
+      <tbody>
+        <tr><td><strong>SFT</strong></td><td>A demonstration of a full correct response (human or stronger model)</td><td>Per token</td><td>Anything the demonstrator never demonstrates &mdash; including recovering from its own failure</td></tr>
+        <tr><td><strong>Preference learning</strong></td><td>A pairwise label: A is better than B for this prompt</td><td>Per pair</td><td>Magnitude. Order without scale; cannot distinguish "slightly worse" from "dangerous" unless you encode it</td></tr>
+        <tr><td><strong>Reward model + PPO</strong></td><td>A scalar function trained on your pairs, then queried millions of times</td><td>Per query, free</td><td>Anything the pair dataset never constrained. A free query is also a free attack surface</td></tr>
+        <tr><td><strong>Verifiable rewards + GRPO</strong></td><td>A program that returns 0/1 (unit tests, exact match, a type checker, a simulator)</td><td>Per rollout</td><td>Anything you cannot write a checker for: style, safety, open-ended quality</td></tr>
+        <tr><td><strong>Distillation</strong></td><td>Another model's accepted outputs</td><td>Per token, after filtering</td><td>Ceiling = teacher quality; you inherit its errors verbatim</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What the ladder analogy gets right</h4><p>You cannot skip a rung and keep the
+      one above it. RL on top of an untrained base finds degenerate high-reward strings; DPO without a
+      decent SFT reference drifts into losing the format entirely. Order is not stylistic, it is
+      structural: each rung's reference policy is the rung below.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Real pipelines are not strictly ordered. PPO itself
+      contains an SFT-style cross-entropy term as a floor; RLVR is often mixed with SFT batches in one
+      optimiser step; and "no tuning at all" is frequently the correct rung, because a prompt fix costs
+      minutes and a training run costs a week of GPU time plus an eval rebuild.</p></div>
+    </div>
+
+    <p>Two invariants hold across every rung and are worth memorising:</p>
+    <ul>
+      <li><strong>Every rung needs a reference.</strong> SFT against the base distribution, DPO against the SFT policy, PPO/GRPO against a KL anchor. The reference is what makes "better" measurable instead of mushy.</li>
+      <li><strong>Every rung optimises a proxy, so every rung is hackable.</strong> The proxy is a sample of what you could measure; the policy will find the region where the proxy and the truth disagree. Lesson 75 is about that failure; it is the reason the audit bracket exists.</li>
+    </ul>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c51-s3">3 &middot; The mechanism <a class="hook" href="#c51-s3">#</a></h2>
+
+    <p>All five methods reduce to one objective with different estimators. The general form is</p>
+
+    <div class="formula">
+      max<sub>&theta;</sub> &nbsp; E<sub>x&sim;&pi;<sub>&theta;</sub></sub> [ r(x) ] &nbsp;&minus;&nbsp; &beta; &middot; KL(&pi;<sub>&theta;</sub> &#8214; &pi;<sub>ref</sub>)
+      <span class="note">r is the proxy reward (a learned scalar or a grader), &pi;<sub>ref</sub> is the frozen reference policy, &beta; is your willingness to drift.</span>
+    </div>
+
+    <p>The unconstrained optimum of that objective is closed-form and worth internalising, because
+    every page in this track is about approximating it:</p>
+
+    <div class="formula">
+      &pi;<sup>*</sup>(y|x) &nbsp;&prop;&nbsp; &pi;<sub>ref</sub>(y|x) &middot; exp( r(x,y) / &beta; )
+      <span class="note">Reweight the reference by exponentiated reward. When &beta;&rarr;&infin; you get the reference back; when &beta;&rarr;0 you get the argmax of the proxy.</span>
+    </div>
+
+    <p>Now place each method against it:</p>
+
+    <table class="table">
+      <thead><tr><th>Method</th><th>Estimator of r</th><th>Reference used</th><th>Needs rollouts?</th><th>Models in memory</th></tr></thead>
+      <tbody>
+        <tr><td>SFT</td><td>None &mdash; the demonstration <em>is</em> the answer</td><td>Implicit: you only train on the demonstrated tokens</td><td>No</td><td>1</td></tr>
+        <tr><td>DPO (arXiv:2305.18290)</td><td>Implicit inside the policy: the policy itself is reparameterised as a reward</td><td>The SFT policy (frozen copy or the initial one)</td><td>No &mdash; offline pairs</td><td>2 (policy + frozen reference)</td></tr>
+        <tr><td>PPO (arXiv:1707.06347)</td><td>A separate trained reward model</td><td>KL penalty against a frozen policy</td><td>Yes, cheap sampling then repeated epochs</td><td>4 (policy, reference, reward, value/critic)</td></tr>
+        <tr><td>GRPO (arXiv:2402.03300)</td><td>A grader, or a reward model</td><td>KL penalty against a frozen policy</td><td>Yes &mdash; G samples per prompt</td><td>2 (policy, reference) + optional reward model</td></tr>
+      </tbody>
+    </table>
+
+    <p>The whole of DPO follows from inverting the closed form. If &pi;<sup>*</sup> &prop; &pi;<sub>ref</sub> exp(r/&beta;), then
+    solving for r gives r(x,y) = &beta; log(&pi;<sup>*</sup>(y|x)/&pi;<sub>ref</sub>(y|x)) + const. Substitute that
+    into a Bradley&ndash;Terry comparison and the const cancels, so you can train the policy directly on
+    pairs without ever building a reward model. That derivation is the entirety of lesson 55.</p>
+
+    <p>PPO's clipped surrogate, which every RL rung still inherits, is</p>
+
+    <div class="formula">
+      L<sup>CLIP</sup> = E<sub>t</sub>[ min( &rho;<sub>t</sub>&Acirc;<sub>t</sub>, &nbsp; clip(&rho;<sub>t</sub>, 1&minus;&epsilon;, 1+&epsilon;)&Acirc;<sub>t</sub> ) ] &nbsp;where&nbsp; &rho;<sub>t</sub> = &pi;<sub>&theta;</sub>(a<sub>t</sub>|s<sub>t</sub>) / &pi;<sub>&theta;old</sub>(a<sub>t</sub>|s<sub>t</sub>)
+      <span class="note">A&#770; is the advantage estimate; the clip removes the incentive to move further once you have already moved 1&plusmn;&epsilon; in the useful direction.</span>
+    </div>
+
+    <p>Here is the routing decision as an executable function. The rule order is the content: the
+    first matching rule wins, and each rule asks "can I manufacture this signal more cheaply than
+    the rung below it needs?"</p>
+<div class="code" data-lang="python">
+<span class="cm"># L51 snippet A: which post-training stage does a defect belong to?</span>
+<span class="cm"># Standard library only.</span>
+<span class="kw">def</span> route(d):
+    <span class="cm"># Rule order is the whole content of this function: earlier rules win.</span>
+    <span class="kw">if</span> d[<span class="st">"verifiable_grader"</span>]:
+        <span class="cm"># A grader you can run yourself makes a reward model unnecessary.</span>
+        <span class="kw">return</span> <span class="st">"RLVR (GRPO)"</span>, <span class="st">"symbolic grader + group baseline, one model in memory"</span>
+    <span class="kw">if</span> d[<span class="st">"reward_exploitable"</span>]:
+        <span class="cm"># Judgement/taste reward AND cheap comparisons -&gt; learn the reward, exploit it back.</span>
+        <span class="kw">return</span> <span class="st">"REWARD MODEL + PPO"</span>, <span class="st">"learned scalar reward; assume an adversarial optimiser"</span>
+    <span class="kw">if</span> d[<span class="st">"needs_world_knowledge"</span>]:
+        <span class="kw">return</span> <span class="st">"RAG / TOOLS"</span>, <span class="st">"no parameter update: the fact must be retrievable and citable"</span>
+    <span class="kw">if</span> d[<span class="st">"style_or_tradeoff"</span>]:
+        <span class="kw">return</span> <span class="st">"PREFERENCE (DPO/ORPO)"</span>, <span class="st">"pairwise prefs, no reward model, no rollout loop"</span>
+    <span class="kw">if</span> d[<span class="st">"format_or_schema"</span>] <span class="kw">or</span> d[<span class="st">"rare_domain"</span>]:
+        <span class="kw">return</span> <span class="st">"SFT"</span>, <span class="st">"expert demonstrations + loss masking + a schema unit test"</span>
+    <span class="kw">return</span> <span class="st">"ESCALATE"</span>, <span class="st">"not a post-training problem: eval, data, or system defect"</span>
+
+
+Q = [
+    (<span class="st">"answers valid JSON only 61% of the time"</span>,
+     dict(format_or_schema=<span class="kw">True</span>)),
+    (<span class="st">"answer is correct but readers call it condescending"</span>,
+     dict(style_or_tradeoff=<span class="kw">True</span>)),
+    (<span class="st">"fails multi-step arithmetic word problems"</span>,
+     dict(verifiable_grader=<span class="kw">True</span>)),
+    (<span class="st">"cites fee-schedule codes that exist only in a client PDF"</span>,
+     dict(needs_world_knowledge=<span class="kw">True</span>)),
+    (<span class="st">"confidently wrong on facts it read in pretraining"</span>,
+     dict(needs_world_knowledge=<span class="kw">True</span>)),
+    (<span class="st">"refuses safe clinical questions, over-flags benign text"</span>,
+     dict(reward_exploitable=<span class="kw">True</span>)),
+]
+KEYS = [<span class="st">"format_or_schema"</span>, <span class="st">"rare_domain"</span>, <span class="st">"style_or_tradeoff"</span>, <span class="st">"reward_exploitable"</span>,
+        <span class="st">"verifiable_grader"</span>, <span class="st">"needs_world_knowledge"</span>]
+<span class="kw">for</span> desc, flags <span class="kw">in</span> Q:
+    d = {k: <span class="kw">False</span> <span class="kw">for</span> k <span class="kw">in</span> KEYS}
+    d[<span class="st">"rare_domain"</span>] = flags.get(<span class="st">"rare_domain"</span>, <span class="kw">False</span>)
+    d.update(flags)
+    stage, why = route(d)
+    <span class="kw">print</span>(f<span class="st">"{stage:&lt;22} | {desc}\n{'':&lt;22} | {why}"</span>)
+</div><div class="code out-block" data-lang="output">
+SFT                    | answers valid JSON only 61% of the time
+                       | expert demonstrations + loss masking + a schema unit test
+PREFERENCE (DPO/ORPO)  | answer is correct but readers call it condescending
+                       | pairwise prefs, no reward model, no rollout loop
+RLVR (GRPO)            | fails multi-step arithmetic word problems
+                       | symbolic grader + group baseline, one model in memory
+RAG / TOOLS            | cites fee-schedule codes that exist only in a client PDF
+                       | no parameter update: the fact must be retrievable and citable
+RAG / TOOLS            | confidently wrong on facts it read in pretraining
+                       | no parameter update: the fact must be retrievable and citable
+REWARD MODEL + PPO     | refuses safe clinical questions, over-flags benign text
+                       | learned scalar reward; assume an adversarial optimiser
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c51-s4">4 &middot; Your hands <a class="hook" href="#c51-s4">#</a></h2>
+
+    <p>Three experiments. The first is a decision procedure you can run on your own defect list
+    today. The second shows what the KL tether actually costs and where it fails to protect you.
+    The third is the ladder in miniature.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; route your own defect list</h4>
+      <p>This is the whole page as a procedure. It is ordered: the first rule that fires wins. Run it, then change the rule order and watch which defects reclassify &mdash; that tells you which signal you actually own.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L51 snippet A: which post-training stage does a defect belong to?</span>
+<span class="cm"># Standard library only.</span>
+<span class="kw">def</span> route(d):
+    <span class="cm"># Rule order is the whole content of this function: earlier rules win.</span>
+    <span class="kw">if</span> d[<span class="st">"verifiable_grader"</span>]:
+        <span class="cm"># A grader you can run yourself makes a reward model unnecessary.</span>
+        <span class="kw">return</span> <span class="st">"RLVR (GRPO)"</span>, <span class="st">"symbolic grader + group baseline, one model in memory"</span>
+    <span class="kw">if</span> d[<span class="st">"reward_exploitable"</span>]:
+        <span class="cm"># Judgement/taste reward AND cheap comparisons -&gt; learn the reward, exploit it back.</span>
+        <span class="kw">return</span> <span class="st">"REWARD MODEL + PPO"</span>, <span class="st">"learned scalar reward; assume an adversarial optimiser"</span>
+    <span class="kw">if</span> d[<span class="st">"needs_world_knowledge"</span>]:
+        <span class="kw">return</span> <span class="st">"RAG / TOOLS"</span>, <span class="st">"no parameter update: the fact must be retrievable and citable"</span>
+    <span class="kw">if</span> d[<span class="st">"style_or_tradeoff"</span>]:
+        <span class="kw">return</span> <span class="st">"PREFERENCE (DPO/ORPO)"</span>, <span class="st">"pairwise prefs, no reward model, no rollout loop"</span>
+    <span class="kw">if</span> d[<span class="st">"format_or_schema"</span>] <span class="kw">or</span> d[<span class="st">"rare_domain"</span>]:
+        <span class="kw">return</span> <span class="st">"SFT"</span>, <span class="st">"expert demonstrations + loss masking + a schema unit test"</span>
+    <span class="kw">return</span> <span class="st">"ESCALATE"</span>, <span class="st">"not a post-training problem: eval, data, or system defect"</span>
+
+
+Q = [
+    (<span class="st">"answers valid JSON only 61% of the time"</span>,
+     dict(format_or_schema=<span class="kw">True</span>)),
+    (<span class="st">"answer is correct but readers call it condescending"</span>,
+     dict(style_or_tradeoff=<span class="kw">True</span>)),
+    (<span class="st">"fails multi-step arithmetic word problems"</span>,
+     dict(verifiable_grader=<span class="kw">True</span>)),
+    (<span class="st">"cites fee-schedule codes that exist only in a client PDF"</span>,
+     dict(needs_world_knowledge=<span class="kw">True</span>)),
+    (<span class="st">"confidently wrong on facts it read in pretraining"</span>,
+     dict(needs_world_knowledge=<span class="kw">True</span>)),
+    (<span class="st">"refuses safe clinical questions, over-flags benign text"</span>,
+     dict(reward_exploitable=<span class="kw">True</span>)),
+]
+KEYS = [<span class="st">"format_or_schema"</span>, <span class="st">"rare_domain"</span>, <span class="st">"style_or_tradeoff"</span>, <span class="st">"reward_exploitable"</span>,
+        <span class="st">"verifiable_grader"</span>, <span class="st">"needs_world_knowledge"</span>]
+<span class="kw">for</span> desc, flags <span class="kw">in</span> Q:
+    d = {k: <span class="kw">False</span> <span class="kw">for</span> k <span class="kw">in</span> KEYS}
+    d[<span class="st">"rare_domain"</span>] = flags.get(<span class="st">"rare_domain"</span>, <span class="kw">False</span>)
+    d.update(flags)
+    stage, why = route(d)
+    <span class="kw">print</span>(f<span class="st">"{stage:&lt;22} | {desc}\n{'':&lt;22} | {why}"</span>)
+</div><div class="code out-block" data-lang="output">
+SFT                    | answers valid JSON only 61% of the time
+                       | expert demonstrations + loss masking + a schema unit test
+PREFERENCE (DPO/ORPO)  | answer is correct but readers call it condescending
+                       | pairwise prefs, no reward model, no rollout loop
+RLVR (GRPO)            | fails multi-step arithmetic word problems
+                       | symbolic grader + group baseline, one model in memory
+RAG / TOOLS            | cites fee-schedule codes that exist only in a client PDF
+                       | no parameter update: the fact must be retrievable and citable
+RAG / TOOLS            | confidently wrong on facts it read in pretraining
+                       | no parameter update: the fact must be retrievable and citable
+REWARD MODEL + PPO     | refuses safe clinical questions, over-flags benign text
+                       | learned scalar reward; assume an adversarial optimiser
+</div>
+      <p class="expect">Six defects, six routes. Two land on RAG/TOOLS and none land on SFT: the two most expensive-looking defects are the two that need no training at all. Falsify the router by finding a defect it routes to SFT that a prompt fix already solves.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; what the KL tether costs</h4>
+      <p>A four-way behavioural choice, a reward that is a good-enough proxy, and a truth bracket the optimiser never sees. The exact KL-regularised optimum is computed directly, so there is no sampling noise in this experiment.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L51 snippet B: the KL leash has a price, and where that price is paid depends on the reward.</span>
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+
+<span class="kw">def</span> softmax(z):
+    z = z - z.max()
+    e = np.exp(z)
+    <span class="kw">return</span> e / e.sum()
+
+vocab      = np.array([<span class="st">"terse"</span>, <span class="st">"verbose"</span>, <span class="st">"cited"</span>, <span class="st">"rambles"</span>])
+sft_logits = np.array([<span class="nm">2.0</span>, <span class="nm">1.2</span>, <span class="nm">0.4</span>, <span class="nm">0.2</span>])      <span class="cm"># SFT checkpoint, before RL</span>
+reward     = np.array([<span class="nm">0.10</span>, <span class="nm">0.35</span>, <span class="nm">0.55</span>, <span class="nm">0.40</span>])  <span class="cm"># what the reward model pays for</span>
+truth      = np.array([<span class="nm">0.70</span>, <span class="nm">0.40</span>, <span class="nm">0.95</span>, <span class="nm">0.05</span>])  <span class="cm"># independent audit bracket, never optimised</span>
+p_ref = softmax(sft_logits)
+
+<span class="kw">def</span> pi_star(beta):
+    <span class="st">""</span><span class="st">"Exact KL-regularised optimum: pi* is proportional to p_ref * exp(r / beta)."</span><span class="st">""</span>
+    <span class="kw">return</span> softmax(np.log(p_ref) + reward / beta)
+
+<span class="kw">def</span> kl(p, q):
+    <span class="kw">return</span> float(np.sum(p * (np.log(p) - np.log(q))))
+
+<span class="kw">print</span>(f<span class="st">"{'beta':&gt;7}{'KL':&gt;8}"</span> + <span class="st">""</span>.join(f<span class="st">"{v:&gt;10}"</span> <span class="kw">for</span> v <span class="kw">in</span> vocab)
+      + f<span class="st">"{'E[reward]':&gt;11}{'E[truth]':&gt;10}"</span>)
+prev_truth = <span class="kw">None</span>
+<span class="kw">for</span> beta <span class="kw">in</span> (<span class="nm">2.0</span>, <span class="nm">1.0</span>, <span class="nm">0.5</span>, <span class="nm">0.3</span>, <span class="nm">0.2</span>, <span class="nm">0.1</span>, <span class="nm">0.05</span>, <span class="nm">0.03</span>):
+    p = pi_star(beta)
+    t = float(p @ truth)
+    mark = <span class="st">""</span>
+    <span class="kw">if</span> prev_truth <span class="kw">is</span> <span class="kw">not</span> <span class="kw">None</span> <span class="kw">and</span> t &lt; prev_truth:
+        mark = <span class="st">"  &lt;- NOW UNDER THE BASELINE"</span>
+    <span class="kw">print</span>(f<span class="st">"{beta:&gt;7.2f}{kl(p, p_ref):&gt;8.3f}"</span> + <span class="st">""</span>.join(f<span class="st">"{x:&gt;10.3f}"</span> <span class="kw">for</span> x <span class="kw">in</span> p)
+          + f<span class="st">"{float(p @ reward):&gt;11.3f}{t:&gt;10.3f}{mark}"</span>)
+    prev_truth = t
+
+<span class="kw">print</span>()
+<span class="kw">for</span> beta <span class="kw">in</span> (<span class="nm">1.0</span>, <span class="nm">0.5</span>):
+    p = pi_star(beta)
+    gain = float(p @ reward) - float(p_ref @ reward)
+    dh = float(p @ truth) - float(p_ref @ truth)
+    <span class="kw">print</span>(f<span class="st">"beta={beta}: reward {gain:+.3f} vs SFT, E[truth] {dh:+.3f}  &lt;- reward up, truth down"</span>)
+<span class="kw">print</span>()
+<span class="kw">print</span>(<span class="st">"beta is a spending rate, not a safety valve: it decides HOW MANY nats of drift you"</span>)
+<span class="kw">print</span>(<span class="st">"allow. The reward decides the direction, and it has never heard of 'rambles'."</span>)
+</div><div class="code out-block" data-lang="output">
+   beta      KL     terse   verbose     cited   rambles  E[reward]  E[truth]
+   2.00   0.003     0.512     0.261     0.129     0.098      0.253     0.590
+   1.00   0.014     0.472     0.273     0.150     0.105      0.267     0.587  &lt;- NOW UNDER THE BASELINE
+   0.50   0.058     0.394     0.292     0.196     0.119      0.297     0.584  &lt;- NOW UNDER THE BASELINE
+   0.30   0.164     0.295     0.305     0.267     0.133      0.336     0.589
+   0.20   0.356     0.191     0.300     0.367     0.142      0.383     0.609
+   0.10   1.035     0.036     0.196     0.650     0.119      0.477     0.727
+   0.05   1.849     0.001     0.038     0.924     0.038      0.537     0.895
+   0.03   2.143     0.000     0.003     0.992     0.005      0.549     0.944
+
+beta=1.0: reward +0.028 vs SFT, E[truth] -0.007  &lt;- reward up, truth down
+beta=0.5: reward +0.057 vs SFT, E[truth] -0.010  &lt;- reward up, truth down
+
+beta is a spending rate, not a safety valve: it decides HOW MANY nats of drift you
+allow. The reward decides the direction, and it has never heard of 'rambles'.
+</div>
+      <p class="expect">Compare <code>E[reward]</code> against <code>E[truth]</code> as beta falls. Reward rises monotonically. Truth does not, and the printed deltas at the end show the two regressing together: the tether priced the drift but did not choose its direction.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; price a rung before you build it</h4>
+      <p>Fill in this run card for a defect you actually own. Nothing here is a guess except your own estimates,
+      and that is the point: an estimate written before training is a prediction you can be shown wrong about.</p>
+      <div class="code" data-lang="text">
+run card (copy into your repo, one per attempt)
+  defect            : &lt;one sentence, with a frequency&gt;
+  cheapest prompt   : &lt;what a 30-minute prompt fix buys on the eval&gt;
+  owner of signal   : &lt;demonstration | pairwise label | learned scorer | program&gt;
+  proxy             : &lt;the exact function you will maximise&gt;
+  audit bracket     : &lt;the eval you will NOT optimise, run blind&gt;
+  reference         : &lt;checkpoint path + sha256&gt;
+  KL budget         : &lt;max nats before you stop&gt;
+  predicted delta   : &lt;number you expect on the bracket&gt;
+  falsifier         : &lt;result that makes you abandon the run&gt;
+      </div>
+      <p class="expect">If <code>audit bracket</code> or <code>falsifier</code> is blank, you are not ready to start the run.
+      A run you cannot falsify will confirm whatever you hoped for.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c51-s5">5 &middot; Failure modes <a class="hook" href="#c51-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Tuning instead of prompting.</strong> Symptom: an SFT run improves the eval by a few points, and the same gain is available from a system-prompt rewrite that took one afternoon. The test is cheap: build the few-shot prompt first and only train if it hits a ceiling.</li>
+        <li><strong>Skipping SFT to run preference learning on a messy base.</strong> Symptom: DPO loss decreases monotonically while format compliance falls, because the policy found a way to be "preferred" by degrading the reference behaviour it was never taught to keep.</li>
+        <li><strong>Reward model treated as ground truth.</strong> Symptom: reward climbs smoothly every checkpoint and the independently-graded eval is flat or down. This is the signature of reward hacking (lesson 75), not of a training bug.</li>
+        <li><strong>Rung chosen by fashion rather than by signal type.</strong> Symptom: weeks spent building a reward model for a task where a unit test already gives 0/1 for free, or conversely an RLVR attempt on a task with no checker at all.</li>
+        <li><strong>No stale-reference discipline.</strong> Symptom: KL to the reference rises far beyond the plateau and the model starts emitting long, confident, wrong answers &mdash; the well-known length and verbosity drift. <span class="asof">state as of 2026-10</span></li>
+        <li><strong>No audit bracket.</strong> Symptom: you cannot answer "which capability changed and by how much" when someone asks, because the only measurement in the loop was the proxy you optimised.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Before any post-training run, write down four numbers and put them in the run card:
+      (1) the proxy you will optimise, (2) the independent bracket you will <em>never</em> optimise,
+      (3) the reference checkpoint by hash, (4) the maximum KL you will accept before stopping.
+      If any of the four is missing, the run is unfalsifiable by construction.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c51-s6">6 &middot; Connects to <a class="hook" href="#c51-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="../track-a/16-loss-perplexity.html">L16 &middot; Loss &amp; perplexity</a>
+    (the token-level objective everything here reuses) and
+    <a class="tag-b" href="../track-b/41-distillation.html">L41 &middot; Distillation</a>.</p>
+    <p><strong>Unlocks:</strong> the remaining 24 lessons in this track.</p>
+
+    <ul>
+      <li><a class="tag-a" href="../track-b/50-conditioning.html">L50 &middot; Conditioning and in-context learning</a> &mdash; why the first rung is often "do nothing, change the prompt".</li>
+      <li><a class="tag-c" href="52-sft.html">L52 &middot; SFT</a> &mdash; rung 1, and the data-engineering details that decide whether it works.</li>
+      <li><a class="tag-c" href="54-preference-learning.html">L54 &middot; Preference data</a> &mdash; rung 2's raw material and its annotator bias.</li>
+      <li><a class="tag-c" href="55-dpo.html">L55 &middot; DPO</a> &mdash; the closed-form inversion of the objective on this page.</li>
+      <li><a class="tag-c" href="57-ppo.html">L57 &middot; PPO</a> &mdash; the clipped surrogate and the four-model pipeline.</li>
+      <li><a class="tag-c" href="56-grpo.html">L56 &middot; GRPO</a> &mdash; the same policy gradient, no critic.</li>
+      <li><a class="tag-c" href="63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a> &mdash; rung 4's proxy.</li>
+      <li><a class="tag-c" href="64-rlvr-vs-rlhf.html">L64 &middot; RLVR vs RLHF</a> &mdash; which rung teaches which capability.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; why every rung needs an audit bracket.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c51-s7">7 &middot; Self-check <a class="hook" href="#c51-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A defect is: the model returns JSON with a trailing comma 40% of the time. Which rung, and what is the smallest experiment that could falsify your answer?</p>
+        <details><summary>Reveal answer</summary><p>SFT (format/schema rule fires first), because the defect is a format miss and demonstrations of the exact schemaare the cheapest signal. Falsifier: a constrained-decoding or schema-validating wrapper fixes it with zero training &mdash;run that first. If grammar-constrained decoding removes the failure entirely, the correct rung is <em>no tuning</em> andpost-training would have been pure waste.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Your pair dataset says A &gt; B for 10,000 pairs. Two policies give identical rankings on all 10,000 pairs but different probability mass. Can DPO distinguish them?</p>
+        <details><summary>Reveal answer</summary><p>Only through the reference term. The DPO logit is &beta;[log(&pi;<sub>&theta;</sub>(A)/&pi;<sub>ref</sub>(A)) &minus; log(&pi;<sub>&theta;</sub>(B)/&pi;<sub>ref</sub>(B))], which depends onthe policy's probabilities, not just the ranking &mdash; so two policies with the same declared ranking but different mass <em>do</em> getdifferent losses, weighted by how far they move from the reference. What DPO cannot see is anything the pairs never compared:a behaviour C that no pair mentions is unconstrained. That is the structural gap, not the mass.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Quantitative: at &beta; = 0.5, what reward difference between two behaviours is exactly offset by a KL cost of 0.4 nats?</p>
+        <details><summary>Reveal answer</summary><p>Optimality means &Delta;reward = &beta; &middot; &Delta;KL. With &beta; = 0.5 and &Delta;KL = 0.4, &Delta;reward = 0.2. Any behaviour whose reward edgeis smaller than 0.2 cannot justify 0.4 nats of drift. That is the arithmetic behind choosing &beta;: it prices nats of drift in reward units.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: reward rises every checkpoint and the held-out graded eval is flat. Name the two hypotheses and the one measurement that separates them.</p>
+        <details><summary>Reveal answer</summary><p>(a) Reward hacking: the policy found proxy-true/truth-false outputs. (b) Eval contamination or a broken bracket: the graded evalitself is leaking or measuring the wrong thing. The separating measurement: take the checkpoint's outputs, strip any tells of style,and have a blind human or an independent model grade a fixed sample; in parallel, inspect the highest-reward outputs for proxies(length, hedging phrases, citation-like strings). If the highest-reward outputs are visibly degenerate, it is (a); if the sample grades wellbut the harness reports flat, it is (b).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does every rung in the ladder need a <em>reference</em> policy or checkpoint, and what specifically goes wrong if you delete it?</p>
+        <details><summary>Reveal answer</summary><p>Without a reference, "better" has no definition and no tether: the policy is free to satisfy the proxy by rewriting the wholebehavioural contract. Concretely, delete the KL term from PPO or the reference term from DPO and the policy drifts to degeneratehigh-proxy outputs &mdash; runaway length, sycophantic agreement, or format collapse &mdash; because those are the cheapest directions in which theproxy rises. The reference is what converts an unbounded maximisation into a trust region you can audit.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="../track-b/50-conditioning.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L50 &middot; Conditioning and in-context learning</span></a>
+    <a class="next" href="52-sft.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L52 &middot; SFT: data quality, masking, and weights</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c64">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L64 &middot; RLVR vs RLHF: what each signal can and cannot teach &mdash; AILearn</title>
+<meta name="description" content="Verifiable and learned rewards as projections of quality: a capability-boundary table, the variance/bias split, and the scale trap in mixing them.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L64</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L64 &middot; RLVR vs RLHF: what each signal can and cannot teach</h1>
+  <p class="lede">RLVR teaches what a program can check; RLHF teaches what a person can compare. Choosing one for the other's job does not give you a weaker version of the other &mdash; it gives you a policy optimised to exploit the gap.</p>
+  <div class="chips">
+    <span class="chip">~25 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: capability-boundary table</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">RLVR</span>
+  <span class="pill">RLHF</span>
+  <span class="pill">verifier coverage</span>
+  <span class="pill">learned reward</span>
+  <span class="pill">reward mixture</span>
+  <span class="pill">scale normalisation</span>
+  <span class="pill">over-refusal</span>
+  <span class="pill">projection gap</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c64-s1">1 &middot; Why it exists <a class="hook" href="#c64-s1">#</a></h2>
+
+    <p>Teams routinely ask for the wrong signal and pay for it. "Make the model more helpful" with a
+    rubric-trained judge, when the actual failure is arithmetic. "Make it safer" with an RLVR loop over
+    harmful-prompt refusals, when the actual failure is that refusals are over-triggered on safe clinical
+    text. Both fail for the same reason: <strong>the reward you can build is not the reward the task
+    requires</strong>, and choosing between RLVR and RLHF is choosing which mismatch you can live with.</p>
+
+    <p>The two signals differ in a way that is structural, not stylistic:</p>
+    <ul>
+      <li><strong>RLVR</strong> (verifiable reward) is <em>exact within its coverage</em>. If the checker accepts it,
+      the answer is right for the checkable part of the task. Outside its coverage it is silent &mdash; the reward
+      has nothing to say about clarity, safety, or style.</li>
+      <li><strong>RLHF</strong> (learned preference reward) is <em>broad but approximate</em>. It can rank anything a
+      person can rank, and it is systematically wrong wherever human preference is a proxy for something
+      you did not define.</li>
+    </ul>
+
+    <div class="callout boss">
+      <p>RLVR teaches capabilities that can be checked &mdash; computation, correctness, format, tool use.
+      RLHF teaches conventions and tradeoffs that can be compared &mdash; tone, safety, helpfulness, length.
+      Asking either to do the other's job does not produce a mediocre version of the other; it produces a
+      policy optimised to exploit the mismatch.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c64-s2">2 &middot; The mental model <a class="hook" href="#c64-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> each signal is a projection of "quality" onto a different subspace.
+    RLVR projects onto <em>verifiable correctness</em>; the kernel of that projection is "everything no program
+    checks". RLHF projects onto <em>human-preferred surface</em>; the kernel is "everything humans cannot see
+    or would not agree on".</p>
+
+    <table class="table">
+      <thead><tr><th>Capability</th><th>Can RLVR teach it?</th><th>Can RLHF teach it?</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Exact arithmetic / unit handling</td><td><strong>Yes</strong></td><td>Weakly</td><td>A checker computes the answer; annotators can too but expensively and with errors</td></tr>
+        <tr><td>Code correctness</td><td><strong>Yes</strong> (tests)</td><td>Weakly</td><td>Tests execute; humans can review but cannot run every case</td></tr>
+        <tr><td>Following a schema exactly</td><td><strong>Yes</strong></td><td>Yes</td><td>Both can judge; the verifier is cheaper and exact</td></tr>
+        <tr><td>Tool-call argument validity</td><td><strong>Yes</strong> (type check, dry run)</td><td>Weakly</td><td>Argument validity is machine-decidable</td></tr>
+        <tr><td>Refusing harmful requests</td><td>Partially</td><td><strong>Yes</strong></td><td>The class boundary is a judgement, not a program; verifiers cover only the written cases</td></tr>
+        <tr><td>Tone, concision, not being condescending</td><td>No</td><td><strong>Yes</strong></td><td>No program checks tone, and "correct" here means "acceptable to the reader"</td></tr>
+        <tr><td>Calibrated uncertainty ("I think", "I cannot tell")</td><td>Weakly</td><td>Yes</td><td>Calibration can be measured statistically, but phrasing is a preference</td></tr>
+        <tr><td>Novel reasoning routes no demonstration shows</td><td><strong>Yes</strong> (given reward variance)</td><td>Limited</td><td>RLVR explores; preference data only ranks what was generated</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "projection" gets right</h4><p>It explains behaviour you will observe
+      reproducibly: RLVR runs produce models that are better at checking, worse at tone; RLHF runs produce
+      models that are better at tone, occasionally worse at factuality because fluency correlates with
+      preference.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>The subspaces are not orthogonal. A correct answer that is
+      unparseable scores zero under RLVR and poorly under RLHF, and both are right. Real pipelines mix the
+      two signals, and the mixture weights are a product decision with its own hacking surface.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c64-s3">3 &middot; The mechanism <a class="hook" href="#c64-s3">#</a></h2>
+
+    <p>Mixed reward, with the weight as the only knob:</p>
+
+    <div class="formula">
+      R(y) = &lambda; &middot; V(y) &nbsp;+&nbsp; (1 &minus; &lambda;) &middot; RM<sub>&phi;</sub>(y)
+      <span class="note">V is a verifier (0/1 or partial), RM is a learned preference reward. &lambda; = weights how much of the objective is checkable.</span>
+    </div>
+
+    <p>Two facts about that mixture are worth knowing before touching &lambda;:</p>
+    <ul>
+      <li><strong>The variance comes from the verifier, the bias from the reward model.</strong> Increasing
+          &lambda; reduces reward-hacking surface and increases variance (and zero-variance groups). The right
+          &lambda; is the largest value that still leaves enough variance for the group baseline.</li>
+      <li><strong>The two components must be on comparable scales.</strong> A verifier in {0,1} mixed at &lambda; = 0.5
+          with a reward model in [&minus;8, +8] is a reward model with a rounding term; the mixture arithmetic is
+          silently decided by scale, not by &lambda;. Normalise both before mixing.</li>
+    </ul>
+
+    <p>The lab below constructs the capability boundary empirically: a task family where the checkable part
+    is correctness and the uncheckable part is concision. It optimises a policy under each reward and prints
+    what each signal teaches.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L64: what each signal teaches. Two rewards, one task family, same optimiser.</span>
+<span class="cm"># Task: pick a response with two properties -- (correct?, concise?). Pure stdlib.</span>
+<span class="kw">import</span> math
+
+<span class="cm"># Four behaviours: (correct, concise) -&gt; the observable outcome and the reward each signal pays.</span>
+BEHAVIOURS = {
+    <span class="st">"terse_correct"</span>:    dict(correct=<span class="nm">0.35</span>, concise=<span class="nm">1.0</span>),
+    <span class="st">"verbose_correct"</span>:  dict(correct=<span class="nm">0.75</span>, concise=<span class="nm">0.0</span>),
+    <span class="st">"terse_wrong"</span>:      dict(correct=<span class="nm">0.02</span>, concise=<span class="nm">1.0</span>),
+    <span class="st">"verbose_wrong"</span>:    dict(correct=<span class="nm">0.20</span>, concise=<span class="nm">0.0</span>),
+}
+NAMES = list(BEHAVIOURS)
+
+
+<span class="kw">def</span> verifier(b):
+    <span class="st">""</span><span class="st">"Program-checkable part only: is the final answer right?"</span><span class="st">""</span>
+    <span class="kw">return</span> BEHAVIOURS[b][<span class="st">"correct"</span>]
+
+
+<span class="kw">def</span> reward_model(b):
+    <span class="st">""</span><span class="st">"What a rater prefers: mostly correctness, but concision is visible and gets credit."</span><span class="st">""</span>
+    <span class="kw">return</span> <span class="nm">0.70</span> * BEHAVIOURS[b][<span class="st">"correct"</span>] + <span class="nm">0.30</span> * BEHAVIOURS[b][<span class="st">"concise"</span>]
+
+
+<span class="kw">def</span> softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]
+    s = sum(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+
+<span class="kw">def</span> optimise(reward_fn, steps=<span class="nm">400</span>, lr=<span class="nm">2.0</span>):
+    <span class="st">""</span><span class="st">"Direct expected-reward ascent: pi moves to put mass on the highest-reward behaviours."</span><span class="st">""</span>
+    logits = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+    r = [reward_fn(b) <span class="kw">for</span> b <span class="kw">in</span> NAMES]
+    <span class="kw">for</span> _ <span class="kw">in</span> range(steps):
+        p = softmax(logits)
+        g = [p[i] * (r[i] - sum(pi * ri <span class="kw">for</span> pi, ri <span class="kw">in</span> zip(p, r))) <span class="kw">for</span> i <span class="kw">in</span> range(<span class="nm">4</span>)]
+        logits = [zi + lr * gi <span class="kw">for</span> zi, gi <span class="kw">in</span> zip(logits, g)]
+    <span class="kw">return</span> softmax(logits)
+
+
+<span class="kw">print</span>(f<span class="st">"{'behaviour':&lt;17}{'verifier':&gt;10}{'RM':&gt;7}"</span>)
+<span class="kw">for</span> b <span class="kw">in</span> NAMES:
+    <span class="kw">print</span>(f<span class="st">"{b:&lt;17}{verifier(b):&gt;10.2f}{reward_model(b):&gt;7.2f}"</span>)
+
+<span class="kw">for</span> label, fn <span class="kw">in</span> ((<span class="st">"RLVR (verifier only)"</span>, verifier), (<span class="st">"RLHF (learned RM)"</span>, reward_model)):
+    p = optimise(fn)
+    exp_correct = sum(pi * BEHAVIOURS[b][<span class="st">"correct"</span>] <span class="kw">for</span> b, pi <span class="kw">in</span> zip(NAMES, p))
+    exp_concise = sum(pi * BEHAVIOURS[b][<span class="st">"concise"</span>] <span class="kw">for</span> b, pi <span class="kw">in</span> zip(NAMES, p))
+    top = max(zip(p, NAMES))[<span class="nm">1</span>]
+    <span class="kw">print</span>(f<span class="st">"\n{label}"</span>)
+    <span class="kw">print</span>(f<span class="st">"  learned policy -&gt; {top}  (P={max(p):.3f})"</span>)
+    <span class="kw">print</span>(f<span class="st">"  expected correctness {exp_correct:.3f}   expected concision {exp_concise:.3f}"</span>)
+
+<span class="cm"># scale trap: the mixture weight is meaningless unless the two scales match</span>
+<span class="kw">print</span>(<span class="st">"\nmixing at lambda=0.5 without normalising:"</span>)
+<span class="kw">for</span> b <span class="kw">in</span> NAMES:
+    mixed = <span class="nm">0.5</span> * verifier(b) + <span class="nm">0.5</span> * (reward_model(b) * <span class="nm">10</span> - <span class="nm">5</span>)   <span class="cm"># RM expressed on a -5..+5 scale</span>
+    <span class="kw">print</span>(f<span class="st">"  {b:&lt;17} mixed={mixed:+.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+behaviour          verifier     RM
+terse_correct          0.35   0.54
+verbose_correct        0.75   0.52
+terse_wrong            0.02   0.31
+verbose_wrong          0.20   0.14
+
+RLVR (verifier only)
+  learned policy -&gt; verbose_correct  (P=0.998)
+  expected correctness 0.749   expected concision 0.001
+
+RLHF (learned RM)
+  learned policy -&gt; terse_correct  (P=0.979)
+  expected correctness 0.357   expected concision 0.980
+
+mixing at lambda=0.5 without normalising:
+  terse_correct     mixed=+0.400
+  verbose_correct   mixed=+0.500
+  terse_wrong       mixed=-0.920
+  verbose_wrong     mixed=-1.700
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c64-s4">4 &middot; Your hands <a class="hook" href="#c64-s4">#</a></h2>
+
+    <p>Three labs: watch RLVR teach correctness and ignore form, watch RLHF teach form and pay for it in
+    correctness, and compute a mixed reward with the scales fixed.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; same task, two signals, two different models</h4>
+      <p>Four behaviours judged on two properties: is the answer right, and is it concise. The verifier sees only correctness; the reward model pays 70% for correctness and 30% for what a rater can see. Both policies are optimised exactly.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L64: what each signal teaches. Two rewards, one task family, same optimiser.</span>
+<span class="cm"># Task: pick a response with two properties -- (correct?, concise?). Pure stdlib.</span>
+<span class="kw">import</span> math
+
+<span class="cm"># Four behaviours: (correct, concise) -&gt; the observable outcome and the reward each signal pays.</span>
+BEHAVIOURS = {
+    <span class="st">"terse_correct"</span>:    dict(correct=<span class="nm">0.35</span>, concise=<span class="nm">1.0</span>),
+    <span class="st">"verbose_correct"</span>:  dict(correct=<span class="nm">0.75</span>, concise=<span class="nm">0.0</span>),
+    <span class="st">"terse_wrong"</span>:      dict(correct=<span class="nm">0.02</span>, concise=<span class="nm">1.0</span>),
+    <span class="st">"verbose_wrong"</span>:    dict(correct=<span class="nm">0.20</span>, concise=<span class="nm">0.0</span>),
+}
+NAMES = list(BEHAVIOURS)
+
+
+<span class="kw">def</span> verifier(b):
+    <span class="st">""</span><span class="st">"Program-checkable part only: is the final answer right?"</span><span class="st">""</span>
+    <span class="kw">return</span> BEHAVIOURS[b][<span class="st">"correct"</span>]
+
+
+<span class="kw">def</span> reward_model(b):
+    <span class="st">""</span><span class="st">"What a rater prefers: mostly correctness, but concision is visible and gets credit."</span><span class="st">""</span>
+    <span class="kw">return</span> <span class="nm">0.70</span> * BEHAVIOURS[b][<span class="st">"correct"</span>] + <span class="nm">0.30</span> * BEHAVIOURS[b][<span class="st">"concise"</span>]
+
+
+<span class="kw">def</span> softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]
+    s = sum(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+
+<span class="kw">def</span> optimise(reward_fn, steps=<span class="nm">400</span>, lr=<span class="nm">2.0</span>):
+    <span class="st">""</span><span class="st">"Direct expected-reward ascent: pi moves to put mass on the highest-reward behaviours."</span><span class="st">""</span>
+    logits = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+    r = [reward_fn(b) <span class="kw">for</span> b <span class="kw">in</span> NAMES]
+    <span class="kw">for</span> _ <span class="kw">in</span> range(steps):
+        p = softmax(logits)
+        g = [p[i] * (r[i] - sum(pi * ri <span class="kw">for</span> pi, ri <span class="kw">in</span> zip(p, r))) <span class="kw">for</span> i <span class="kw">in</span> range(<span class="nm">4</span>)]
+        logits = [zi + lr * gi <span class="kw">for</span> zi, gi <span class="kw">in</span> zip(logits, g)]
+    <span class="kw">return</span> softmax(logits)
+
+
+<span class="kw">print</span>(f<span class="st">"{'behaviour':&lt;17}{'verifier':&gt;10}{'RM':&gt;7}"</span>)
+<span class="kw">for</span> b <span class="kw">in</span> NAMES:
+    <span class="kw">print</span>(f<span class="st">"{b:&lt;17}{verifier(b):&gt;10.2f}{reward_model(b):&gt;7.2f}"</span>)
+
+<span class="kw">for</span> label, fn <span class="kw">in</span> ((<span class="st">"RLVR (verifier only)"</span>, verifier), (<span class="st">"RLHF (learned RM)"</span>, reward_model)):
+    p = optimise(fn)
+    exp_correct = sum(pi * BEHAVIOURS[b][<span class="st">"correct"</span>] <span class="kw">for</span> b, pi <span class="kw">in</span> zip(NAMES, p))
+    exp_concise = sum(pi * BEHAVIOURS[b][<span class="st">"concise"</span>] <span class="kw">for</span> b, pi <span class="kw">in</span> zip(NAMES, p))
+    top = max(zip(p, NAMES))[<span class="nm">1</span>]
+    <span class="kw">print</span>(f<span class="st">"\n{label}"</span>)
+    <span class="kw">print</span>(f<span class="st">"  learned policy -&gt; {top}  (P={max(p):.3f})"</span>)
+    <span class="kw">print</span>(f<span class="st">"  expected correctness {exp_correct:.3f}   expected concision {exp_concise:.3f}"</span>)
+
+<span class="cm"># scale trap: the mixture weight is meaningless unless the two scales match</span>
+<span class="kw">print</span>(<span class="st">"\nmixing at lambda=0.5 without normalising:"</span>)
+<span class="kw">for</span> b <span class="kw">in</span> NAMES:
+    mixed = <span class="nm">0.5</span> * verifier(b) + <span class="nm">0.5</span> * (reward_model(b) * <span class="nm">10</span> - <span class="nm">5</span>)   <span class="cm"># RM expressed on a -5..+5 scale</span>
+    <span class="kw">print</span>(f<span class="st">"  {b:&lt;17} mixed={mixed:+.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+behaviour          verifier     RM
+terse_correct          0.35   0.54
+verbose_correct        0.75   0.52
+terse_wrong            0.02   0.31
+verbose_wrong          0.20   0.14
+
+RLVR (verifier only)
+  learned policy -&gt; verbose_correct  (P=0.998)
+  expected correctness 0.749   expected concision 0.001
+
+RLHF (learned RM)
+  learned policy -&gt; terse_correct  (P=0.979)
+  expected correctness 0.357   expected concision 0.980
+
+mixing at lambda=0.5 without normalising:
+  terse_correct     mixed=+0.400
+  verbose_correct   mixed=+0.500
+  terse_wrong       mixed=-0.920
+  verbose_wrong     mixed=-1.700
+</div>
+      <p class="expect">RLVR lands on verbose-correct: 0.749 expected correctness, concision 0.001. RLHF lands on terse-correct: 0.357 correctness, concision 0.980. Neither is wrong under its own signal &mdash; and the gap between them IS the projection gap. If your task needs both, you need a mixture with a deliberate weight, not one signal and a hope.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the scale trap in a mixture</h4>
+      <p>The last block mixes the two signals at lambda = 0.5, with the reward model expressed on a &minus;5..+5 scale.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L64: what each signal teaches. Two rewards, one task family, same optimiser.</span>
+<span class="cm"># Task: pick a response with two properties -- (correct?, concise?). Pure stdlib.</span>
+<span class="kw">import</span> math
+
+<span class="cm"># Four behaviours: (correct, concise) -&gt; the observable outcome and the reward each signal pays.</span>
+BEHAVIOURS = {
+    <span class="st">"terse_correct"</span>:    dict(correct=<span class="nm">0.35</span>, concise=<span class="nm">1.0</span>),
+    <span class="st">"verbose_correct"</span>:  dict(correct=<span class="nm">0.75</span>, concise=<span class="nm">0.0</span>),
+    <span class="st">"terse_wrong"</span>:      dict(correct=<span class="nm">0.02</span>, concise=<span class="nm">1.0</span>),
+    <span class="st">"verbose_wrong"</span>:    dict(correct=<span class="nm">0.20</span>, concise=<span class="nm">0.0</span>),
+}
+NAMES = list(BEHAVIOURS)
+
+
+<span class="kw">def</span> verifier(b):
+    <span class="st">""</span><span class="st">"Program-checkable part only: is the final answer right?"</span><span class="st">""</span>
+    <span class="kw">return</span> BEHAVIOURS[b][<span class="st">"correct"</span>]
+
+
+<span class="kw">def</span> reward_model(b):
+    <span class="st">""</span><span class="st">"What a rater prefers: mostly correctness, but concision is visible and gets credit."</span><span class="st">""</span>
+    <span class="kw">return</span> <span class="nm">0.70</span> * BEHAVIOURS[b][<span class="st">"correct"</span>] + <span class="nm">0.30</span> * BEHAVIOURS[b][<span class="st">"concise"</span>]
+
+
+<span class="kw">def</span> softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]
+    s = sum(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+
+<span class="kw">def</span> optimise(reward_fn, steps=<span class="nm">400</span>, lr=<span class="nm">2.0</span>):
+    <span class="st">""</span><span class="st">"Direct expected-reward ascent: pi moves to put mass on the highest-reward behaviours."</span><span class="st">""</span>
+    logits = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+    r = [reward_fn(b) <span class="kw">for</span> b <span class="kw">in</span> NAMES]
+    <span class="kw">for</span> _ <span class="kw">in</span> range(steps):
+        p = softmax(logits)
+        g = [p[i] * (r[i] - sum(pi * ri <span class="kw">for</span> pi, ri <span class="kw">in</span> zip(p, r))) <span class="kw">for</span> i <span class="kw">in</span> range(<span class="nm">4</span>)]
+        logits = [zi + lr * gi <span class="kw">for</span> zi, gi <span class="kw">in</span> zip(logits, g)]
+    <span class="kw">return</span> softmax(logits)
+
+
+<span class="kw">print</span>(f<span class="st">"{'behaviour':&lt;17}{'verifier':&gt;10}{'RM':&gt;7}"</span>)
+<span class="kw">for</span> b <span class="kw">in</span> NAMES:
+    <span class="kw">print</span>(f<span class="st">"{b:&lt;17}{verifier(b):&gt;10.2f}{reward_model(b):&gt;7.2f}"</span>)
+
+<span class="kw">for</span> label, fn <span class="kw">in</span> ((<span class="st">"RLVR (verifier only)"</span>, verifier), (<span class="st">"RLHF (learned RM)"</span>, reward_model)):
+    p = optimise(fn)
+    exp_correct = sum(pi * BEHAVIOURS[b][<span class="st">"correct"</span>] <span class="kw">for</span> b, pi <span class="kw">in</span> zip(NAMES, p))
+    exp_concise = sum(pi * BEHAVIOURS[b][<span class="st">"concise"</span>] <span class="kw">for</span> b, pi <span class="kw">in</span> zip(NAMES, p))
+    top = max(zip(p, NAMES))[<span class="nm">1</span>]
+    <span class="kw">print</span>(f<span class="st">"\n{label}"</span>)
+    <span class="kw">print</span>(f<span class="st">"  learned policy -&gt; {top}  (P={max(p):.3f})"</span>)
+    <span class="kw">print</span>(f<span class="st">"  expected correctness {exp_correct:.3f}   expected concision {exp_concise:.3f}"</span>)
+
+<span class="cm"># scale trap: the mixture weight is meaningless unless the two scales match</span>
+<span class="kw">print</span>(<span class="st">"\nmixing at lambda=0.5 without normalising:"</span>)
+<span class="kw">for</span> b <span class="kw">in</span> NAMES:
+    mixed = <span class="nm">0.5</span> * verifier(b) + <span class="nm">0.5</span> * (reward_model(b) * <span class="nm">10</span> - <span class="nm">5</span>)   <span class="cm"># RM expressed on a -5..+5 scale</span>
+    <span class="kw">print</span>(f<span class="st">"  {b:&lt;17} mixed={mixed:+.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+behaviour          verifier     RM
+terse_correct          0.35   0.54
+verbose_correct        0.75   0.52
+terse_wrong            0.02   0.31
+verbose_wrong          0.20   0.14
+
+RLVR (verifier only)
+  learned policy -&gt; verbose_correct  (P=0.998)
+  expected correctness 0.749   expected concision 0.001
+
+RLHF (learned RM)
+  learned policy -&gt; terse_correct  (P=0.979)
+  expected correctness 0.357   expected concision 0.980
+
+mixing at lambda=0.5 without normalising:
+  terse_correct     mixed=+0.400
+  verbose_correct   mixed=+0.500
+  terse_wrong       mixed=-0.920
+  verbose_wrong     mixed=-1.700
+</div>
+      <p class="expect">The verifier's 0.5 contribution is dwarfed by the reward model's range, so 'lambda = 0.5' means 'about 90% reward model'. Change the lambda in the code and watch the ordering barely move. Normalise both components before mixing; the mixture arithmetic is decided by units unless you make it decided by weights.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the outside-coverage eval</h4>
+      <p>Every stage needs an eval for what its signal cannot see. This is the audit artefact that turns "we improved the model" into a claim
+      with a boundary.</p>
+      <div class="code" data-lang="text">
+stage: rlvr-arithmetic
+  signal            : exact-match verifier, 0/1
+  INSIDE coverage   : final numeric answer, unit correctness
+  OUTSIDE coverage  : explanation quality, refusal behaviour, format compliance, latency
+  outside evals run : refusal_rate_on_benign (n=500), format_compliance (n=300), mean_tokens
+  gate              : inside +&ge; 5 pts AND every outside eval within tolerance
+      </div>
+      <p class="expect">Fill this in before the run. If you cannot name the outside set, the stage will optimise into it and the report will"
+      " show only the inside number. Suspiciously uniform gains across unrelated metrics are usually a signal that the outside eval is"
+      " not measuring anything.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c64-s5">5 &middot; Failure modes <a class="hook" href="#c64-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>RLVR on a non-verifiable goal.</strong> Symptom: the verifier's coverage is a narrow slice, and the model degrades everywhere else &mdash; e.g. an exact-match reward that teaches terse answers with no explanation.</li>
+        <li><strong>RLHF on a verifiable goal.</strong> Symptom: reviewers approve answers that are subtly wrong; the model learns fluent confidence, and factuality on a held-out graded set regresses while preference accuracy improves.</li>
+        <li><strong>Scale mismatch in a mixture.</strong> Symptom: the mixture behaves identically at &lambda; = 0.1 and 0.9; one component dominates because its units are 16x larger.</li>
+        <li><strong>Verifier coverage drift.</strong> Symptom: the same checker covers fewer task variants after the task set is extended, so the reward silently becomes partly constant &mdash; zero-variance groups climb.</li>
+        <li><strong>Annotator proxy learning.</strong> Symptom: RLHF run with rubric-based pairs teaches formatting rules nobody intended, because rubric compliance is easier to see than correctness.</li>
+        <li><strong>Cross-stage asking.</strong> Symptom: an RLHF stage is used to repair a capability regression caused by an RLVR stage, without removing the RLVR reward &mdash; the two objectives fight and the checkpoint oscillates across runs.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>For every post-training stage, write down which capabilities are <em>inside</em> the signal's coverage
+      and which are outside, and add an eval for the outside set. A stage without an outside-coverage eval is
+      a stage that will optimise into the gap and report victory.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c64-s6">6 &middot; Connects to <a class="hook" href="#c64-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a>,
+    <a class="tag-c" href="58-reward-modeling.html">L58 &middot; Reward models</a>,
+    <a class="tag-c" href="54-preference-learning.html">L54 &middot; Preference data</a>.</p>
+    <p><strong>Unlocks:</strong> the recipe design for your own pipeline.</p>
+
+    <ul>
+      <li><a class="tag-c" href="62-long-cot-r1.html">L62 &middot; Long CoT</a> &mdash; the RLVR regime in full.</li>
+      <li><a class="tag-c" href="72-constitutional.html">L72 &middot; Constitutional AI</a> &mdash; rubric-driven judging for the non-verifiable side.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; the joint failure mode of both signals.</li>
+      <li><a class="tag-c" href="53-standard-pipeline.html">L53 &middot; The standard pipeline</a> &mdash; where each signal sits and which gate covers its gap.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c64-s7">7 &middot; Self-check <a class="hook" href="#c64-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does RLVR explore reasoning routes that RLHF cannot, even with the same policy and budget?</p>
+        <details><summary>Reveal answer</summary><p>RLHF's signal comes from comparisons between generated outputs, so it can only rank what the policy already produces; if abetter route to the answer is never sampled, no preference can express it. RLVR scores <em>any</em> output by running a program, soa novel route that reaches a correct answer is rewarded when it finally appears, and the variance it creates keeps thesearch alive (lesson 56).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: a verifier in {0,1} is mixed at &lambda; = 0.5 with a reward model in [&minus;8, +8]. What is the verifier's effective weight, and how do you fix it?</p>
+        <details><summary>Reveal answer</summary><p>The reward model contributes up to &plusmn;8 points while the verifier contributes 0.5, so the verifier's effective influence isunder a tenth of the range: &lambda; = 0.5 is a lie. Fix by normalising both to a common scale before mixing &mdash; e.g. z-score thereward model within a batch and keep the verifier as 0/1, then mix with a weight that actually reflects the intent.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> You want better refusals on harmful prompts. Which signal, and what is the coverage gap you must add an eval for?</p>
+        <details><summary>Reveal answer</summary><p>RLHF (or a rubric judge): the class boundary is a judgement, and a verifier covers only the harmful prompts you enumerated. Thecoverage gap is everything not in your list, and the specific risk is over-refusal on benign-but-scary-sounding prompts (clinical,security research, fiction). So the outside-coverage eval must include a large benign set with false-refusal rates, and that evalmust be reported next to the refusal rate on the harmful set.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: after a stage, exact-match accuracy is up 12 points and human ratings of helpfulness are down. Which signal was used, and what does the drop tell you?</p>
+        <details><summary>Reveal answer</summary><p>An RLVR-style signal (exact match). The drop is the projection gap: exact match is silent about everything a rater valuesbeyond correctness, so the policy co-adapted to the narrow checkable form, likely becoming terse or dropping explanations. This isnot a bug; it is the expected reduction. The fix is a mixture or a second stage, and the audit lesson is that the outside-coverageeval should have caught it before shipping.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> When should a pipeline use both signals in the same stage rather than in sequence?</p>
+        <details><summary>Reveal answer</summary><p>When the two objectives interact strongly enough that optimising one degrades the other &mdash; e.g. terse answers are easier toverify but less helpful. In sequence, the second stage partly undoes the first and you land on a compromise neither signal endorses.In one stage with a normalised mixture, the policy sees the trade off directly. The cost is a second hacking surface, so bothcomponents need their own adversarial suite.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="63-verifiable-rewards.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L63 &middot; Verifiable rewards and their limits</span></a>
+    <a class="next" href="65-self-play-dialectic.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L65 &middot; Self-play, debate, and dialectic self-improvement</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

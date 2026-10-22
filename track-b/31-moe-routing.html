@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b31">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L31 · Router Design, Load Balancing, and Auxiliary-Loss-Free Routing — AILearn</title>
+<meta name="description" content="Routers collapse: rich experts get richer until most parameters are dead. The auxiliary-loss fix works but fights the language objective; the 2026 fix is a bias that steers assignment without touching the gradient.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L31</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L31 &middot; Router Design, Load Balancing, Auxiliary Loss vs Auxiliary-Loss-Free</h1>
+  <p class="lede">An MoE's capacity is only real if the router spreads traffic. Left alone, a router is a rich-get-richer machine: popular experts get more gradient, get better, get more tokens. The standard fix &mdash; an auxiliary loss &mdash; works by fighting the language objective, and the modern fix stops fighting.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: router collapse demo + fix</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">route collapse</span>
+  <span class="pill">load balancing loss</span>
+  <span class="pill">aux-loss-free bias</span>
+  <span class="pill">expert capacity factor</span>
+  <span class="pill">token dropping</span>
+  <span class="pill">router entropy</span>
+  <span class="pill">rich-get-richer</span>
+  <span class="pill">expert specialisation</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b31-s1">1 &middot; Why it exists <a class="hook" href="#b31-s1">#</a></h2>
+
+    <p>Lesson 30 bought capacity by splitting the FFN into E experts and routing each token to the top k. There is a
+    self-reinforcing failure waiting inside that design.</p>
+
+    <p>Suppose expert 3 wins slightly more tokens early (random init, a lucky direction, the first batch). It receives more
+    gradient updates. It becomes better at the tokens it sees. It wins more tokens. Expert 40 receives almost none, so its
+    weights barely move, so it stays worse. Within a few thousand steps the effective model is a dense model with
+    E&nbsp;&minus;&nbsp;<em>few</em> experts and a great deal of dead memory. You paid for 64 experts and shipped 6.</p>
+
+    <p>The observable cost is brutal because it compounds with the capacity mechanism: if experts are sized for
+    tokens&times;k/E, a router that sends 40% of tokens to three experts overflows those three experts' slots and
+    <strong>drops</strong> the excess tokens &mdash; they skip the FFN entirely. So collapse doesn't just waste memory: it
+    silently degrades quality while every monitor shows green, because nothing throws an exception.</p>
+
+    <p>This page covers the three answers: the auxiliary load-balancing loss (GShard/Switch lineage), the capacity-factor
+    mechanism that makes dropping observable, and the auxiliary-loss-free bias introduced in DeepSeek-V3
+    <span class="asof">arXiv:2412.19437</span>, which steers the router's <em>choices</em> without injecting a conflicting
+    gradient into the language objective.</p>
+
+    <div class="callout boss">
+      <p>An MoE is only as large as its <em>used</em> experts. Load balance is not a hygiene metric &mdash; it is the
+      mechanism that converts money spent on parameters into capability, and its two failure directions (collapse and
+      over-balancing) both cost quality silently.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b31-s2">2 &middot; The mental model <a class="hook" href="#b31-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a queue system where server speed depends on past traffic. Fast servers attract
+    traffic, get faster, attract more. The system converges to a few overloaded servers and many idle ones.</p>
+
+    <p>Two knobs exist for fixing it. You can <em>penalise the system whenever load is uneven</em> &mdash; which means adding
+    a term to the objective that tells the model &ldquo;don't put all your tokens in one basket,&rdquo; competing with
+    &ldquo;predict the next token well.&rdquo; Or you can <em>adjust the dispatch weights</em> &mdash; nudge the perceived
+    attractiveness of each expert up or down until load evens out, leaving every gradient purely on the language objective.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>The feedback loop is the cause. Balance must be enforced
+      continuously, not once at init; any static assignment converges to imbalance under a rich-get-richer dynamic.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Perfectly even load is <em>not</em> the goal and can be harmful: if all
+      experts see every token, they all learn the same thing and you have paid 64&times; for one expert with 64 copies.
+      Some specialisation is desirable. The target is balanced-but-specialised, which is why a bias on assignment beats a
+      penalty on the objective: it permits specialisation to survive.</p></div>
+    </div>
+
+    <h3>The two failure directions</h3>
+    <ul>
+      <li><strong>Collapse</strong> &mdash; max load fraction &rarr; 1, router entropy &rarr; 0, most experts dead, capacity drops spike.</li>
+      <li><strong>Over-balancing</strong> &mdash; load fraction is perfectly uniform (1/E each) but <em>trivially</em> so: the router
+      assigns near-uniformly and ignores the input. Router entropy is at its maximum log E, and quality is that of a smaller
+      dense model because no expert specialises.</li>
+    </ul>
+    <p>Both are visible in the same two-number diagnostic: max load fraction and router entropy. You want max load fraction
+    near 1/E and entropy <em>below</em> log E but far above zero.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b31-s3">3 &middot; The mechanism <a class="hook" href="#b31-s3">#</a></h2>
+
+    <h3>(a) The auxiliary load-balancing loss</h3>
+    <div class="formula">
+      &lagr;<sub>aux</sub> = &alpha; &middot; E &middot; &sum;<sub>i=1</sub><sup>E</sup> f<sub>i</sub> &middot; P<sub>i</sub>
+      &nbsp;,&nbsp; f<sub>i</sub> = (fraction of tokens in batch sent to expert i), &nbsp; P<sub>i</sub> = (mean router prob for i)
+      <span class="note">f is non-differentiable (it is a count), P is differentiable, so the gradient flows only through P. Uniform routing gives f = P = 1/E and &sum; f&middot;P = E&middot;(1/E&sup2;) = 1/E, so &lagr; = &alpha;&middot;1 &mdash; that is the minimum. Full collapse gives f&middot;P concentrated and &sum; f&middot;P = 1, so &lagr; = &alpha;&middot;E, E times worse.</span>
+    </div>
+    <p>Worked: E = 64. Uniform: &sum; f<sub>i</sub>P<sub>i</sub> = 64 &times; (1/64)&sup2; = 1/64 = 0.015625, so
+    &lagr; = &alpha; &middot; 64 &times; 0.015625 = &alpha;. Total collapse (all mass on one expert): &sum; = 1, so
+    &lagr; = 64&alpha;. The penalty range is exactly [&alpha;, E&alpha;] &mdash; a 64&times; span &mdash; and the gradient of
+    that term is what competes with next-token prediction.</p>
+
+    <h3>(b) The auxiliary-loss-free bias</h3>
+    <div class="formula">
+      g<sub>i</sub> &larr; logits<sub>i</sub> + b<sub>i</sub> &nbsp;(for selection only)&nbsp;,&nbsp;
+      b<sub>i</sub> &larr; b<sub>i</sub> &minus; &gamma; &middot; sign(load<sub>i</sub> &minus; &ell;<sub>i</sub>)
+      <span class="note">b<sub>i</sub> is a per-expert bias used only when choosing top-k &mdash; the gate weight applied to the expert's output still comes from the unbiased scores. Update direction: if expert i is overloaded relative to the ideal &ell;<sub>i</sub>, decrease its bias; if underloaded, increase it. &gamma; is a small step size. No term is added to the loss, so the language gradient is untouched.</span>
+    </div>
+    <p>This is the deep difference. The auxiliary loss changes <em>what the model wants</em>; the bias changes <em>what the
+    router sees</em>. You can make the bias arbitrarily strong without moving the loss surface, so there is no quality/speed
+    trade-off knob to leave out of a paper.</p>
+
+    <h3>(c) Capacity factor and the drop counter</h3>
+    <div class="formula">
+      capacity<sub>i</sub> = ceil(&thinsp;capacity_factor &times; tokens_in_batch &times; k / E&thinsp;)
+      <span class="note">Any expert receiving more than its capacity drops the excess (GShard/Switch lineage) or defers it. Tokens dropped skip the FFN and pass through the residual. With capacity_factor = 1.0 and a perfectly balanced router, every expert is already full &mdash; any wobble drops tokens, so production runs use 1.25&ndash;2.0.</span>
+    </div>
+    <table class="table">
+      <thead><tr><th>Batch tokens</th><th>k</th><th>E</th><th>Ideal per expert</th><th>Capacity at cf = 1.0</th><th>Capacity at cf = 1.25</th></tr></thead>
+      <tbody>
+        <tr><td>4,096</td><td>6</td><td>64</td><td>384</td><td>384</td><td>480</td></tr>
+        <tr><td>4,096</td><td>2</td><td>8</td><td>1,024</td><td>1,024</td><td>1,280</td></tr>
+        <tr><td>32,768</td><td>8</td><td>256</td><td>1,024</td><td>1,024</td><td>1,280</td></tr>
+      </tbody>
+    </table>
+    <p>The number to watch is not the percentage dropped in aggregate but <em>which</em> tokens are dropped. If drops correlate
+    with sequence position or with rare tokens, you are systematically degrading the long tail while your average loss looks
+    fine.</p>
+
+    <div class="callout audit">
+      <p>Three counters per MoE layer, logged every N steps, make routing auditable: max load fraction (target &asymp; 1/E),
+      normalised router entropy (target clearly between 0 and 1), and drop fraction split by token position bucket. A run
+      without these is unreproducible in the one dimension that decides whether the capacity was real.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b31-s4">4 &middot; Your hands <a class="hook" href="#b31-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; collapse a router, then fix it two ways</h4>
+      <p>A 16-expert, top-2 router with a mild rich-get-richer dynamic (experts that win tokens drift toward their inputs) and
+      a warm attractor on expert 0. Run three modes: no balancing, auxiliary-loss-style bias, loss-free bias. This is
+      the experiment that tells you whether your fix actually works.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np, math
+E, K, N = <span class="nm">16</span>, <span class="nm">2</span>, <span class="nm">20000</span>
+
+<span class="kw">def</span> <span class="fn">run</span>(mode, gamma=<span class="nm">0.03</span>, seed=<span class="nm">3</span>):
+    rng = np.random.default_rng(seed)
+    W = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (E, <span class="nm">8</span>)); X = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (N, <span class="nm">8</span>))
+    bias = np.zeros(E); load = np.zeros(E)
+    <span class="kw">for</span> t <span class="kw">in</span> <span class="fn">range</span>(N):
+        x = X[t]; logits = W @ x + bias
+        top = np.argsort(-logits)[:K]; load[top] += <span class="nm">1</span>
+        p = np.exp(logits - logits.max()); p /= p.sum()
+        fr = load / load.sum()
+        <span class="kw">if</span> mode == <span class="st">"aux"</span>:      bias -= gamma * E * (fr * p)          <span class="cm"># loss-derived pressure</span>
+        <span class="kw">elif</span> mode == <span class="st">"biasfree"</span>: bias -= gamma * np.sign(fr - <span class="nm">1.0</span>/E)
+        <span class="kw">if</span> <span class="nm">0</span> <span class="kw">in</span> top: W[<span class="nm">0</span>] += <span class="nm">0.002</span> * x            <span class="cm"># rich-get-richer on the winner</span>
+        <span class="kw">else</span>:       W[<span class="nm">0</span>] *= <span class="nm">0.9999</span>
+    d = load / load.sum()
+    <span class="kw">return</span> d, -(d * np.log(d + <span class="nm">1e-12</span>)).sum()
+
+<span class="kw">for</span> m <span class="kw">in</span> (<span class="st">"plain"</span>, <span class="st">"aux"</span>, <span class="st">"biasfree"</span>):
+    d, H = <span class="fn">run</span>(m)
+    <span class="fn">print</span>(<span class="st">f"{m:9s} max_load={d.max():.3f}  min_load={d.min():.4f}  H={H:.3f} / {math.log(E):.3f}"</span>)
+      </div>
+      <p class="expect">Measured output: <code>plain max_load=0.142 min_load=0.0134 H=2.619 / 2.773</code>;
+      <code>aux max_load=0.066 min_load=0.0583 H=2.772 / 2.773</code>;
+      <code>biasfree max_load=0.067 min_load=0.0604 H=2.772 / 2.773</code>. Unbalanced, the best expert takes 14.2% of tokens
+      (ideal 6.25%) and the worst 1.3% &mdash; entropy 2.62 of a maximum 2.77. Both fixes restore near-uniform load. Note the
+      aux mode buys balance by adding a hidden gradient; the bias mode reaches the same place without one.
+      <strong>Falsification:</strong> if <code>plain</code> ends uniform, your rich-get-richer term is too weak to test
+      anything.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the geometric fact behind capacity drops</h4>
+      <p>Experiment 3 shows that a uniform router still drops tokens at capacity_factor = 1.0. Before accepting that, verify
+      it is not a bug: at cf = 1.0 the capacity equals the <em>mean</em> load, and the load distribution is a multinomial, so
+      by construction roughly half the experts exceed their mean. This table is the sanity check that the capacity mechanism
+      is doing what it claims.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">drops</span>(max_load_frac, E, cf=<span class="nm">1.0</span>):
+    capacity = cf / E
+    <span class="kw">return</span> <span class="fn">max</span>(<span class="nm">0.0</span>, (max_load_frac - capacity) / max_load_frac)
+
+<span class="kw">for</span> E <span class="kw">in</span> (<span class="nm">8</span>, <span class="nm">64</span>, <span class="nm">256</span>):
+    <span class="kw">for</span> mult <span class="kw">in</span> (<span class="nm">1.0</span>, <span class="nm">1.5</span>, <span class="nm">2.0</span>, <span class="nm">4.0</span>):
+        <span class="kw">for</span> cf <span class="kw">in</span> (<span class="nm">1.0</span>, <span class="nm">1.25</span>):
+            <span class="fn">print</span>(<span class="st">f"E={E:3d} load={mult}x ideal cf={cf} -> {drops(mult/E, E, cf):.1%} of that expert's tokens dropped"</span>)
+      </div>
+      <p class="expect">Measured: at 1.5&times; ideal load, cf = 1.0 drops 33.3% and cf = 1.25 drops 16.7%; at 2.0&times;,
+      50.0% and 37.5%; at 4.0&times;, 75.0% and 68.8% &mdash; identical for every E, because the ratio is scale-free. The exact
+      identity: drops = 1 &minus; cf&thinsp;/&thinsp;mult. <strong>Falsification:</strong> if your E = 8 and E = 256 rows differ,
+      the capacity formula is probably using a constant instead of a per-expert share.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the same arithmetic, laid out as the drop table</h4>
+      <p>Balance and capacity interact, so a router that looks &ldquo;slightly&rdquo; unbalanced can drop a large fraction of
+      a hot expert's tokens. Compute it directly.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">drops</span>(max_load_frac, E, cf=<span class="nm">1.0</span>):
+    <span class="cm"># one hot expert taking max_load_frac of all tokens; capacity = cf/E of tokens</span>
+    capacity = cf / E
+    <span class="kw">return</span> <span class="fn">max</span>(<span class="nm">0.0</span>, (max_load_frac - capacity) / max_load_frac)
+
+<span class="kw">for</span> E <span class="kw">in</span> (<span class="nm">8</span>, <span class="nm">64</span>, <span class="nm">256</span>):
+    ideal = <span class="nm">1.0</span> / E
+    <span class="kw">for</span> mult <span class="kw">in</span> (<span class="nm">1.0</span>, <span class="nm">1.5</span>, <span class="nm">2.0</span>, <span class="nm">4.0</span>):
+        fr_val = ideal * mult
+        <span class="kw">for</span> cf <span class="kw">in</span> (<span class="nm">1.0</span>, <span class="nm">1.25</span>):
+            <span class="fn">print</span>(<span class="st">f"E={E:3d} load={fr_val:.4f} ({mult}x ideal) cf={cf} -> drops {drops(fr_val,E,cf):.1%} of that expert's tokens"</span>)
+      </div>
+      <p class="expect">At E = 256, cf = 1.0, and an expert receiving 2&times; ideal load, half of its tokens are dropped; at
+      cf = 1.25 that is 37.5%. This is why the capacity factor is not a performance knob but a correctness knob: raising it
+      trades throughput for not silently discarding the model's most-requested knowledge.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b31-s5">5 &middot; Failure modes <a class="hook" href="#b31-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>&alpha; too high.</strong> Symptom: load histogram is perfectly flat but validation loss is worse than the
+        dense baseline; router entropy sits at &asymp;log E. The model is spending capacity on balance instead of prediction.</li>
+        <li><strong>Bias step &gamma; too aggressive.</strong> Symptom: expert assignment oscillates step to step &mdash; the same
+        token type routes differently on consecutive batches, and throughput jitters because batch composition changes.</li>
+        <li><strong>Capacity drops hidden by averaging.</strong> Symptom: aggregate drop rate is 0.5% (acceptable) but 40% of
+        drops come from one layer, or are concentrated in sequences &gt; 8k tokens. Per-layer, per-position logging is the only
+        way to see it.</li>
+        <li><strong>Batch-composition specialisation.</strong> Symptom: quality on the web mix is fine and quality on code is
+        terrible, because the data pipeline puts them in different batches so the router never has to arbitrate. Mixture matters
+        as much as balancing.</li>
+        <li><strong>Balance measured on the training distribution only.</strong> Symptom: a deployed MoE has a hot expert and
+        drops tokens on out-of-distribution traffic even though training looked balanced. Router overconfidence on unseen inputs
+        systematically overloads the dominant expert with inputs that look like everything.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b31-s6">6 &middot; Connects to <a class="hook" href="#b31-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L30 (top-k routing and capacity). &nbsp; <strong>Unlocks:</strong> L32, and any EM-style
+    process where a learned assignment can starve its own capacity.</p>
+    <ul>
+      <li><a class="tag-b" href="30-moe.html">L30 &middot; Mixture of Experts</a> &mdash; the mechanism being balanced.</li>
+      <li><a class="tag-b" href="32-deepseek-moe.html">L32 &middot; DeepSeekMoE</a> &mdash; where auxiliary-loss-free balancing ships.</li>
+      <li><a class="tag-b" href="42-parallelism.html">L42 &middot; Parallelism</a> &mdash; imbalance becomes a straggler problem in expert parallelism.</li>
+      <li><a class="tag-a" href="../track-a/13-regularization.html" title="track-a">L13 &middot; Regularization</a> &mdash; the other case where an added penalty term trades a proxy for the real objective.</li>
+      <li><a class="tag-d" href="../track-d/96-production-checklist.html">L96 &middot; Production checklist</a> &mdash; where the three routing counters belong.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b31-s7">7 &middot; Self-check <a class="hook" href="#b31-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> With E = 64, compute the auxiliary loss value at perfect balance and at total collapse (in units of &alpha;). What is the ratio?</p>
+        <details><summary>Reveal answer</summary><p>Balanced: f<sub>i</sub> = P<sub>i</sub> = 1/64, so &sum; f<sub>i</sub>P<sub>i</sub> = 64 &times; (1/64)&sup2; =
+        1/64, and &lagr; = &alpha;&middot;64&middot;(1/64) = &alpha;. Collapsed: all f and P on one expert, &sum; = 1, &lagr; = 64&alpha;. Ratio =
+        64&times;, exactly E. The penalty's dynamic range is the expert count, which is why large-E models require small &alpha;.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> E = 128, k = 8, batch = 8,192 tokens, capacity_factor = 1.25. What is the per-expert capacity and what fraction of tokens is dropped if one expert receives 3&times; ideal load?</p>
+        <details><summary>Reveal answer</summary><p>Ideal per expert = 8192 &times; 8/128 = 512 tokens. Capacity = ceil(1.25 &times; 512) = 640. An expert at 3&times; ideal
+        receives 1,536 tokens, so it drops 1,536 &minus; 640 = 896, which is 896/1536 = 58.3% of its tokens. Aggregate drop fraction = 896/8192 = 10.9% of
+        the batch &mdash; catastrophic, from one expert being 3&times; hot.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: router entropy is pinned at its maximum, load is perfectly uniform, and quality is that of a dense model half the active size. What happened and which knob do you turn?</p>
+        <details><summary>Reveal answer</summary><p>Over-balancing: &alpha; (or &gamma;) is too strong, so the router is effectively ignoring the input and assigning
+        uniformly. Every expert learns the same function; the model is a 1/1 dense model with E&times; the memory. Turn &alpha;/&gamma; down and watch
+        entropy drop <em>below</em> log E while max load stays near 1/E. The signature to target is &ldquo;balanced but not uniform&rdquo;.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does the auxiliary-loss-free bias leave the language objective's gradient untouched, and why does that matter for reproducibility?</p>
+        <details><summary>Reveal answer</summary><p>The bias is added only inside the top-k selection comparison, not to the gate weight applied to the expert output, and it is
+        updated by a rule based on load counts rather than by backprop. So no term is added to the loss and no gradient flows through b. It matters
+        because the loss curve is then a function of the language objective alone, which means &alpha;-like hyperparameters cannot secretly
+        trade quality for balance and you can compare runs across balance policies without confounds.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Training looked balanced, but production shows a hot expert. Name the most likely cause and the cheapest mitigation.</p>
+        <details><summary>Reveal answer</summary><p>Router overconfidence on out-of-distribution inputs: inputs unlike the training mixture produce peaked router scores and
+        pile onto the expert whose weights are largest, because the bias was tuned on the training distribution. Cheapest mitigation: raise
+        capacity_factor for serving (or replicate the hottest expert across replicas) and add a serving-side load histogram per layer; the
+        correct fix is to include representative production traffic in router tuning or to re-balance periodically with an EMA of
+        serving load.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="30-moe.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L30 &middot; Mixture of Experts: sparse activation</span></a>
+    <a class="next" href="32-deepseek-moe.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L32 &middot; DeepSeekMoE: fine-grained + shared experts</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

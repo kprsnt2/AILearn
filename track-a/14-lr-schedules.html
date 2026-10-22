@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a14">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L14 · Learning-Rate Schedules, Warmup, and the Spike Problem — AILearn</title>
+<meta name="description" content="Why warmup exists (Adam's unnormalised early steps), cosine vs WSD decay with measured effective step counts, and how to choose a schedule from an autumn budget instead of a paper.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <div class="icon-btn-wrap"><button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button></div>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L14</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L14 &middot; Learning-Rate Schedules, Warmup, and the Spike Problem</h1>
+  <p class="lede">The learning rate is the one hyperparameter that can ruin a run on its own, and it should never be constant: high early to move, low late to settle, and briefly near-zero at the very start because the optimizer's state is not yet trustworthy. Warmup, cosine and warmup-stable-decay are three answers to those three requirements.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: cosine vs WSD effective-step experiment</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">warmup</span>
+  <span class="pill">cosine decay</span>
+  <span class="pill">WSD (warmup-stable-decay)</span>
+  <span class="pill">loss spike</span>
+  <span class="pill">effective steps at peak LR</span>
+  <span class="pill">LR sweep</span>
+  <span class="pill">schedule-budget coupling</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a14-s1">1 &middot; Why it exists <a class="hook" href="#a14-s1">#</a></h2>
+
+    <p>Two failures make a constant learning rate a bad idea, and they point in opposite directions.</p>
+    <ul>
+      <li><strong>Too small early.</strong> At step 1 the weights are random and the gradient is a poor estimate of where
+      the loss actually goes; a tiny LR means the first 10,000 steps barely move the model. You paid for the run and got
+      the initialisation back.</li>
+      <li><strong>Too large late.</strong> Near the end of training the gradient is small and noisy; a large LR keeps
+      the parameters jittering around a good region instead of settling into it, so the final loss is strictly worse
+      than a well-decayed run.</li>
+      <li><strong>Too large at the very start.</strong> This is the subtle one, and it is specific to adaptive
+      optimisers: Adam's second-moment estimate v is a running average that has seen almost no data at step 1. If the
+      first few gradients are unusually large, v is badly underestimated for the directions that matter, and the first
+      few parameter updates are enormous. Result: a loss spike or outright divergence within the first hundred steps.</li>
+    </ul>
+
+    <div class="callout boss">
+      <p>A schedule is three decisions: <em>how</em> the LR rises, <em>how long</em> it stays at peak, and <em>how</em>
+      it decays. Cosine gives a smooth decay and ties the whole curve to the run length; WSD decouples the decay phase
+      from the stable phase, which is why it is now the default when you want to extend a run or fork checkpoints.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a14-s2">2 &middot; The mental model <a class="hook" href="#a14-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> Driving to a destination: accelerate gently (warmup), cruise at a speed you can sustain
+    (peak), then brake smoothly as you arrive (decay). Braking too early wastes the whole trip; never braking means
+    you overshoot and have to reverse.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The "destination" is not a point but a broad basin, and the LR
+    determines which basin you can reach at all &mdash; the schedule is not just arrival, it is navigation. This is why
+    a run with a bad LR can look converged and still be in the wrong region. (2) The vehicle's response to the brake is
+    not smooth: with Adam, stopping the schedule early (or extending it past its planned end) breaks the relationship
+    between "step number" and "distance remaining" that makes a schedule work at all. (3) The time constants in a real
+    model are not uniform: different weights are in different regimes, so "the" LR is really a distribution.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What warmup fixes</h4><p>The optimiser-state cold-start: for the first few hundred steps, m and v are unreliable, so the effective step size is too large and too uniform. A ramp from ~0 gives the state time to fill in.</p></div>
+      <div class="card"><h4>What decay fixes</h4><p>Final-loss quality: as gradients shrink, a constant LR adds noise proportional to LR &times; gradient scale. Decay lets the parameters settle and typically improves final val loss materially.</p></div>
+      <div class="card"><h4>What WSD fixes</h4><p>Spending: a cosine schedule must be fixed to a total step count in advance. WSD holds the peak for a long stable phase and decays only at the end, so you can choose the endpoint later &mdash; and branch a decay from an intermediate checkpoint.</p></div>
+      <div class="card"><h4>What no schedule fixes</h4><p>A wrong peak LR. A sweep is still mandatory: the schedule shapes the path, not the destination's existence.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a14-s3">3 &middot; The mechanism <a class="hook" href="#a14-s3">#</a></h2>
+
+    <div class="formula">
+      Warmup (linear): &nbsp; &eta;(t) = &eta;<sub>peak</sub> &middot; t/T<sub>warm</sub> &nbsp; for t &lt; T<sub>warm</sub><br><br>
+      Cosine decay: &nbsp; &eta;(t) = &eta;<sub>floor</sub> + (&eta;<sub>peak</sub> &minus; &eta;<sub>floor</sub>) &middot; &frac12;(1 + cos(&pi;(t &minus; T<sub>warm</sub>)/(T &minus; T<sub>warm</sub>)))<br><br>
+      WSD: &nbsp; &eta;<sub>peak</sub> for T<sub>warm</sub> &le; t &lt; T<sub>stable</sub>, then cosine to &eta;<sub>floor</sub> over the last decay fraction<br><br>
+      Effective steps at peak = (&sum;<sub>t</sub> &eta;(t)/&eta;<sub>peak</sub>)
+      <span class="note">That last sum is the honest way to compare schedules: it converts a curve into "how many full-strength steps did this run actually take". Verified below: for T = 1000, warmup 50, floor 10%, cosine gives 547.5 effective steps, WSD (decaying over the last 20%) gives 885.0, and a constant schedule gives 974.5.</span>
+    </div>
+
+    <h3>Why warmup is a variance problem, not a superstition</h3>
+    <p>Adam's bias-corrected second moment at step t estimates E[g<sup>2</sup>] with an effective sample size of
+    about 1/(1&minus;&beta;<sub>2</sub><sup>t</sup>). At t = 1 that is one sample; the estimate can be arbitrarily wrong
+    in either direction, and the update m&#770;/&radic;v&#770; is &plusmn;1 regardless. A gradient of 5.0 arriving first,
+    followed by small ones, produces a full-LR step sized for a gradient of 5.0. Ramp the LR instead, and the first few
+    hundred updates are small while the statistics fill in.</p>
+    <div class="code" data-lang="python">
+<span class="cm"># Adam's step size at t=1 vs later steps with a switching gradient &mdash; stdlib only.</span>
+<span class="kw">import</span> math
+lr, b2 = <span class="nm">1e-3</span>, <span class="nm">0.999</span>
+gs = [<span class="nm">5.0</span>] + [<span class="nm">0.01</span>] * <span class="nm">9</span>
+m = v = <span class="nm">0.0</span>
+<span class="kw">for</span> t, g <span class="kw">in</span> <span class="fn">enumerate</span>(gs, <span class="nm">1</span>):
+    m = <span class="nm">0.9</span>*m + <span class="nm">0.1</span>*g; v = b2*v + (<span class="nm">1</span>-b2)*g*g
+    mh = m/(<span class="nm">1</span>-<span class="nm">0.9</span>**t); vh = v/(<span class="nm">1</span>-b2**t)
+    <span class="fn">print</span>(<span class="st">f"t={t:2d} g={g:4.2f} update={lr*mh/(math.sqrt(vh)+1e-8):+.2e}"</span>)
+    </div>
+    <p>Verified output:</p>
+    <div class="code" data-lang="output">
+t= 1 g=5.00 update=+1.00e-03
+t= 2 g=0.01 update=+6.72e-04
+t= 3 g=0.01 update=+5.20e-04
+t= 4 g=0.01 update=+4.27e-04
+t= 5 g=0.01 update=+3.62e-04
+t= 6 g=0.01 update=+3.13e-04
+t= 7 g=0.01 update=+2.75e-04
+t= 8 g=0.01 update=+2.43e-04
+t= 9 g=0.01 update=+2.17e-04
+t=10 g=0.01 update=+1.94e-04
+    </div>
+    <p>The first step is a full <strong>1e-3</strong> &mdash; exactly lr &mdash; because m&#770; = g and v&#770; = g<sup>2</sup>
+    on one sample. But the <em>direction</em> and the <em>magnitude</em> were set by one noisy gradient. Notice the
+    second step is still 6.7&times;10<sup>-4</sup>: v has not forgotten the large gradient yet. That is the cold-start
+    window, and warmup simply refuses to take large steps through it. If the true LR for this problem were 5&times; larger,
+    all of these numbers scale up and the early transient becomes a spike.</p>
+    <p>The same arithmetic explains a related, important fact: <strong>the loss is a mean and the gradient scale therefore
+    depends on batch size and sequence length</strong>. Changing either changes the cold-start transient, which is why a
+    recipe tuned on one global batch size does not transfer to another without adjusting warmup.</p>
+
+    <h3>Comparing schedules by effective steps</h3>
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">cosine</span>(t, T, warm, peak, floor_frac=<span class="nm">0.1</span>):
+    <span class="kw">if</span> t &lt; warm: <span class="kw">return</span> peak * t / warm
+    p = (t - warm) / <span class="fn">max</span>(<span class="nm">1</span>, T - warm)
+    <span class="kw">return</span> peak * (floor_frac + (<span class="nm">1</span> - floor_frac) * <span class="nm">0.5</span> * (<span class="nm">1</span> + math.cos(math.pi * p)))
+<span class="kw">def</span> <span class="fn">wsd</span>(t, T, warm, peak, decay_frac=<span class="nm">0.2</span>, floor_frac=<span class="nm">0.1</span>):
+    <span class="kw">if</span> t &lt; warm: <span class="kw">return</span> peak * t / warm
+    stable_end = <span class="fn">int</span>(T * (<span class="nm">1</span> - decay_frac))
+    <span class="kw">if</span> t &lt; stable_end: <span class="kw">return</span> peak
+    p = (t - stable_end) / <span class="fn">max</span>(<span class="nm">1</span>, T - stable_end)
+    <span class="kw">return</span> peak * (floor_frac + (<span class="nm">1</span> - floor_frac) * <span class="nm">0.5</span> * (<span class="nm">1</span> + math.cos(math.pi * p)))
+<span class="kw">def</span> <span class="fn">const</span>(t, T, warm, peak): <span class="kw">return</span> peak <span class="kw">if</span> t &gt;= warm <span class="kw">else</span> peak * t / <span class="fn">max</span>(<span class="nm">1</span>, warm)
+T, W, P = <span class="nm">1000</span>, <span class="nm">50</span>, <span class="nm">1.0</span>
+<span class="kw">for</span> name, f <span class="kw">in</span> [(<span class="st">"cosine"</span>, cosine), (<span class="st">"WSD"</span>, wsd), (<span class="st">"constant+warmup"</span>, const)]:
+    area = <span class="fn">sum</span>(f(t, T, W, P) <span class="kw">for</span> t <span class="kw">in</span> <span class="fn">range</span>(T)) / P
+    <span class="fn">print</span>(<span class="st">f"{name:16s} effective steps = {area:7.1f}  lr@500={f(500,T,W,P):.3f} lr@950={f(950,T,W,P):.4f}"</span>)
+    </div>
+    <p>Verified output:</p>
+    <div class="code" data-lang="output">
+cosine           effective steps =   547.5  lr@500=0.587 lr@950=0.1061
+WSD              effective steps =   885.0  lr@500=1.000 lr@950=0.2318
+constant+warmup  effective steps =  974.5  lr@500=1.000 lr@950=1.0000
+    </div>
+    <p>This is the number to put in front of a budget owner. <strong>Cosine spends 55% of its peak-LR budget on the
+    decay that makes the final loss good</strong>; WSD spends 88.5%; a constant schedule spends 97.5% and ends badly.
+    Comparing two schedules at "the same number of steps" therefore compares two very different amounts of actual
+    learning. If you switch from cosine to WSD at fixed steps, you should expect the WSD run to see more high-LR
+    updates &mdash; which is an argument for re-tuning the peak LR down slightly, not for declaring one schedule
+    better from a single run.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a14-s4">4 &middot; Your hands <a class="hook" href="#a14-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Compare your schedules by effective steps, not by shape</h4>
+      <p>Before you argue about schedule, compute the integral. A schedule with an extra 300 peak-equivalent steps is
+      a materially different training run, and it should be compared as such.</p>
+      <div class="code" data-lang="bash">
+python -c "print('section-3 code: cosine 547.5, WSD 885.0, constant 974.5 at T=1000, warmup=50, floor=10%')"
+      </div>
+      <p class="expect">Observed values above. Now sweep T (2,000 and 10,000) with the same warmup and decay fraction
+      and confirm that the ratio between schedules is roughly constant while the absolute gap grows linearly with T.
+      That is why the schedule decision matters more on long runs: at 10,000 steps the cosine-vs-WSD difference is
+      about 3,375 peak-equivalent steps, i.e. thousands of steps of compute. Falsifier: if the ratios changed wildly
+      with T, your warmup or floor fraction is being interpreted as an absolute count somewhere.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Measure your own warmup requirement</h4>
+      <p>Warmup length is not a constant; it is the time for the optimiser state to stabilise, which depends on
+      &beta;<sub>1</sub>, &beta;<sub>2</sub> and the gradient noise. Measure it directly: run with warmup = 0, warmup =
+      1%, and warmup = 5% at your intended peak LR, and look for spikes or divergence in the first 500 steps.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># Diagnostic points to log every step during the first 500 steps of any run:</span>
+log = [<span class="st">"step"</span>, <span class="st">"lr"</span>, <span class="st">"loss"</span>, <span class="st">"grad_norm_preclip"</span>, <span class="st">"update_norm"</span>, <span class="st">"m_absmax"</span>, <span class="st">"v_absmax"</span>]
+<span class="fn">print</span>(<span class="st">"-&gt;"</span>, <span class="st">", "</span>.join(log))
+<span class="fn">print</span>(<span class="st">"a healthy warmup shows grad_norm_preclip and update_norm falling monotonically after the first ~50 steps"</span>)
+<span class="fn">print</span>(<span class="st">"a spike shows loss jumping >2x within the first 200 steps, then recovering: increase warmup or lower peak LR"</span>)
+      </div>
+      <p class="expect">This is a logging spec rather than an experiment, deliberately: no one else's number tells you
+      your warmup length. The falsifiable statement is <em>"at our peak LR, warmup = X% does not spike across 5 seeds"</em>.
+      If you cannot make that statement, you have not measured your warmup requirement, you have copied one.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; The LR sweep you must run before any schedule</h4>
+      <p>Schedule and peak LR are not independent: the schedule is a multiplicative envelope on the LR, so the peak must
+      be re-tuned when the envelope changes. Use a short, fixed-length run and a log sweep; look for the point where
+      loss stops improving and the point where it spikes &mdash; the sweep range you choose for the long run sits just
+      below the spike threshold.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> itertools
+<span class="kw">for</span> peak <span class="kw">in</span> [<span class="nm">3e-4</span>, <span class="nm">6e-4</span>, <span class="nm">1e-3</span>, <span class="nm">3e-3</span>, <span class="nm">6e-3</span>]:
+    <span class="fn">print</span>(<span class="st">f"run short job at peak={peak:g}: record final val loss, divergence flag, and effective steps = {peak/peak:.1f}"</span>)
+<span class="fn">print</span>(<span class="st">"decision rule: pick the largest peak for which no seed diverges, then verify at 1/3 scale of the real budget"</span>)
+    </div>
+      <p class="expect">The sweep is the only defence against the single most expensive mistake in training. Note the
+      third leg of it: a short run's optimum is usually <em>higher</em> than the long run's optimum, so verify the peak
+      at a larger budget before committing. A sweep that picks a peak from 1,000-step runs and applies it to a
+      100,000-step run is how runs die at step 8,000.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a14-s5">5 &middot; Failure modes <a class="hook" href="#a14-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Warmup too short for the peak LR.</strong> Symptom: a loss spike in the first few hundred steps, often recovering to a slightly worse final loss; only some seeds diverge. Increase warmup before lowering the peak.</li>
+        <li><strong>Schedule length mismatched to the actual number of steps.</strong> Symptom: training stops before the decay completes (final loss never settles), or the decay completes early and the last third runs at the floor with no benefit. Always compute steps from tokens &divide; (batch &times; seq_len) and assert it.</li>
+        <li><strong>Changing the total step count without re-tuning the peak.</strong> Symptom: extending a run makes the final loss worse. A longer run integrates more high-LR steps; either lower the peak or change to WSD.</li>
+        <li><strong>Resuming from a checkpoint replays the schedule from zero.</strong> Symptom: the LR jumps back to its peak, undoing the decay and destroying the checkpoint's quality. Store the step counter and reconstruct the LR from it (L20).</li>
+        <li><strong>Floor set to zero.</strong> Symptom: the last steps take zero-sized updates and waste compute; or, if the LR is restored later, a discontinuity. Keep a small non-zero floor unless the last steps are truly terminal.</li>
+        <li><strong>Gradient clipping tuned so it constantly fires.</strong> Symptom: the effective LR is suddenly much smaller than the schedule says; final loss plateaus despite a healthy-looking curve. Log pre-clip norm and its median (L04).</li>
+        <li><strong>Warmup based on steps while the batch size changes.</strong> Symptom: the same warmup "feels" different across configs, because the number of <em>tokens</em> seen during warmup changed. Warmup in tokens, not optimizer steps, if you change batch size.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a14-s6">6 &middot; Connects to <a class="hook" href="#a14-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="04-gradient-descent.html">L04</a>, <a class="tag-a" href="12-init.html">L12</a>, <a class="tag-a" href="13-regularization.html">L13</a>. &nbsp;
+    <strong>Unlocks:</strong> reproducible long runs, model-merging and checkpoint branching.</p>
+    <ul>
+      <li><a class="tag-a" href="20-training-loop.html">L20 &middot; Training loop</a> &mdash; where the schedule, the step counter and optimizer state must agree after a resume.</li>
+      <li><a class="tag-a" href="15-batching-seqpack.html">L15 &middot; Batching</a> &mdash; steps = tokens &divide; (batch &times; seq_len); padding and packing change the token count per step and therefore the schedule's real length.</li>
+      <li><a class="tag-a" href="16-loss-perplexity.html">L16 &middot; Loss &amp; perplexity</a> &mdash; spikes are visible in loss, but the token-level breakdown is what tells you whether the spike was numerical or data-driven.</li>
+      <li><a class="tag-b" href="../track-b/26-scaling-laws.html">L26 &middot; Scaling laws</a> &mdash; schedule and budget interact in the scaling exponent; you cannot compare runs with different schedules and claim a scaling law.</li>
+      <li><a class="tag-b" href="../track-b/43-training-cost.html">L43 &middot; Training cost</a> &mdash; effective steps are a cost unit: a schedule spends compute proportional to its integral.</li>
+      <li><a class="tag-c" href="../track-c/53-standard-pipeline.html">L53 &middot; Standard pipeline</a> &mdash; post-training uses much shorter schedules with different constants; do not reuse pretraining warmup.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: log <code>(step, tokens_seen, lr)</code> on every step and store the schedule function's parameters
+      with the checkpoint. "Same loss at step K" is only meaningful if <code>tokens_seen</code> and <code>lr</code>
+      match; two runs can share a step count and have seen different amounts of data.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a14-s7">7 &middot; Self-check <a class="hook" href="#a14-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does a very large gradient as the <em>first</em> observed gradient make warmup necessary for Adam specifically?</p>
+        <details><summary>Reveal answer</summary><p>Because Adam's normaliser is a running average of squared gradients. At t=1, v&#770; = g<sup>2</sup>, so the update is exactly lr &mdash; the largest step the optimiser can ever take, in a direction determined by a single sample. For a plain SGD the step is lr&middot;g, which also scales with g, but Adam's is scale-free by construction: it will take a full-lr step no matter how small or large the gradient is, at a moment when it has no evidence about the gradient scale. That is why the decay-target problem is shared but the cold-start problem is Adam-specific.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Cosine over 1,000 steps with 50 warmup and a 10% floor has 547.5 effective steps at peak. How many effective steps does it have if you halve the floor to 5%?</p>
+        <details><summary>Reveal answer</summary><p>Over the remaining T &minus; T<sub>warm</sub> = 950 steps, a cosine from 1 down to floor f integrates to (T &minus; T<sub>warm</sub>)&middot;(1 + f)/2 because the average of (1 + cos)/2 over a full period is 1/2. With f = 0.1: 950 &times; 0.55 = 522.5, plus the warmup triangle 50/2 = 25 &rarr; <strong>547.5</strong>, which matches the verified output exactly. With f = 0.05: 950 &times; 0.525 = 498.75 + 25 = <strong>523.75</strong>. A lower floor spends <em>less</em> high-LR compute, so the schedule is "gentler"; a higher floor spends more. That formula is the whole comparison tool.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a run at 2,000 steps converges cleanly; the same recipe at 20,000 steps diverges around step 4,000. What changed?</p>
+        <details><summary>Reveal answer</summary><p>The schedule now holds a high LR for a much longer fraction of the run in absolute terms, so it integrates more peak-equivalent steps (roughly 10&times;) and passes through more of the training distribution before decaying. Either (a) the peak is too high for the longer horizon (a longer run needs a slightly lower peak or WSD), (b) the data curriculum reaches a harder phase at that point (domain shift), or (c) an unrelated numerical issue such as a rare large activation in the longer segment. Diagnose in that order: check the loss/grad-norm log at the divergence point, and rerun with warmup and peak lowered before touching anything else.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why can WSD save you money on a scheduled compute allocation, in a way cosine cannot?</p>
+        <details><summary>Reveal answer</summary><p>Cosine's LR curve is a function of T, the final step count: to get the benefit you must decide T before the run starts. WSD holds peak LR through a long stable phase and decays only at the end, so a run that is extended, stopped early, or forked produces a usable model after a short decay from any checkpoint &mdash; you do not have to commit to T up front. The measurable cost is that the stable phase integrates more high-LR steps, so the peak may need retuning.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> You halve the global batch size but keep the step count and schedule identical. What happens to warmup and to the effective number of tokens seen?</p>
+        <details><summary>Reveal answer</summary><p>Warmup is now over half as many tokens (steps &times; batch), so the optimiser state has seen less data when the peak LR is reached &mdash; the cold-start transient is worse. Separately, the whole run sees half the tokens, which changes what "converged" means. The schedule cannot be held fixed: if you keep tokens constant, you need twice as many steps and a proportionally longer warmup in steps; if you keep steps constant, you are training on half the data and the result is not comparable.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="13-regularization.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L13 &middot; Overfitting &amp; dropout</span></a>
+    <a class="next" href="15-batching-seqpack.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L15 &middot; Batching, padding, packing</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

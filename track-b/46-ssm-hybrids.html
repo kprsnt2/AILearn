@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b46">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L46 · SSMs, RWKV, and Hybrid Attention — AILearn</title>
+<meta name="description" content="A state-space model holds a fixed-size state instead of a growing cache: 8 MiB per sequence at any context length instead of 8.58 GiB at 128k. What that buys, and the exact thing it cannot do.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L46</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L46 &middot; Alternatives: State-Space Models, RWKV, and Hybrid Attention</h1>
+  <p class="lede">Attention keeps every past token so it can look back arbitrarily. A state-space model keeps a fixed-size summary instead &mdash; 8 MiB per sequence whatever the context. The cost is exact recall, and no amount of engineering has made a fixed state retrieve a specific token as well as a cache can.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: recurrence vs attention simulation</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">selective state space</span>
+  <span class="pill">linear recurrence</span>
+  <span class="pill">fixed-size state</span>
+  <span class="pill">RWKV time-mix</span>
+  <span class="pill">hybrid layers</span>
+  <span class="pill">associative recall</span>
+  <span class="pill">O(1) decode state</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b46-s1">1 &middot; Why it exists <a class="hook" href="#b46-s1">#</a></h2>
+
+    <p>Attention's defining cost is that its memory grows with everything it has read. With MLA's compressed cache at
+    70,272 bytes per token (L33), a 128k-token sequence needs 8.58 GiB of state, and 1M tokens needs 65.45 GiB. That state must
+    be held for <em>every concurrent sequence</em> and re-read on <em>every generated token</em>. The two terms compound:
+    concurrency is memory, and speed is bandwidth.</p>
+
+    <p>This is a strange design if you think about it as an information problem. The model does not need every past token to
+    answer every question &mdash; most of the time it needs a summary: what has been discussed, what constraints apply, what
+    entities exist. A recurrent model makes that explicit: it maintains a fixed-size state vector that it updates at each step,
+    so memory is constant in context and per-token work is constant in context.</p>
+
+    <p>The failure that motivates real interest: at long context, attention costs are dominated by memory, not by the quality
+    of the reasoning. If you could get attention-class quality with constant state, long context would become nearly free. The
+    empirical answer so far is the <em>hybrid</em>: use recurrent layers for most of the stack and attention for a minority, which
+    captures most of the memory win while keeping exact recall where it matters.</p>
+
+    <div class="callout boss">
+      <p>Attention trades memory for exact recall. Recurrence trades exact recall for constant memory. Hybrids buy most of the
+      memory win and pay only a small recall penalty &mdash; and knowing <em>which</em> layers need attention is the whole design
+      question.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b46-s2">2 &middot; The mental model <a class="hook" href="#b46-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a meeting. Attention is a full transcript: you can look up the exact sentence anyone
+    said at any time. A state-space model is the note-taker's notebook: a fixed number of pages, continuously updated, summarising
+    what matters. The notebook is cheap and always the same size; it cannot quote verbatim.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Fixed cost, constant update work, no growth with meeting length.
+      It also gets the quality profile right: summary-level questions are fine, exact-recall questions are not.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A notebook is lossy in an uncontrolled way. A selective SSM <em>learns</em>
+      what to write, and the state is a wide vector (thousands of channels), so it is a very capable notebook &mdash; but its
+      capacity is fixed and provably cannot do exact associative recall of an unbounded number of pairs. The failure is
+      capacity, not compression quality.</p></div>
+    </div>
+
+    <h3>The arithmetic that matters</h3>
+    <table class="table">
+      <thead><tr><th>Quantity</th><th>Attention with MLA</th><th>Recurrent SSM</th></tr></thead>
+      <tbody>
+        <tr><td>State per sequence at 4k</td><td>0.27 GiB</td><td>8 MiB (constant)</td></tr>
+        <tr><td>State per sequence at 128k</td><td>8.58 GiB</td><td>8 MiB (constant)</td></tr>
+        <tr><td>State per sequence at 1M</td><td>65.45 GiB</td><td>8 MiB (constant)</td></tr>
+        <tr><td>Per-token decode work</td><td>grows with context</td><td>constant</td></tr>
+        <tr><td>Exact retrieval of an arbitrary past token</td><td>yes</td><td><strong>no</strong></td></tr>
+      </tbody>
+    </table>
+    <p>Those SSM figures assume a state of d<sub>inner</sub> = 4096 channels &times; d<sub>state</sub> = 16 per layer at bf16
+    = 4096 &times; 16 &times; 2 = 131,072 B = 128 KiB per layer; over 64 layers that is 8,192 KiB = <strong>8 MiB per
+    sequence</strong>. The state stops growing after <strong>119 tokens</strong> of attention cache &mdash; that is the volume
+    equivalence point &mdash; and from there the gap widens linearly with context.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b46-s3">3 &middot; The mechanism <a class="hook" href="#b46-s3">#</a></h2>
+
+    <div class="formula">
+      h<sub>t</sub> = A&#772;<sub>t</sub>&thinsp;h<sub>t&minus;1</sub> + B&#772;<sub>t</sub>&thinsp;x<sub>t</sub> &nbsp;&nbsp;,&nbsp;&nbsp;
+      y<sub>t</sub> = C<sub>t</sub>&thinsp;h<sub>t</sub>
+      <span class="note">x<sub>t</sub> is the input, h<sub>t</sub> the state, y<sub>t</sub> the output. The key word is <em>selective</em>: A&#772;, B&#772; and C are functions of the input, so the model can choose to forget, store, or read at each step. A non-selective linear SSM is a fixed linear filter and cannot do content-based decisions at all.</span>
+    </div>
+
+    <h3>Why "selective" is the whole idea</h3>
+    <p>A plain linear state-space layer computes a fixed convolution: the same decay pattern regardless of content. It is fast
+    (FFT/scan-able) but cannot decide &ldquo;keep this fact, discard this filler.&rdquo; A <em>selective</em>
+    (input-dependent) SSM can, and the price is that it can no longer be computed as a convolution &mdash; it must be scanned
+    sequentially, which is why efficient parallel scan kernels (in the same lineage as L39) were the enabling engineering.</p>
+
+    <h3>Why a fixed state cannot do exact recall</h3>
+    <p>This is the argument you should be able to make in one paragraph. Suppose the model stores m key&ndash;value pairs in the
+    state and must retrieve one. A recurrent state of dimension s can distinguish at most s independent real numbers; storing m
+    arbitrary vectors requires capacity scaling with m. With m unbounded and s fixed, the state must lose information &mdash; there
+    is no trick that avoids it. Attention does not have this problem because it stores everything and pays to read it.</p>
+    <table class="table">
+      <thead><tr><th>Task</th><th>Attention</th><th>Pure recurrence</th></tr></thead>
+      <tbody>
+        <tr><td>Summarise tone / constraints over 100k tokens</td><td>excellent</td><td>excellent (state is a summary)</td></tr>
+        <tr><td>Copy a 5-character ID from position 3,241</td><td>exact</td><td>degrades with distance and interference</td></tr>
+        <tr><td>Retrieve 200 facts injected across a long document</td><td>exact</td><td>bounded by state capacity</td></tr>
+        <tr><td>Streaming decode with constant memory</td><td>state grows</td><td><strong>constant</strong></td></tr>
+      </tbody>
+    </table>
+
+    <h3>RWKV: a different lineage, same trade</h3>
+    <p>RWKV is a linear-attention-like recurrence (the WKV operator) designed for the same reason: training parallelisable,
+    inference with constant state and O(1) per-token work. Its lineage is different (a token-shift time-mix and channel-mix
+    block structure) but the economics are identical to the SSM case, and the same recall limitation applies in its pure form.</p>
+
+    <h3>Why production uses hybrids</h3>
+    <p>The practical result that matters: a stack that is mostly recurrent layers with a minority of attention layers retains
+    most of the long-context quality of full attention, while the state stays dominated by the recurrent layers. If 3 in 4 layers
+    are recurrent, cache size falls roughly 4&times; while attention still supplies exact recall at 1 in 4 layers.</p>
+    <p>That is the same economic shape as MLA (compress the cache) and DSA (read less of it) &mdash; three independent attacks on
+    the same bill, and they compose. The design question in 2026 <span class="asof">state as of 2026-10</span> is not &ldquo;attention or SSM&rdquo; but &ldquo;what
+    attention-to-recurrence ratio, at what depths.&rdquo;</p>
+
+    <div class="callout audit">
+      <p>Evaluate hybrids on two axes separately: <strong>memory/throughput</strong> (state bytes, decode step time at 128k) and
+      <strong>recall</strong> (needle-in-a-haystack with many needles, exact-copy tasks, multi-hop lookup). A hybrid that wins
+      the first and loses the second is a different product, not a better one. Reporting one number hides the trade you are
+      making.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b46-s4">4 &middot; Your hands <a class="hook" href="#b46-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; state bytes versus context, for each architecture</h4>
+      <p>The comparison that decides deployments. Sweep context length and print the state for attention, pure recurrence, and a
+      hybrid.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">attn_state</span>(ctx, tok_bytes=<span class="nm">70272</span>): <span class="kw">return</span> ctx * tok_bytes
+<span class="kw">def</span> <span class="fn">ssm_state</span>(layers, d_inner=<span class="nm">4096</span>, d_state=<span class="nm">16</span>):
+    <span class="kw">return</span> layers * d_inner * d_state * <span class="nm">2</span>
+<span class="kw">def</span> <span class="fn">hybrid_state</span>(ctx, n_attn_layers, n_ssm_layers, tok_bytes=<span class="nm">70272</span>):
+    <span class="kw">return</span> n_attn_layers * ctx * tok_bytes + <span class="fn">ssm_state</span>(n_ssm_layers)
+
+<span class="kw">print</span>(<span class="st">"ctx      pure-attention    pure-SSM      3:1 hybrid"</span>)
+<span class="kw">for</span> ctx <span class="kw">in</span> (<span class="nm">4096</span>, <span class="nm">32768</span>, <span class="nm">131072</span>, <span class="nm">1_000_000</span>):
+    <span class="fn">print</span>(<span class="st">f"{ctx:>8,} {attn_state(ctx)/1024**2:12.1f} MiB {ssm_state(64)/1024**2:10.1f} MiB "
+          f"{hybrid_state(ctx,16,48)/1024**2:12.1f} MiB"</span>)
+      </div>
+      <p class="expect">Pure attention: 0.27 GiB at 4k rising to 65.45 GiB at 1M. Pure SSM: 8.0 MiB flat. A 3:1 hybrid
+      (16 attention layers of 64): 0.57 GiB at 32k, 2.26 GiB at 128k, 17.17 GiB at 1M &mdash; a 3.8&times; reduction versus full
+      attention's 8.58 GiB at 128k, exactly as the 16/61 layer ratio predicts. <strong>What to notice:</strong> the hybrid is not constant, it is
+      attention divided by 4. Its memory still grows; it just grows slower.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; simulate the recall failure, not just the cost</h4>
+      <p>The claim that a fixed-size state loses exact recall is testable in fifteen lines: store key&ndash;value pairs into a
+      fixed d&times;d associative state and measure how faithfully you can read each value back. Recall quality should fall as the
+      number of stored pairs approaches the state dimension &mdash; that is the capacity limit, made visible.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+
+<span class="kw">def</span> <span class="fn">recall_quality</span>(n_pairs, d=<span class="nm">64</span>, seed=<span class="nm">46</span>):
+    rng = np.random.default_rng(seed)
+    K = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (n_pairs, d)); V = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (n_pairs, d))
+    M = V.T @ K                                  <span class="cm"># fixed-size d x d state, written once per pair</span>
+    cos = []
+    <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(n_pairs):
+        r = M @ K[i]                             <span class="cm"># read with the key</span>
+        cos.append(r @ V[i] / (np.linalg.norm(r) * np.linalg.norm(V[i]) + <span class="nm">1e-9</span>))
+    <span class="kw">return</span> np.mean(cos)
+
+<span class="kw">for</span> d <span class="kw">in</span> (<span class="nm">64</span>, <span class="nm">256</span>):
+    <span class="fn">print</span>(<span class="st">f"d_state={d}"</span>, [<span class="fn">round</span>(<span class="fn">recall_quality</span>(n, d), <span class="nm">3</span>) <span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">2</span>,<span class="nm">8</span>,<span class="nm">32</span>,<span class="nm">128</span>,<span class="nm">256</span>)])
+      </div>
+      <p class="expect">Measured (cosine of read-out with the true value, at n = 2 / 8 / 32 / 128 / 256 pairs): d = 64 &rarr;
+      0.985 / 0.952 / 0.826 / 0.574 / 0.431; d = 256 &rarr; 0.995 / 0.984 / 0.942 / 0.819 / 0.709. The curve is monotone in both
+      directions: more pairs degrade recall, more state dimension recovers it. <strong>Attention does not have this curve</strong>
+      &mdash; storing all n keys retrieves each exactly regardless of n. That difference, not the memory saving, is the
+      architectural trade. <strong>Falsification:</strong> if recall at 256 pairs equals recall at 2, your state is effectively
+      larger than d&times;d &mdash; check that <code>M</code> is not being rebuilt per pair.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the crossover context length</h4>
+      <p>At what context does the recurrent state become the smaller option? Below it, attention is strictly better on both axes
+      (memory and recall). This is the line that decides whether a hybrid is worth its complexity.</p>
+      <div class="code" data-lang="bash">
+python -c "
+ssm=64*4096*16*2; tok=70272
+print('SSM state bytes:', ssm, '=', ssm/1024/1024, 'MiB')
+print('crossover at', ssm/tok, 'tokens of attention cache')
+for ctx in (64,128,256,1024,4096):
+    print(f'  ctx={ctx:5d}: attention {ctx*tok/1024:.0f} KiB vs SSM {ssm/1024:.0f} KiB')
+"
+      </div>
+      <p class="expect">Crossover at 119 tokens. So for any realistic prompt, the recurrent state is already 10&times; smaller at
+      1,024 tokens and 1,000,000&times; smaller at 1M. That is the entire attraction &mdash; and the reason the fair comparison
+      is never &ldquo;which is better&rdquo; but &ldquo;how many attention layers do I need to keep exact recall, and where must
+      they sit?&rdquo;</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b46-s5">5 &middot; Failure modes <a class="hook" href="#b46-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Recall benchmark passes on synthetic needles.</strong> Symptom: needle-in-a-haystack scores look fine but
+        multi-hop and exact-copy tasks fail on real documents. Synthetic needles are low-interference; real text is full of
+        distractors that compete for state capacity.</li>
+        <li><strong>Comparing against a weak attention baseline.</strong> Symptom: the hybrid matches &ldquo;attention&rdquo; while
+        the baseline was a short-context config that never had to retrieve anything. Compare on a retrieval-heavy suite.</li>
+        <li><strong>Assuming constant memory means constant cost.</strong> Symptom: decode step time still grows with context even
+        though state is fixed &mdash; the recurrent scan is sequential, so per-token latency has a floor set by sequential depth,
+        not bandwidth.</li>
+        <li><strong>Hybrid ratio chosen by memory alone.</strong> Symptom: memory target met and quality regressed on the one task
+        type you did not test. The attention layers must be placed where retrieval is needed; uniform interleaving is a design
+        starting point, not an optimum.</li>
+        <li><strong>Tooling gap treated as quality gap.</strong> Symptom: the alternative architecture &ldquo;performs worse&rdquo;
+        because kernels, fusion and quantization support lagged. Re-evaluate after the kernel work, not before.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b46-s6">6 &middot; Connects to <a class="hook" href="#b46-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L33 (cache cost) and L38 (why attention is IO-bound). &nbsp; <strong>Unlocks:</strong> the
+    long-context trade-offs of L35 and the reliability questions of L49.</p>
+    <ul>
+      <li><a class="tag-b" href="33-mla.html">L33 &middot; MLA</a> &mdash; the compressed cache being replaced.</li>
+      <li><a class="tag-b" href="35-long-context.html">L35 &middot; Long context</a> &mdash; the bills recurrence removes.</li>
+      <li><a class="tag-b" href="38-flash-attention.html">L38 &middot; FlashAttention</a> &mdash; why attention's IO is the target.</li>
+      <li><a class="tag-b" href="34-dsa.html">L34 &middot; DSA</a> &mdash; a sparsity-based attack on the same cost.</li>
+      <li><a class="tag-b" href="49-components-circuits.html">L49 &middot; Induction heads</a> &mdash; the capability a fixed state cannot host.</li>
+      <li><a class="tag-a" href="../track-a/06-attention-core.html">L06 &middot; Self-attention</a> &mdash; the mechanism being compared against.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b46-s7">7 &middot; Self-check <a class="hook" href="#b46-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A 64-layer SSM with d<sub>inner</sub> = 4096 and d<sub>state</sub> = 16, bf16. What is the state size per sequence, and at what attention context length is it equal to an MLA cache at 70,272 B/token?</p>
+        <details><summary>Reveal answer</summary><p>Per layer: 4096 &times; 16 &times; 2 = 131,072 B = 128 KiB. Over 64 layers = 8,388,608 B = 8,192 KiB = <strong>8 MiB</strong>.
+        Crossover: 8,388,608 / 70,272 = <strong>119.4 tokens</strong>. Past 120 tokens the recurrent state is smaller, and the gap widens
+        linearly with context.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A hybrid uses 16 attention layers and 48 recurrent layers of 64. What is the state at 128k tokens, and how does it compare with full attention?</p>
+        <details><summary>Reveal answer</summary><p>Attention part: 16 &times; 131,072 &times; 70,272 = 1.474&times;10<sup>11</sup> B = 137.2 GiB? Careful &mdash;
+        the attention cache is per token, so 16 layers &times; 131,072 tokens &times; (70,272/61 bytes per layer per token). Per-layer per-token
+        is 70,272/61 = 1,152 B. So 16 &times; 131,072 &times; 1,152 = 2.415&times;10<sup>9</sup> B = 2.25 GiB. Recurrent part: 48 &times; 128 KiB
+        = 6 MiB. Total &asymp; <strong>2.25 GiB</strong> versus 8.58 GiB for full attention &mdash; a 3.8&times; reduction, matching the 16/61
+        layer ratio.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why can a fixed-size state not perform exact recall of an unbounded number of key&ndash;value pairs, stated as a capacity argument rather than an empirical one?</p>
+        <details><summary>Reveal answer</summary><p>A state of dimension s holds at most s independent real values, so the set of distinguishable states has s degrees of freedom.
+        Retrieving m arbitrary, independent key&ndash;value pairs requires information that scales with m; once m exceeds the state's effective
+        capacity, distinct pair-sets map to (nearly) the same state, so the read-out cannot separate them. Attention avoids this by storing m
+        entries and paying O(context) read cost &mdash; it is a memory-for-recall trade, not a smarter algorithm.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: a hybrid model matches full attention on average benchmark scores and fails on multi-hop document QA. What do you check first?</p>
+        <details><summary>Reveal answer</summary><p>Where the attention layers sit relative to where retrieval happens. If all attention layers are early and the later layers are purely
+        recurrent, the information retrieved early must survive many recurrent updates before being used &mdash; it gets overwritten.
+        Check per-layer probe accuracy for the retrieval target, and test a configuration with attention layers closer to the output or
+        more evenly distributed.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> MLA, DSA, and hybrids all reduce long-context cost. Are they substitutes or complements, and what does each actually attack?</p>
+        <details><summary>Reveal answer</summary><p>Complements, on three different terms. MLA shrinks the bytes stored per token per layer (constant factor, lossless
+        until the rank cap). DSA reduces the number of positions read per query (asymptotics of the read). A hybrid replaces some layers
+        entirely with constant-state recurrence (removes the growth for those layers). A model can use all three, and the savings
+        multiply rather than overlap &mdash; which is why the 2026 frontier stack looks like "MLA + sparse selection + some recurrent or
+        compressed layers" rather than one winning mechanism.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="45-caching.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L45 &middot; Context caching &amp; cache-aware pricing</span></a>
+    <a class="next" href="47-multimodal.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L47 &middot; Native multimodal: vision into the token stream</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

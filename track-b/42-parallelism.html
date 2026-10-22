@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b42">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L42 · Parallelism: DP, TP, PP, EP, ZeRO/FSDP, Comms Math — AILearn</title>
+<meta name="description" content="A 671B model does not fit anywhere, so every training run is a partition decision. Four parallel axes, their exact communication costs, and how to pick a configuration that does not waste 60% of the machine.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L42</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L42 &middot; Parallelism: DP, TP, PP, EP, ZeRO/FSDP, and the Comms Math</h1>
+  <p class="lede">Parallelism is not &ldquo;use more GPUs&rdquo; &mdash; it is a partitioning problem where every choice has a bill measured in gigabytes per step. Naive pipeline parallelism with 32 stages and 8 microbatches wastes 79.5% of the cluster; the arithmetic that tells you so fits on one line.</p>
+  <div class="chips">
+    <span class="chip">~32 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: pick a parallel config for a given job</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">data parallelism</span>
+  <span class="pill">tensor parallelism</span>
+  <span class="pill">pipeline parallelism</span>
+  <span class="pill">expert parallelism</span>
+  <span class="pill">ZeRO / FSDP</span>
+  <span class="pill">all-reduce bytes</span>
+  <span class="pill">pipeline bubble</span>
+  <span class="pill">activation memory</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b42-s1">1 &middot; Why it exists <a class="hook" href="#b42-s1">#</a></h2>
+
+    <p>A 671B-parameter model in bf16 is 671&times;10<sup>9</sup> &times; 2 = 1.342&times;10<sup>12</sup> B = 1,249.8 GiB.
+    Mixed-precision AdamW training also stores gradients (another 1,249.8 GiB in bf16) and optimizer state &mdash; two fp32
+    moments plus an fp32 master copy, conventionally 12 bytes per parameter = 7,499.0 GiB. Add activations and the total is well
+    over <strong>11 TiB</strong> before a single forward pass. No accelerator holds that. <span class="asof">state as of 2026-10</span> Nothing about a modern model fits
+    anywhere, which is why parallelism is the discipline this track has been walking toward.</p>
+
+    <p>The failure that forces real engineering is not &ldquo;it does not fit&rdquo; &mdash; it is that the naive fixes each
+    destroy something:</p>
+    <ul>
+      <li><strong>Pure data parallelism</strong> replicates the whole model on every GPU (redundant weights) and all-reduces
+      gradients, which requires one full copy of the model to exist per device anyway. Useless above ~10B.</li>
+      <li><strong>Tensor parallelism</strong> splits each matmul across GPUs and adds an all-reduce <em>inside every layer</em>.
+      Communication volume scales with model size and latency sits on the critical path &mdash; fine within one NVLink domain,
+      painful across nodes.</li>
+      <li><strong>Pipeline parallelism</strong> splits layers across GPUs and introduces idle time (the bubble) proportional to
+      stage count.</li>
+      <li><strong>Expert parallelism</strong> (the MoE-specific axis) scatters experts across GPUs and pays an all-to-all per
+      block.</li>
+    </ul>
+    <p>The practical question is never &ldquo;which one&rdquo; &mdash; it is <strong>which combination, for this model, on this
+    interconnect</strong>. And every combination can be scored before you launch.</p>
+
+    <div class="callout boss">
+      <p>Parallelism spends bandwidth to buy memory. Every configuration is a trade with a computable price in GB-per-step
+      and idle-percent, and the wrong choice silently burns 40&ndash;80% of a multi-million-dollar cluster.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b42-s2">2 &middot; The mental model <a class="hook" href="#b42-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> printing a huge document on many machines. Split by <em>copies</em> (data parallel:
+    each machine prints a different batch of pages &mdash; but each needs the whole document), by <em>chapters</em> (pipeline:
+    machines pass pages downstream and sometimes wait), by <em>columns of each page</em> (tensor: everyone works on every page and
+    must synchronise constantly), or by <em>topic</em> (expert: pages go to whichever machine specialises).</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Each strategy splits a different axis, and each has an
+      unavoidable synchronisation cost. Mixing them is how real runs work: split chapters with pipeline, columns with tensor,
+      batches with data.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>In printing, waiting is cheap. Here the synchronisation is a collective over
+      the fastest interconnect, and the cost depends on <em>topology</em> (NVLink inside a node vs InfiniBand across nodes). The
+      same split that is free within a node can be catastrophic across one.</p></div>
+    </div>
+
+    <h3>The four axes and what each splits</h3>
+    <table class="table">
+      <thead><tr><th>Axis</th><th>Splits</th><th>Comm pattern</th><th>Scales with</th></tr></thead>
+      <tbody>
+        <tr><td>Data (DP)</td><td>The batch</td><td>all-reduce of gradients, once per step</td><td>model size</td></tr>
+        <tr><td>Tensor (TP)</td><td>Each weight matrix's columns/rows</td><td>all-reduce inside every layer</td><td>activations &times; layers</td></tr>
+        <tr><td>Pipeline (PP)</td><td>Blocks of layers</td><td>point-to-point activations between stages</td><td>activations &times; stages</td></tr>
+        <tr><td>Expert (EP)</td><td>Which experts live where</td><td>all-to-all per MoE layer</td><td>tokens &times; k &times; d</td></tr>
+      </tbody>
+    </table>
+    <p>And ZeRO/FSDP is a refinement of DP: instead of replicating optimizer state, gradients and weights, it <em>shards</em>
+    them across the DP group and gathers what it needs just in time. That converts DP from a memory-duplicating scheme into a
+    memory-saving one, at the cost of more communication.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b42-s3">3 &middot; The mechanism <a class="hook" href="#b42-s3">#</a></h2>
+
+    <h3>Memory, sharded three ways</h3>
+    <p>For N parameters with bf16 weights (2N), bf16 gradients (2N) and Adam state (12N), a DP group of size D:</p>
+    <div class="formula">
+      ZeRO-1: 2N + 2N + 12N/D &nbsp;|&nbsp; ZeRO-2: 2N + (2N + 12N)/D &nbsp;|&nbsp; ZeRO-3 (FSDP): (2N + 2N + 12N)/D
+      <span class="note">ZeRO-1 shards only optimizer state, ZeRO-2 also gradients, ZeRO-3 also parameters. Only ZeRO-3 makes per-device memory scale as 1/D for everything, which is what lets a model larger than a single GPU's memory be trained with plain data parallelism.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>DP size D</th><th>ZeRO-1</th><th>ZeRO-2</th><th>ZeRO-3 / FSDP</th></tr></thead>
+      <tbody>
+        <tr><td>8</td><td>3,437.0 GiB</td><td>2,343.4 GiB</td><td>1,249.8 GiB</td></tr>
+        <tr><td>64</td><td>2,616.8 GiB</td><td>1,386.5 GiB</td><td><strong>156.2 GiB</strong></td></tr>
+        <tr><td>512</td><td>2,514.3 GiB</td><td>1,266.9 GiB</td><td><strong>19.5 GiB</strong></td></tr>
+        <tr><td>1,024</td><td>2,507.0 GiB</td><td>1,258.4 GiB</td><td><strong>9.8 GiB</strong></td></tr>
+      </tbody>
+    </table>
+
+    <p>Read the columns, not the rows. ZeRO-1 and ZeRO-2 <em>cannot</em> fit this model at any DP size &mdash; they asymptote to
+    2,500 GiB and 1,258 GiB because weights and gradients stay replicated. Only ZeRO-3 gets you to 9.8 GiB/device. That is why
+    FSDP is the default for anything above a few billion parameters in ordinary distributed training.</p>
+
+    <h3>Tensor parallelism: the all-reduce bill</h3>
+    <p>A ring all-reduce moves 2N(S&minus;1)/S bytes for N total bytes and S ranks &mdash; roughly 2N for large S. Per training
+    step, TP must synchronise gradients; the volume is the <em>whole model</em>:</p>
+    <div class="formula">
+      bytes<sub>TP</sub> = 2 &times; N<sub>params</sub> &times; 2&nbsp;bytes &times; (S&minus;1)/S &nbsp;&asymp;&nbsp; 4N
+      <span class="note">For 671B parameters at bf16 and S = 8: 2 &times; 671&times;10<sup>9</sup> &times; 2 &times; 7/8 = 2,348.5 GB moved per optimizer step. At an effective 300 GB/s per link that is 7.8 s of pure communication per step, against a step time of maybe 20&ndash;40 s. TP is not free even at S = 8.</span>
+    </div>
+    <p>This is the single most important number for choosing TP degree: <strong>2.35 TB per step</strong>. It is why TP is
+    confined within a node (NVLink class bandwidth) and crossed with PP or DP rather than extended across an InfiniBand fabric
+    where the same 2.35 TB would take an order of magnitude longer.</p>
+
+    <h3>Pipeline parallelism: the bubble</h3>
+    <div class="formula">
+      bubble = (P &minus; 1) / (M + P &minus; 1)
+      <span class="note">P = number of pipeline stages, M = number of microbatches in flight. Every stage must wait at the start and end of the step while the pipeline fills and drains. The formula is for the standard 1F1B schedule; interleaved schedules improve the constant but not the asymptotic.</span>
+    </div>
+    <table class="table">
+      <thead><tr><th>Microbatches M</th><th>P = 8</th><th>P = 16</th><th>P = 32</th></tr></thead>
+      <tbody>
+        <tr><td>8</td><td>46.7%</td><td>65.2%</td><td><strong>79.5%</strong></td></tr>
+        <tr><td>16</td><td>30.4%</td><td>48.4%</td><td>66.0%</td></tr>
+        <tr><td>32</td><td>17.9%</td><td>31.9%</td><td>49.2%</td></tr>
+        <tr><td>64</td><td>9.9%</td><td>19.0%</td><td>32.6%</td></tr>
+        <tr><td>128</td><td><strong>5.2%</strong></td><td>10.5%</td><td>19.5%</td></tr>
+      </tbody>
+    </table>
+    <p>The trap is that P = 32 with M = 8 wastes 79.5% of the cluster &mdash; you rented 32 stages' worth of GPUs and got 20% of
+    the throughput. To make 32 stages worthwhile you need M &ge; 64&ndash;128 microbatches, which in turn means the global batch
+    must be large enough to split that finely, which constrains the learning-rate schedule (L14). This is why pipeline depth and
+    batch size are chosen together, never independently.</p>
+
+    <h3>Expert parallelism: an all-to-all per block</h3>
+    <p>Each MoE layer moves every token to the GPUs holding its top-k experts and back: k &times; d<sub>model</sub> &times; 2
+    bytes per token, twice. At d = 7,168 and k = 6: 6 &times; 7,168 &times; 2 = 86,016 B &rarr; 84.0 KiB per token per layer
+    (112.0 KiB at k = 8). For a 4,096-token batch across 61 layers that is 4,096 &times; 84 &times; 1,024 &times; 61 &asymp; 21.5 GB
+    of all-to-all per forward pass, per direction. EP is unavoidable for large MoE but it makes the network fabric, not the
+    GPUs, the binding resource.</p>
+
+    <h3>Activation memory: the constraint nobody budgets for</h3>
+    <p>Activations are the reason batch size is small at long sequence lengths. Per token per layer a transformer stores several
+    d<sub>model</sub>-sized tensors in bf16; at d = 7,168 a rough count of four such tensors is
+    2 (bf16) &times; 7,168 &times; 4 = 57,344 B per token per layer. Across 61 layers that is
+    57,344 &times; 61 &asymp; 3.5 MB per token. A batch of 4,096 tokens &times; 4,096 sequence = 16.8M tokens &rarr;
+    <strong>~58.5 TB of activations</strong> without gradient checkpointing.</p>
+    <p>That number is why gradient checkpointing (recompute in backward, trading ~33% extra FLOPs for a large memory
+    reduction) and sequence parallelism are mandatory, and why the practical batch size is usually set by activation memory
+    rather than by optimizer preference.</p>
+
+    <div class="callout audit">
+      <p>The auditable artifact for a parallel config is a table with five rows: per-device memory by component (weights /
+      grads / optimizer / activations), TP all-reduce bytes, PP bubble %, EP all-to-all bytes, and expected MFU. Any config
+      proposal without the bubble and comms numbers is a guess dressed as a plan.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b42-s4">4 &middot; Your hands <a class="hook" href="#b42-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the config picker</h4>
+      <p>Given model size, GPUs, and a memory-per-device budget, this reports which ZeRO stage could work and what the PP bubble
+      would be. Run it before ordering hardware.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">cfg</span>(N, D, M=8, P=8):
+    gib = <span class="nm">1024</span>**<span class="nm">3</span>
+    w = <span class="nm">2</span>*N; g = <span class="nm">2</span>*N; o = <span class="nm">12</span>*N
+    z1 = (w + g + o/D)/gib; z2 = (w + (g+o)/D)/gib; z3 = (w + g + o)/D/gib
+    bubble = (P - <span class="nm">1</span>)/(M + P - <span class="nm">1</span>)
+    <span class="kw">return</span> z1, z2, z3, bubble
+
+<span class="kw">for</span> D <span class="kw">in</span> (<span class="nm">8</span>, <span class="nm">64</span>, <span class="nm">512</span>, <span class="nm">1024</span>):
+    z1, z2, z3, b = <span class="fn">cfg</span>(<span class="nm">671e9</span>, D, M=<span class="nm">32</span>, P=<span class="nm">8</span>)
+    <span class="fn">print</span>(<span class="st">f"D={D:5d}  ZeRO1={z1:8.1f}  ZeRO2={z2:8.1f}  ZeRO3={z3:7.1f} GiB/device  bubble(M=32,P=8)={b:.1%}"</span>)
+      </div>
+      <p class="expect">Measured: D = 8 &rarr; 3,437.0 / 2,343.4 / 1,249.8 GiB; D = 64 &rarr; 2,616.8 / 1,386.5 / 156.2;
+      D = 512 &rarr; 2,514.3 / 1,266.9 / 19.5; D = 1024 &rarr; 2,507.0 / 1,258.4 / 9.8. Conclusion for a 671B model: only
+      ZeRO-3 works, and only at D &ge; 64 does it come close to fitting an 80 GB device. <strong>Falsification:</strong> if
+      ZeRO-1 shows scaling with D in your output, the optimizer-state term is missing.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the bubble sweep you should run before choosing PP</h4>
+      <p>Pipeline depth is chosen to fill GPUs, so the temptation is always to go bigger. This sweep shows why that is usually
+      wrong.</p>
+      <div class="code" data-lang="bash">
+python -c "
+for M in (8,16,32,64,128):
+    row=[(P-1)/(M+P-1) for P in (8,16,32)]
+    print(f'M={M:3d}: ' + '  '.join(f'P={P}:{b:6.1%}' for P,b in zip((8,16,32),row)))
+"
+      </div>
+      <p class="expect">M = 8: 46.7% / 65.2% / 79.5%. M = 128: 5.2% / 10.5% / 19.5%. The rule that falls out: <strong>M should be
+      at least 4&times; P</strong> before the bubble is tolerable; at M/P=4 the bubble is (P&minus;1)/(5P&minus;1) &asymp; 20%
+      regardless of P. If your global batch cannot be split into that many microbatches, use fewer stages &mdash; a shallower
+      pipeline with a full batch beats a deep pipeline that idles.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; is TP feasible on this interconnect?</h4>
+      <p>Compare the TP all-reduce time against the compute time per step. If comms exceed ~20% of compute, the TP degree is too
+      high for the fabric.</p>
+      <div class="code" data-lang="python">
+N, bits = <span class="nm">671e9</span>, <span class="nm">16</span>
+<span class="kw">for</span> S, bw in [(<span class="nm">8</span>, <span class="nm">300e9</span>), (<span class="nm">8</span>, <span class="nm">50e9</span>), (<span class="nm">16</span>, <span class="nm">300e9</span>)]:
+    bytes_moved = <span class="nm">2</span> * N * bits/<span class="nm">8</span> * (S-<span class="nm">1</span>)/S
+    t = bytes_moved / bw
+    <span class="fn">print</span>(<span class="st">f"TP={S} bw={bw/1e9:.0f} GB/s: {bytes_moved/1e9:,.0f} GB per step = {t:.2f} s"</span>)
+      </div>
+      <p class="expect">TP = 8 on a 300 GB/s fabric: 2,348.5 GB &rarr; 7.83 s per step. The same degree on a 50 GB/s fabric:
+      47 s &mdash; larger than the compute time, making TP useless. TP = 16 at 300 GB/s: 2,516.2 GB &rarr; 8.39 s, barely worse than
+      TP = 8, so extending TP past the NVLink domain of 8 GPUs buys almost nothing. That is why TP degrees are essentially always
+      8 (or ≤ the NVLink domain size).</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b42-s5">5 &middot; Failure modes <a class="hook" href="#b42-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Bubble too large.</strong> Symptom: MFU of 20&ndash;30% while GPU memory is comfortable; the run is slower than a
+        shallower configuration on fewer GPUs. Compute the bubble before launch, and prefer more DP over more PP.</li>
+        <li><strong>TP across a slow fabric.</strong> Symptom: step time grows superlinearly with TP degree; NCCL all-reduce time
+        dominates the profile. Keep TP inside one NVLink domain; use PP or EP across nodes.</li>
+        <li><strong>Activation blowup at long sequence.</strong> Symptom: OOM at a batch size that worked at half the sequence
+        length, in a run where the <em>parameters</em> have not changed. Activations scale with batch&times;sequence; add gradient
+        checkpointing or sequence parallelism before increasing PP.</li>
+        <li><strong>EP stragglers.</strong> Symptom: all-to-all completes but per-rank compute times vary widely, so the collective
+        is dominated by the slowest expert-parallel rank. Combine EP with a balanced router (L31).</li>
+        <li><strong>Config chosen for memory, not throughput.</strong> Symptom: the model fits and every GPU is at 35% utilisation.
+        Memory fit is a constraint, not an objective &mdash; sweep (TP, PP, M) against measured step time.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b42-s6">6 &middot; Connects to <a class="hook" href="#b42-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L21 (GPU memory), L39 (comm patterns), L30 (where EP comes from). &nbsp;
+    <strong>Unlocks:</strong> the cost model in L43 and serving parallelism in L44.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; memory hierarchy and interconnect.</li>
+      <li><a class="tag-b" href="30-moe.html">L30 &middot; MoE</a> &mdash; why expert parallelism exists at all.</li>
+      <li><a class="tag-b" href="43-training-cost.html">L43 &middot; Training cost modeling</a> &mdash; turns this config into dollars and MFU.</li>
+      <li><a class="tag-a" href="../track-a/20-training-loop.html">L20 &middot; Training loop</a> &mdash; activation checkpointing and grad accumulation.</li>
+      <li><a class="tag-b" href="44-inference-serving.html">L44 &middot; Serving</a> &mdash; prefill/decode disaggregation, a different problem.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b42-s7">7 &middot; Self-check <a class="hook" href="#b42-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A 671B model, bf16, AdamW. At DP size 64, what is per-device memory under ZeRO-3, and what is the dominant term?</p>
+        <details><summary>Reveal answer</summary><p>Total bytes = (2 + 2 + 12) &times; 671&times;10<sup>9</sup> = 1.0736&times;10<sup>13</sup> B = 9,998.7 GiB.
+        Divided by 64 = <strong>156.2 GiB</strong>. The dominant term is optimizer state: 12N of the 16N total, i.e. 75% &mdash; which is
+        why ZeRO-1 (sharding only optimizer state) is the cheapest useful first step for models that otherwise fit.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Pipeline with P = 16 stages and M = 16 microbatches. What fraction of the cluster is idle, and how many microbatches would you need for a 10% bubble?</p>
+        <details><summary>Reveal answer</summary><p>Bubble = (16&minus;1)/(16+16&minus;1) = 15/31 = <strong>48.4%</strong>. For a 10% bubble: (P&minus;1)/(M+P&minus;1) = 0.10
+        &rArr; 15 = 0.1(M+15) &rArr; M + 15 = 150 &rArr; M = <strong>135</strong> microbatches. That is 8.4&times; the stage count and
+        constrains the global batch accordingly &mdash; a real, often unnoticed cost of deep pipelines.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> TP = 8 on a 671B model. How many bytes does the gradient all-reduce move per step, and what does that imply about which fabric it must run on?</p>
+        <details><summary>Reveal answer</summary><p>2 &times; 671&times;10<sup>9</sup> &times; 2 B &times; 7/8 = 2.3485&times;10<sup>12</sup> B &asymp; 2.35 TB per step. At
+        300 GB/s that is 7.83 s; at 50 GB/s, 47 s. So TP must live inside an NVLink-class domain &mdash; on InfiniBand the communication would
+        exceed realistic step time and destroy throughput.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: step time grows 3&times; when you double the sequence length, while FLOPs should only double. Name two causes specific to parallelism.</p>
+        <details><summary>Reveal answer</summary><p>(a) Activation memory forced a smaller batch and therefore fewer microbatches in flight, increasing the pipeline bubble;
+        (b) sequence-parallel collectives (attention all-gather/reduce-scatter) grow with sequence length and, if TP is used, the per-layer
+        all-reduce volume grows too. Both are communication effects that raw FLOP accounting misses &mdash; always profile comms separately.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is pure DP unsuitable for a 671B model even on 512 GPUs, and which single change fixes it?</p>
+        <details><summary>Reveal answer</summary><p>Pure DP replicates weights, gradients and optimizer state on every device: 16N = 1.0736&times;10<sup>13</sup> B
+        = 9,998.7 GiB per device regardless of how many GPUs you have. Nothing fits. The single change is FSDP/ZeRO-3, which shards all three and
+        reduces per-device memory to 19.5 GiB at D = 512 &mdash; a 512&times; reduction &mdash; at the cost of an extra all-gather per layer
+        in the forward and backward pass.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="41-distillation.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L41 &middot; Distillation: teacher&rarr;student</span></a>
+    <a class="next" href="43-training-cost.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L43 &middot; Training cost modeling: FLOPs, MFU, $ per run</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

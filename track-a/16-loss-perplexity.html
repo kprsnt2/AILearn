@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a16">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L16 · Cross-Entropy, Perplexity, Bits-per-Byte — AILearn</title>
+<meta name="description" content="Compute the language-model objective by hand from logits, convert between nats, bits and perplexity, and see why perplexity is only comparable at fixed tokenizer while bits-per-byte is comparable across all of them.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L16</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L16 &middot; Cross-Entropy, Perplexity, Bits-per-Byte</h1>
+  <p class="lede">Every training run optimises one scalar, and every model comparison quotes a number derived from it. Getting the units wrong &mdash; nats versus bits, token versus byte, mean versus sum &mdash; produces comparisons that are off by large factors and look perfectly plausible. This page makes the conversions explicit and checks them numerically.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: compute PPL from logits by hand</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">cross-entropy</span>
+  <span class="pill">perplexity</span>
+  <span class="pill">nats vs bits</span>
+  <span class="pill">bits-per-byte</span>
+  <span class="pill">log-sum-exp</span>
+  <span class="pill">mean vs sum normalisation</span>
+  <span class="pill">tokenizer-dependent PPL</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a16-s1">1 &middot; Why it exists <a class="hook" href="#a16-s1">#</a></h2>
+
+    <p>Next-token prediction is a classification problem over a vocabulary of V tokens at every position. The natural
+    loss is negative log-likelihood of the correct token: you want the model to assign high probability to what actually
+    came next. That is cross-entropy, and it is the only objective a base language model is trained on. But the raw
+    number is opaque: is 1.5 good? Compared to what? Perplexity (e<sup>loss</sup>) gives a rough reading &mdash;
+    "the model is as uncertain as if choosing uniformly among this many tokens" &mdash; which is why it is quoted in
+    papers and then misquoted in vendor comparisons.</p>
+
+    <p>The failure this page is built to prevent is real and expensive: <strong>two models with different tokenizers
+    report perplexities that cannot be compared</strong>, but the numbers look comparable because they are both
+    "perplexity". A model with a larger vocabulary has fewer tokens to predict, so its per-token perplexity is naturally
+    higher (or lower, depending on the exact trade) and no amount of careful reading of the datasheet will fix it.
+    Bits-per-byte normalises to the underlying text and is comparable across tokenizers &mdash; that is the unit you
+    should insist on.</p>
+
+    <div class="callout boss">
+      <p>Three numbers, one objective: cross-entropy in nats/token (the training loss), perplexity = exp(that),
+      and bits-per-byte = nats/token &times; tokens/byte / ln2. Only the third can compare models with different
+      tokenizers, and it is the one to put in a vendor decision.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a16-s2">2 &middot; The mental model <a class="hook" href="#a16-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> Cross-entropy is the price of a bet: the model buys probability mass on the correct
+    token, and the loss is &minus;ln(probability it assigned). Assign 1.0 to the truth and pay nothing; assign 0.1 and
+    pay 2.30 nats. Perplexity is that price converted into "how many equally likely options did you effectively leave
+    open". Bits-per-byte converts it into "how many bits does it cost you per character of the original text", which is
+    a property of the <em>language and model</em>, not of the tokenizer.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The bet is not scored on one guess: the loss is the average over
+    every token, and the average hides the distribution. A model with low average loss can be confidently wrong on the
+    cases you care about, and the average will not show it &mdash; which is why task evals exist alongside perplexity.
+    (2) Perplexity is not "the number of options": it equals the number of options only for a uniform distribution.
+    A skewed distribution with perplexity 10 is one where the model has 10 options in a geometric-mean sense. (3)
+    Bits-per-byte compares tokenizers only if you compute it on the <em>same bytes</em>; compare on different corpora
+    and you have re-introduced the problem in a different unit.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>The three units</h4><p>nats/token = training loss. bits/token = nats/ln2. perplexity = e<sup>nats/token</sup>. bits/byte = bits/token &divide; bytes/token.</p></div>
+      <div class="card"><h4>The baseline to remember</h4><p>A uniform predictor over V tokens has loss ln V. For V = 50,257 that is 10.82 nats and perplexity 50,257. Any model worth deploying must be far below its own ln V &mdash; and a model with a bigger vocabulary starts from a higher baseline.</p></div>
+      <div class="card"><h4>The normalisation trap</h4><p>Loss must be the <em>mean</em> over predicting tokens. Summing instead of averaging scales the gradient by the number of tokens &mdash; a 4096&times; effective LR change at seq_len 4096. This is the most common loss bug in a hand-written loop.</p></div>
+      <div class="card"><h4>The numerical trap</h4><p>Always compute the loss via log-sum-exp on shifted logits. Computing exp first overflows for logits above ~709 in float64 (and far earlier in fp16), and the overflow silently produces inf or NaN rather than a large-but-correct loss.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a16-s3">3 &middot; The mechanism <a class="hook" href="#a16-s3">#</a></h2>
+
+    <div class="formula">
+      p<sub>i</sub> = softmax(z)<sub>i</sub> = e<sup>z<sub>i</sub></sup> / &sum;<sub>j</sub>e<sup>z<sub>j</sub></sup><br>
+      &ell; = &minus;ln p<sub>target</sub> = &minus;(z<sub>target</sub> &minus; logsumexp(z)), &nbsp; logsumexp(z) = max(z) + ln&sum;<sub>j</sub>e<sup>z<sub>j</sub> &minus; max(z)</sup><br>
+      L = (1/T) &sum;<sub>t</sub> &ell;<sub>t</sub> &nbsp;&nbsp;(mean over predicting tokens)<br>
+      PPL = e<sup>L</sup> &nbsp;&middot;&nbsp; bits/token = L/ln2 &nbsp;&middot;&nbsp; bits/byte = L/(ln2 &times; bytes/token)<br>
+      Baseline: z = 0 &nbsp;&rArr;&nbsp; p<sub>i</sub> = 1/V &nbsp;&rArr;&nbsp; &ell; = ln V
+      <span class="note">The max-subtraction in logsumexp is exact (it cancels) and it is what makes the computation stable. Note the shape of the gradient: d&ell;/dz = softmax(z) &minus; onehot(target), derived in L03. That single line is the entire backward pass of the output head.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># Cross-entropy, perplexity and bits-per-byte from logits &mdash; stdlib only, runs as-is.</span>
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">softmax</span>(z):
+    m = <span class="fn">max</span>(z); e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]; s = <span class="fn">sum</span>(e); <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+<span class="kw">def</span> <span class="fn">logsumexp</span>(z):
+    m = <span class="fn">max</span>(z); <span class="kw">return</span> m + math.log(<span class="fn">sum</span>(math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z))
+logits = [<span class="nm">2.0</span>, <span class="nm">0.5</span>, -<span class="nm">1.0</span>, <span class="nm">3.0</span>]      <span class="cm"># a 4-token vocabulary</span>
+target = <span class="nm">1</span>
+p = <span class="fn">softmax</span>(logits)
+nll = -math.log(p[target])
+<span class="fn">print</span>(<span class="st">"probs:"</span>, [<span class="fn">round</span>(v, <span class="nm">5</span>) <span class="kw">for</span> v <span class="kw">in</span> p])
+<span class="fn">print</span>(<span class="st">"p(target) ="</span>, <span class="fn">round</span>(p[target], <span class="nm">5</span>), <span class="st">" nll ="</span>, <span class="fn">round</span>(nll, <span class="nm">5</span>), <span class="st">" bits ="</span>, <span class="fn">round</span>(nll / math.log(<span class="nm">2</span>), <span class="nm">5</span>))
+<span class="fn">print</span>(<span class="st">"stable form -&gt; -(z_t - lse) ="</span>, <span class="fn">round</span>(-(logits[target] - <span class="fn">logsumexp</span>(logits)), <span class="nm">5</span>))
+batch = [([<span class="nm">2.0</span>, <span class="nm">0.5</span>, -<span class="nm">1.0</span>, <span class="nm">3.0</span>], <span class="nm">1</span>), ([<span class="nm">0.1</span>, <span class="nm">0.2</span>, <span class="nm">3.0</span>, <span class="nm">0.0</span>], <span class="nm">2</span>), ([<span class="nm">1.0</span>, <span class="nm">1.0</span>, <span class="nm">1.0</span>, <span class="nm">1.0</span>], <span class="nm">0</span>)]
+losses = [-math.log(<span class="fn">softmax</span>(l)[t]) <span class="kw">for</span> l, t <span class="kw">in</span> batch]
+mean = <span class="fn">sum</span>(losses) / <span class="fn">len</span>(losses)
+<span class="fn">print</span>(<span class="st">"per-token nll:"</span>, [<span class="fn">round</span>(v, <span class="nm">5</span>) <span class="kw">for</span> v <span class="kw">in</span> losses], <span class="st">"mean:"</span>, <span class="fn">round</span>(mean, <span class="nm">5</span>))
+<span class="fn">print</span>(<span class="st">"perplexity:"</span>, <span class="fn">round</span>(math.exp(mean), <span class="nm">4</span>), <span class="st">" bits/token:"</span>, <span class="fn">round</span>(mean / math.log(<span class="nm">2</span>), <span class="nm">4</span>))
+<span class="kw">def</span> <span class="fn">bpB</span>(nll_nats_per_token, bytes_per_token):
+    <span class="kw">return</span> nll_nats_per_token / (math.log(<span class="nm">2</span>) * bytes_per_token)
+<span class="kw">for</span> name, nll <span class="kw">in</span> [(<span class="st">"uniform V=50k"</span>, math.log(<span class="nm">50000</span>)), (<span class="st">"2.0 nats/token"</span>, <span class="nm">2.0</span>), (<span class="st">"1.5 nats/token"</span>, <span class="nm">1.5</span>)]:
+    <span class="fn">print</span>(<span class="st">f"{name:18s}: {bpB(nll, 4.3):.3f} bits/byte at 4.3 bytes/token"</span>)
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+probs: [0.25055, 0.05591, 0.01247, 0.68107]
+p(target) = 0.05591  nll = 2.88409  bits = 4.16086
+stable form -&gt; -(z_t - lse) = 2.88409
+per-token nll: [2.88409, 0.15325, 1.38629] mean: 1.47455
+perplexity: 4.3691  bits/token: 2.1273
+uniform V=50k : 3.630 bits/byte at 4.3 bytes/token
+2.0 nats/token: 0.671 bits/byte at 4.3 bytes/token
+1.5 nats/token: 0.503 bits/byte at 4.3 bytes/token
+    </div>
+
+    <p>Four things are being verified at once. <strong>(1)</strong> The two loss formulas agree to five decimals
+    (2.88409), so the stable log-sum-exp form is correct. <strong>(2)</strong> The third example has uniform logits,
+    so its loss is exactly ln 4 = <strong>1.38629</strong> &mdash; and the arithmetic returns precisely that, which is a
+    free unit test for any implementation. <strong>(3)</strong> mean 1.47455 &rarr; PPL 4.3691 &rarr; 2.1273 bits/token:
+    all three numbers describe the same model, and they are not interchangeable. <strong>(4)</strong> The last block
+    shows why bits-per-byte matters: a uniform 50k-vocabulary predictor is 3.63 bits/byte (worse than nothing, as it
+    should be), while 2.0 nats/token converts to only 0.671 bits/byte. Same model, two units, numbers that differ by
+    a factor of 5.4.</p>
+
+    <h3>Why perplexity cannot cross tokenizers</h3>
+    <p>Suppose model A has 50k tokens and model B has 100k tokens, and both are equally good at the underlying task.
+    B's vocabulary can represent roughly twice as much text per token, so B faces a harder per-token prediction problem:
+    the <em>same</em> text becomes half as many, harder predictions. Its per-token perplexity can look worse while its
+    per-byte quality is equal or better. Only bits-per-byte &mdash; which divides by the actual bytes of text covered
+    &mdash; is invariant to that choice:</p>
+    <div class="formula">
+      bits/byte = (nats/token) / (ln2 &times; bytes/token) &nbsp;&nbsp;&nbsp;bytes/token = total UTF-8 bytes / total tokens
+      <span class="note">You must measure bytes/token on the SAME evaluation text for both models. A hand-waved "about 4 characters per token" is an approximation that can easily be wrong by 20%, which is enough to reorder two close models. Count the bytes.</span>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a16-s4">4 &middot; Your hands <a class="hook" href="#a16-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Unit-test your loss against ln V</h4>
+      <p>The cheapest possible correctness check: feed uniform logits and confirm you get exactly ln V. Then add a large
+      constant to every logit and confirm the loss does not change (softmax is shift-invariant). Both are structural
+      properties, not approximations.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math, random
+random.seed(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">lse</span>(z):
+    m = <span class="fn">max</span>(z); <span class="kw">return</span> m + math.log(<span class="fn">sum</span>(math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z))
+<span class="kw">for</span> V <span class="kw">in</span> [<span class="nm">1000</span>, <span class="nm">32000</span>, <span class="nm">100277</span>, <span class="nm">128000</span>]:
+    z = [<span class="nm">0.0</span>] * V
+    <span class="fn">print</span>(<span class="st">f"V={V:7d}: loss={-z[0]+lse(z):.4f} ln(V)={math.log(V):.4f} match={abs(-z[0]+lse(z)-math.log(V))&lt;1e-12}"</span>)
+z = [random.gauss(<span class="nm">0</span>, <span class="nm">2</span>) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">8</span>)]; t = <span class="nm">3</span>
+<span class="fn">print</span>(<span class="st">"shift invariance:"</span>, <span class="fn">round</span>(-(z[t]-<span class="fn">lse</span>(z)), <span class="nm">9</span>), <span class="fn">round</span>(-((z[t]+<span class="nm">1000</span>)-<span class="fn">lse</span>([v+<span class="nm">1000</span> <span class="kw">for</span> v <span class="kw">in</span> z])), <span class="nm">9</span>))
+<span class="kw">print</span>(<span class="st">"naive exp without max-subtraction at large logits:"</span>, <span class="fn">end</span>=<span class="st">" "</span>)
+<span class="kw">try</span>:
+    e = [math.exp(<span class="nm">1000</span>)]; <span class="fn">print</span>(<span class="st">"ok"</span>)
+<span class="kw">except</span> <span class="fn">OverflowError</span>:
+    <span class="fn">print</span>(<span class="st">"OverflowError -> the log-sum-exp subtraction is not optional"</span>)
+      </div>
+      <p class="expect">Observed: for every vocabulary size the uniform-loss check matches ln V to better than 1e-12
+      (6.9078, 10.3735, 11.5157, 11.7598), the shift-invariance check returns the same value twice, and the naive
+      exponential raises OverflowError at logit 1000. Falsifiers: if the uniform check fails, your normalisation is
+      wrong (maybe you divided by V twice); if the shift check fails, you are computing the loss on unnormalised
+      scores somewhere.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The normalisation bug, quantified</h4>
+      <p>Summing instead of averaging is the single most common loss bug in hand-written training loops, and it does not
+      crash. Here is exactly what it does to your effective learning rate.</p>
+      <div class="code" data-lang="python">
+<span class="kw">for</span> T <span class="kw">in</span> [<span class="nm">512</span>, <span class="nm">2048</span>, <span class="nm">4096</span>, <span class="nm">8192</span>]:
+    <span class="fn">print</span>(<span class="st">f"seq_len={T:5d}: summed loss multiplies the gradient by {T:5d}x -&gt; same lr now behaves like {T}x the intended lr"</span>)
+<span class="fn">print</span>(<span class="st">"mean over tokens is invariant to batch and sequence length; that invariance is the point"</span>)
+<span class="fn">print</span>(<span class="st">"if you use gradient accumulation with SUM, also divide by the number of accumulation steps"</span>)
+      </div>
+      <p class="expect">The observable symptom is precise: the run with sum-loss behaves as if the LR were T&times; larger,
+      so it either diverges immediately or trains at an LR you never chose. And because accumulation changes T, the same
+      code can be stable with batch 4 &times; 1024 and explode with batch 2 &times; 2048. The fix is one division, and
+      the test is that loss magnitude should be roughly independent of batch size for a fixed model.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Convert a published perplexity into bits-per-byte</h4>
+      <p>Make a cross-model comparison honest. Take your own eval text, tokenize it with both candidate models'
+      tokenizers, and compute bytes/token for each; then convert the reported per-token numbers.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="cm"># fill these in from your own tokenized eval split</span>
+<span class="kw">def</span> <span class="fn">compare</span>(name, ppl_tokens, bytes_per_token):
+    nats = math.log(ppl_tokens)
+    <span class="fn">print</span>(<span class="st">f"{name:22s} PPL={ppl_tokens:8.2f} nats/tok={nats:6.3f} bytes/tok={bytes_per_token:5.2f} -&gt; {nats/(math.log(2)*bytes_per_token):6.3f} bits/byte"</span>)
+<span class="fn">compare</span>(<span class="st">"model A (50k vocab)"</span>, <span class="nm">12.0</span>, <span class="nm">4.30</span>)
+<span class="fn">compare</span>(<span class="st">"model B (100k vocab)"</span>, <span class="nm">18.0</span>, <span class="nm">5.20</span>)
+<span class="fn">compare</span>(<span class="st">"model C (byte-level)"</span>, <span class="nm">3.0</span>, <span class="nm">1.00</span>)
+      </div>
+      <p class="expect">Observed: A = 12.0 PPL &rarr; 2.485 nats over 4.30 bytes &rarr; <strong>0.834 bits/byte</strong>;
+      B = 18.0 PPL &rarr; 2.890 nats over 5.20 bytes &rarr; <strong>0.802 bits/byte</strong>;
+      C = 3.0 PPL (looks spectacular!) &rarr; 1.099 nats over 1 byte &rarr; <strong>1.585 bits/byte</strong>, the
+      worst of the three. So the model whose perplexity looks best is the worst model, and the model whose perplexity
+      looks worst (B, 18.0) is the best. That reversal is the entire content of this page: <strong>do not rank models
+      by perplexity across tokenizers</strong>. Falsifier: if the ordering by bits/byte matched the ordering by
+      perplexity on your data, your tokenizers happen to be very similar &mdash; recheck on multilingual or code data,
+      where the difference is largest.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a16-s5">5 &middot; Failure modes <a class="hook" href="#a16-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Sum instead of mean.</strong> Symptom: loss magnitude scales with seq_len and batch; an LR that worked at one config diverges at another. Verify by checking that loss is roughly constant when you double batch size at fixed model.</li>
+        <li><strong>Comparing perplexity across tokenizers.</strong> Symptom: the "better" model by PPL loses on task evals; the ranking reverses when you compute bits/byte. Fix the unit, not the model.</li>
+        <li><strong>Nats/bits confusion.</strong> Symptom: a 0.693 factor of error everywhere (ln 2); reported bits/token are 1.44&times; too high. If a conversion looks suspiciously close to 0.69, this is why.</li>
+        <li><strong>Loss computed on padding.</strong> Symptom: loss depends on batch composition and the model is trained to emit pad tokens. Count loss terms &mdash; they must equal real predicting tokens (L15).</li>
+        <li><strong>Off-by-one on the shift.</strong> Symptom: loss is fine at first then plateaus oddly, or the model learns to predict the current token (loss collapses to 0 in a way that is too good). Targets must be inputs shifted by one.</li>
+        <li><strong>Exp before max-subtraction.</strong> Symptom: inf/NaN loss after a spike, or a loss that is exactly 0 for one batch and huge for the next. Use log-sum-exp.</li>
+        <li><strong>Evaluating with dropout or in train mode.</strong> Symptom: val PPL varies between runs by a percent or two with identical weights. Set eval mode explicitly (L13).</li>
+        <li><strong>Ignoring the tail.</strong> Symptom: average PPL improves while the specific behaviour you care about regresses. Average log-likelihood is dominated by easy tokens; report per-domain slices, not just the global mean.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a16-s6">6 &middot; Connects to <a class="hook" href="#a16-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="01-tokenization.html">L01</a>, <a class="tag-a" href="03-backprop-autograd.html">L03</a>. &nbsp;
+    <strong>Unlocks:</strong> scaling laws, honest model comparison, decoder calibration.</p>
+    <ul>
+      <li><a class="tag-a" href="15-batching-seqpack.html">L15 &middot; Batching</a> &mdash; the loss mask and the count of loss terms are decided there.</li>
+      <li><a class="tag-a" href="17-samplers.html">L17 &middot; Samplers</a> &mdash; temperature rescales the same logits; perplexity is only defined at the model's own distribution, temperature-1.</li>
+      <li><a class="tag-b" href="../track-b/26-scaling-laws.html">L26 &middot; Scaling laws</a> &mdash; the exponent is fitted on nats/token; a units error there produces a plausible-looking but wrong law.</li>
+      <li><a class="tag-b" href="../track-b/29-emergence.html">L29 &middot; Emergence</a> &mdash; why a smooth loss curve can produce a discontinuous task metric.</li>
+      <li><a class="tag-c" href="../track-c/51-post-training.html">L51 &middot; Post-training</a> &mdash; SFT and RL losses are not cross-entropy-per-token in the same sense; do not mix units.</li>
+      <li><a class="tag-d" href="../track-d/88-evals.html">L88 &middot; Evals</a> &mdash; perplexity is not a task metric; this is where the distinction gets operational.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: every reported loss should carry its normalisation in the name &mdash;
+      <code>val_nll_nats_per_token</code>, <code>val_bits_per_byte</code> &mdash; plus the token count and byte count it
+      was computed over. A loss without those four facts is not a result.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a16-s7">7 &middot; Self-check <a class="hook" href="#a16-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Compute the loss and perplexity for logits [2.0, 0.5, &minus;1.0, 3.0] with target 1, both in nats and bits.</p>
+        <details><summary>Reveal answer</summary><p>softmax = [0.25055, 0.05591, 0.01247, 0.68107]; p(target) = 0.05591. Loss = &minus;ln(0.05591) = <strong>2.88409 nats</strong> = 2.88409/ln2 = <strong>4.16086 bits</strong>. Perplexity = e<sup>2.88409</sup> &asymp; <strong>17.89</strong> for this single token &mdash; i.e. the model is as uncertain as choosing among ~18 options, on a 4-token vocabulary whose baseline is ln 4 = 1.386. This one token is a much-worse-than-baseline prediction.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Model X reports PPL 9.0 with 3.9 bytes/token; model Y reports PPL 14.0 with 5.6 bytes/token. On the same text, which is better and by how much?</p>
+        <details><summary>Reveal answer</summary><p>X: ln 9.0 = 2.197 nats/token &rarr; 2.197/(ln2 &times; 3.9) = <strong>0.813 bits/byte</strong>. Y: ln 14.0 = 2.639 nats/token &rarr; 2.639/(ln2 &times; 5.6) = <strong>0.680 bits/byte</strong>. <strong>Y is better by 0.133 bits/byte (16%)</strong> even though its perplexity is 56% higher. This is the reversal the page is about, and it is why "PPL 9 vs PPL 14" is not a comparison.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: reported loss drops from 3.2 to 0.0008 after a refactor. What do you check?</p>
+        <details><summary>Reveal answer</summary><p>Almost certainly a target/label shift bug: the model is being scored on predicting a token it can already see, or the loss is being computed over a slice that excludes the hard positions, or the mean is over the wrong axis so most positions cancel. Check (a) targets == inputs shifted by one, (b) the count of loss terms equals real predicting tokens, (c) the loss is computed in log space. A genuine 3.2 &rarr; 0.0008 improvement is not physically plausible in one refactor.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is "mean over tokens" preferred to "mean over sequences"?</p>
+        <details><summary>Reveal answer</summary><p>Because the objective is per-token likelihood, and averaging per sequence gives each sequence equal weight regardless of length &mdash; a 10-token document would count as much as a 4,000-token one, which biases the model toward short sequences and makes the gradient depend on length distribution. Mean-over-tokens is the maximum-likelihood estimator and is invariant to batching and packing. The exception is when you <em>want</em> per-document fairness (e.g. balanced domains), which is a deliberate re-weighting that must be documented as such.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> A model's global val PPL improves by 3% but your task accuracy drops. What is the most likely explanation, and what do you report?</p>
+        <details><summary>Reveal answer</summary><p>The average is dominated by easy, high-frequency tokens (function words, formatting), so a small global gain can coexist with a regression on the rare, task-relevant patterns. Report per-domain and per-token-frequency-bucket NLL alongside the global number, and check the task-specific slice. Also possible: prompt-format mismatch between the perplexity eval corpus and the task format, in which case the PPL number was never measuring what the task needs.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="15-batching-seqpack.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L15 &middot; Batching, padding, packing</span></a>
+    <a class="next" href="17-samplers.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L17 &middot; Samplers: temperature, top-k, top-p</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

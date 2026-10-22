@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c53">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L53 &middot; The standard pipeline: pretrain &rarr; SFT &rarr; RL &rarr; staging, and the gates between &mdash; AILearn</title>
+<meta name="description" content="Post-training as a sequence of gated transformations: the gate formula, minimum detectable effect, and an executable gate evaluator.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L53</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L53 &middot; The standard pipeline: pretrain &rarr; SFT &rarr; RL &rarr; staging, and the gates between</h1>
+  <p class="lede">Every stage can pass its own criteria while the composition silently rewrites the product contract. The fix is not a better stage, it is a <em>gate</em>: a frozen eval, a minimum effect size, and a capability floor anchored at the base checkpoint.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: pipeline gate checklist + evaluator</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">gated transformation</span>
+  <span class="pill">frozen eval set</span>
+  <span class="pill">minimum detectable effect</span>
+  <span class="pill">capability floor</span>
+  <span class="pill">KL budget</span>
+  <span class="pill">checkpoint hash</span>
+  <span class="pill">lineage record</span>
+  <span class="pill">staging drift</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c53-s1">1 &middot; Why it exists <a class="hook" href="#c53-s1">#</a></h2>
+
+    <p>A post-training run that produced a genuinely better model gets rolled back, and nobody can say
+    why. The failure is procedural, not scientific: <strong>there was no gate between the stages</strong>.
+    Stage 2 was started because stage 1's loss dropped, stage 1's loss dropped because the data changed,
+    the data change moved a behaviour nobody measured, and by the time anyone noticed, four checkpoints
+    were in flight and no baseline existed to compare against.</p>
+
+    <p>The second, subtler failure: <em>staging drift</em>. Each intermediate stage is fine on its own criteria,
+    and the composition quietly rewrites the product contract. SFT on chatty data makes the model verbose;
+    the reward model, trained on the SFT model's own outputs, prefers verbose; RL then optimises for
+    verbose. Three individually defensible choices produce a model that cannot shut up. No single stage
+    violated its gate, because <strong>the gates were local and the drift was global</strong>.</p>
+
+    <div class="callout boss">
+      <p>A post-training pipeline is a sequence of <em>gated transformations</em> with a frozen baseline at the
+      end of every stage. The gate is not "loss went down". The gate is a fixed, re-runnable evaluation of
+      the product contract, evaluated against the previous stage, with a stop rule that is written before
+      the run starts.</p>
+    </div>
+
+    <p><span class="asof">state as of 2026-10</span> &mdash; the published frontier pipelines follow this shape:
+    DeepSeek-R1 (arXiv:2501.12948) describes a cold-start SFT stage, a reasoning-RL stage, a rejection-sampling
+    SFT stage that folds in non-reasoning data, and a final RL stage; InstructGPT (arXiv:2203.02155) describes
+    SFT &rarr; reward modelling &rarr; PPO. The stages differ in content; the <em>shape</em> &mdash; every stage produces a
+    checkpoint that is evaluated before the next stage may consume it &mdash; is invariant.</p>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c53-s2">2 &middot; The mental model <a class="hook" href="#c53-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> think of the pipeline as a compiler with type checks. Each stage
+    transforms a checkpoint and a dataset into a checkpoint; the gate is the type check at the boundary. A
+    gate has three parts: <em>what</em> is measured, <em>against what</em>, and <em>what happens when it fails</em>.</p>
+
+    <table class="table">
+      <thead><tr><th>Stage</th><th>Input</th><th>What actually changes</th><th>Gate (must pass before the next stage)</th></tr></thead>
+      <tbody>
+        <tr><td><strong>0 &middot; Base</strong></td><td>Pretrained checkpoint</td><td>Nothing &mdash; this is the reference everything is compared to</td><td>Reproduce the vendor-reported eval within tolerance. If you cannot reproduce the baseline, nothing downstream is interpretable.</td></tr>
+        <tr><td><strong>1 &middot; SFT</strong></td><td>Curated demonstrations</td><td>Format, register, task following</td><td>Format/schema compliance up, general capability down by less than tolerance, no answer leakage, no template mismatch.</td></tr>
+        <tr><td><strong>2 &middot; Preference / RM</strong></td><td>Pairwise labels</td><td>The <em>ordering</em> the model assigns to outputs</td><td>Pairwise held-out accuracy up; length delta between chosen and rejected is not the only signal the model learned.</td></tr>
+        <tr><td><strong>3 &middot; RL (PPO/GRPO)</strong></td><td>Reward model or verifier</td><td>Exploration into regions SFT never showed</td><td>Proxy reward up <em>and</em> the audit bracket up; KL within budget; pass@1 and pass@k reported separately.</td></tr>
+        <tr><td><strong>4 &middot; Distill</strong></td><td>Accepted traces from stage 3</td><td>Compression of the teacher into a cheaper student</td><td>Student within a stated gap of the teacher on the bracket, at the stated cost per query.</td></tr>
+        <tr><td><strong>5 &middot; Serve</strong></td><td>Final checkpoint + sampler config</td><td>Nothing &mdash; but the config is part of the product</td><td>Same checkpoint, same prompts, same sampler settings reproduce the eval numbers bit-for-bit.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What the compiler analogy gets right</h4><p>Ordering is enforced, not advisory. A
+      stage cannot consume a checkpoint that failed its type check, and the type check is a program, not a
+      meeting. Failures are caught at the earliest stage that can produce them.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Compilers have decidable type systems; here the "type" is a
+      statistical estimate with error bars on a finite eval set, so a gate can pass by luck and fail by luck.
+      Every gate is therefore a hypothesis test, and lesson 88's statistics apply: an eval of n items has a
+      sampling error you must know before you compare.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c53-s3">3 &middot; The mechanism <a class="hook" href="#c53-s3">#</a></h2>
+
+    <p>A gate is a decision rule over measured deltas. Write it as arithmetic, not adjectives:</p>
+
+    <div class="formula">
+      pass &nbsp;&#8660;&nbsp; &Delta;<sub>primary</sub> &ge; &delta;<sub>min</sub> &nbsp;&and;&nbsp; &Delta;<sub>capability</sub> &ge; &minus;&tau;<sub>cap</sub> &nbsp;&and;&nbsp; KL<sub>drift</sub> &le; K<sub>max</sub>
+      <span class="note">&Delta; are measured on frozen eval sets against the previous checkpoint. &delta;<sub>min</sub> is the minimum effect you would act on, not zero. &tau;<sub>cap</sub> is the regression you tolerate.</span>
+    </div>
+
+    <p>Two numbers make this honest. First, the <strong>minimum effect</strong>: with a 200-item eval and a 50%
+    ceiling, the standard error of an accuracy estimate is about &radic;(0.5&middot;0.5/200) &asymp; 3.5 points, so a 1-point
+    movement is noise and must not pass a gate. Second, the <strong>capability floor</strong>: a primary metric
+    can rise while a general capability silently falls (the classic alignment-tax signature), so the gate
+    needs a regression term, not just a gain term.</p>
+
+    <p>The runnable version below is a gate evaluator. It takes per-stage measurements and returns pass/fail
+    with the reason. Plug in made-up numbers from two toy runs and see which stage fails and why.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L53 snippet A: a gate is arithmetic, not adjectives. Standard library only.</span>
+<span class="kw">import</span> json, math
+
+<span class="kw">def</span> se_prop(p, n):
+    <span class="st">""</span><span class="st">"Standard error of an accuracy estimate."</span><span class="st">""</span>
+    <span class="kw">return</span> math.sqrt(max(p * (<span class="nm">1</span> - p), <span class="nm">1e-9</span>) / n)
+
+<span class="kw">def</span> min_effect(n, p=<span class="nm">0.5</span>, z=<span class="nm">1.96</span>):
+    <span class="st">""</span><span class="st">"Smallest detectable difference in two independent proportions of size n."</span><span class="st">""</span>
+    <span class="kw">return</span> z * math.sqrt(<span class="nm">2</span>) * se_prop(p, n)
+
+<span class="cm"># One stage's measurement. All numbers come from a frozen eval set.</span>
+STAGE = {
+    <span class="st">"name"</span>: <span class="st">"sft-cold-start"</span>,
+    <span class="st">"eval_n"</span>: <span class="nm">200</span>,                       <span class="cm"># items in the frozen primary eval</span>
+    <span class="st">"primary"</span>:   {<span class="st">"before"</span>: <span class="nm">0.50</span>, <span class="st">"after"</span>: <span class="nm">0.53</span>},
+    <span class="st">"capability"</span>: {<span class="st">"before"</span>: <span class="nm">0.62</span>, <span class="st">"after"</span>: <span class="nm">0.61</span>},
+    <span class="st">"kl"</span>: <span class="nm">0.42</span>,
+}
+GATE = {<span class="st">"delta_min"</span>: <span class="nm">0.05</span>, <span class="st">"tau_cap"</span>: <span class="nm">0.02</span>, <span class="st">"k_max"</span>: <span class="nm">1.0</span>, <span class="st">"eval_n"</span>: <span class="nm">200</span>}
+
+d_primary = STAGE[<span class="st">"primary"</span>][<span class="st">"after"</span>] - STAGE[<span class="st">"primary"</span>][<span class="st">"before"</span>]
+d_cap = STAGE[<span class="st">"capability"</span>][<span class="st">"after"</span>] - STAGE[<span class="st">"capability"</span>][<span class="st">"before"</span>]
+mde = min_effect(GATE[<span class="st">"eval_n"</span>])
+checks = [
+    (<span class="st">"primary &gt;= delta_min"</span>, d_primary, GATE[<span class="st">"delta_min"</span>], d_primary &gt;= GATE[<span class="st">"delta_min"</span>]),
+    (<span class="st">"capability &gt;= -tau_cap"</span>, d_cap, -GATE[<span class="st">"tau_cap"</span>], d_cap &gt;= -GATE[<span class="st">"tau_cap"</span>]),
+    (<span class="st">"kl &lt;= k_max"</span>, STAGE[<span class="st">"kl"</span>], GATE[<span class="st">"k_max"</span>], STAGE[<span class="st">"kl"</span>] &lt;= GATE[<span class="st">"k_max"</span>]),
+    (<span class="st">"delta &gt;= MDE (signal not noise)"</span>, d_primary, mde, abs(d_primary) &gt;= mde),
+]
+<span class="kw">print</span>(f<span class="st">"stage {STAGE['name']}  eval_n={GATE['eval_n']}  MDE={mde:.3f} (absolute accuracy points)"</span>)
+verdict = <span class="kw">True</span>
+<span class="kw">for</span> label, val, bound, ok <span class="kw">in</span> checks:
+    verdict &amp;= ok
+    <span class="kw">print</span>(f<span class="st">"  {label:&lt;34} value={val:+.3f} bound={bound:+.3f}  {'PASS' if ok else 'FAIL'}"</span>)
+<span class="kw">print</span>(<span class="st">"  VERDICT:"</span>, <span class="st">"PROMOTE"</span> <span class="kw">if</span> verdict <span class="kw">else</span> <span class="st">"BLOCK"</span>)
+
+<span class="cm"># How large does the eval have to be to see a 3-point effect at 5% significance?</span>
+need = <span class="nm">2</span> * (<span class="nm">1.96</span> * <span class="nm">0.5</span> / <span class="nm">0.03</span>) ** <span class="nm">2</span>
+<span class="kw">print</span>(f<span class="st">"\neval items needed to detect a 3-point delta at 5%: {math.ceil(need)}"</span>)
+<span class="kw">print</span>(f<span class="st">"current eval has {GATE['eval_n']} items -&gt; a 3-point move is {d_primary / se_prop(0.5, GATE['eval_n']):.2f} SE"</span>)
+</div><div class="code out-block" data-lang="output">
+stage sft-cold-start  eval_n=200  MDE=0.098 (absolute accuracy points)
+  primary &gt;= delta_min               value=+0.030 bound=+0.050  FAIL
+  capability &gt;= -tau_cap             value=-0.010 bound=-0.020  PASS
+  kl &lt;= k_max                        value=+0.420 bound=+1.000  PASS
+  delta &gt;= MDE (signal not noise)    value=+0.030 bound=+0.098  FAIL
+  VERDICT: BLOCK
+
+eval items needed to detect a 3-point delta at 5%: 2135
+current eval has 200 items -&gt; a 3-point move is 0.85 SE
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c53-s4">4 &middot; Your hands <a class="hook" href="#c53-s4">#</a></h2>
+
+    <p>Three labs: evaluate a sequence of gates, compute how big a delta you can even <em>detect</em> with your
+    eval size, and template the gate record you store next to every checkpoint.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; evaluate one stage's gate</h4>
+      <p>A 200-item frozen eval, a +3 point primary movement, a small capability regression, and a KL budget. The gate computes the minimum detectable effect from the eval size and refuses to pass a delta that is inside it.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L53 snippet A: a gate is arithmetic, not adjectives. Standard library only.</span>
+<span class="kw">import</span> json, math
+
+<span class="kw">def</span> se_prop(p, n):
+    <span class="st">""</span><span class="st">"Standard error of an accuracy estimate."</span><span class="st">""</span>
+    <span class="kw">return</span> math.sqrt(max(p * (<span class="nm">1</span> - p), <span class="nm">1e-9</span>) / n)
+
+<span class="kw">def</span> min_effect(n, p=<span class="nm">0.5</span>, z=<span class="nm">1.96</span>):
+    <span class="st">""</span><span class="st">"Smallest detectable difference in two independent proportions of size n."</span><span class="st">""</span>
+    <span class="kw">return</span> z * math.sqrt(<span class="nm">2</span>) * se_prop(p, n)
+
+<span class="cm"># One stage's measurement. All numbers come from a frozen eval set.</span>
+STAGE = {
+    <span class="st">"name"</span>: <span class="st">"sft-cold-start"</span>,
+    <span class="st">"eval_n"</span>: <span class="nm">200</span>,                       <span class="cm"># items in the frozen primary eval</span>
+    <span class="st">"primary"</span>:   {<span class="st">"before"</span>: <span class="nm">0.50</span>, <span class="st">"after"</span>: <span class="nm">0.53</span>},
+    <span class="st">"capability"</span>: {<span class="st">"before"</span>: <span class="nm">0.62</span>, <span class="st">"after"</span>: <span class="nm">0.61</span>},
+    <span class="st">"kl"</span>: <span class="nm">0.42</span>,
+}
+GATE = {<span class="st">"delta_min"</span>: <span class="nm">0.05</span>, <span class="st">"tau_cap"</span>: <span class="nm">0.02</span>, <span class="st">"k_max"</span>: <span class="nm">1.0</span>, <span class="st">"eval_n"</span>: <span class="nm">200</span>}
+
+d_primary = STAGE[<span class="st">"primary"</span>][<span class="st">"after"</span>] - STAGE[<span class="st">"primary"</span>][<span class="st">"before"</span>]
+d_cap = STAGE[<span class="st">"capability"</span>][<span class="st">"after"</span>] - STAGE[<span class="st">"capability"</span>][<span class="st">"before"</span>]
+mde = min_effect(GATE[<span class="st">"eval_n"</span>])
+checks = [
+    (<span class="st">"primary &gt;= delta_min"</span>, d_primary, GATE[<span class="st">"delta_min"</span>], d_primary &gt;= GATE[<span class="st">"delta_min"</span>]),
+    (<span class="st">"capability &gt;= -tau_cap"</span>, d_cap, -GATE[<span class="st">"tau_cap"</span>], d_cap &gt;= -GATE[<span class="st">"tau_cap"</span>]),
+    (<span class="st">"kl &lt;= k_max"</span>, STAGE[<span class="st">"kl"</span>], GATE[<span class="st">"k_max"</span>], STAGE[<span class="st">"kl"</span>] &lt;= GATE[<span class="st">"k_max"</span>]),
+    (<span class="st">"delta &gt;= MDE (signal not noise)"</span>, d_primary, mde, abs(d_primary) &gt;= mde),
+]
+<span class="kw">print</span>(f<span class="st">"stage {STAGE['name']}  eval_n={GATE['eval_n']}  MDE={mde:.3f} (absolute accuracy points)"</span>)
+verdict = <span class="kw">True</span>
+<span class="kw">for</span> label, val, bound, ok <span class="kw">in</span> checks:
+    verdict &amp;= ok
+    <span class="kw">print</span>(f<span class="st">"  {label:&lt;34} value={val:+.3f} bound={bound:+.3f}  {'PASS' if ok else 'FAIL'}"</span>)
+<span class="kw">print</span>(<span class="st">"  VERDICT:"</span>, <span class="st">"PROMOTE"</span> <span class="kw">if</span> verdict <span class="kw">else</span> <span class="st">"BLOCK"</span>)
+
+<span class="cm"># How large does the eval have to be to see a 3-point effect at 5% significance?</span>
+need = <span class="nm">2</span> * (<span class="nm">1.96</span> * <span class="nm">0.5</span> / <span class="nm">0.03</span>) ** <span class="nm">2</span>
+<span class="kw">print</span>(f<span class="st">"\neval items needed to detect a 3-point delta at 5%: {math.ceil(need)}"</span>)
+<span class="kw">print</span>(f<span class="st">"current eval has {GATE['eval_n']} items -&gt; a 3-point move is {d_primary / se_prop(0.5, GATE['eval_n']):.2f} SE"</span>)
+</div><div class="code out-block" data-lang="output">
+stage sft-cold-start  eval_n=200  MDE=0.098 (absolute accuracy points)
+  primary &gt;= delta_min               value=+0.030 bound=+0.050  FAIL
+  capability &gt;= -tau_cap             value=-0.010 bound=-0.020  PASS
+  kl &lt;= k_max                        value=+0.420 bound=+1.000  PASS
+  delta &gt;= MDE (signal not noise)    value=+0.030 bound=+0.098  FAIL
+  VERDICT: BLOCK
+
+eval items needed to detect a 3-point delta at 5%: 2135
+current eval has 200 items -&gt; a 3-point move is 0.85 SE
+</div>
+      <p class="expect">The gate BLOCKS on two grounds: the primary gain of +3 points is below the 5-point minimum effect, and it is 0.85 standard errors, which is noise. The eval would need about 2,135 items to detect a 3-point delta at 5% significance. This is the first question a reviewer should ask about any stage that claims a small win: how many items were in the eval?</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the global gate catches what local gates miss</h4>
+      <p>Four metrics measured at every stage, all anchored to the base checkpoint: task score, format compliance, mean length, and refusal rate. Stage-local gates would pass all three stages because each improves on its own input.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L53 snippet B: staging drift is invisible to local gates. Standard library only.</span>
+<span class="cm"># Four global metrics, evaluated identically against the BASE checkpoint at every stage.</span>
+<span class="kw">import</span> math
+
+METRICS = [<span class="st">"task_score"</span>, <span class="st">"format_ok"</span>, <span class="st">"mean_len"</span>, <span class="st">"refusal_rate"</span>]
+meas = {
+    <span class="st">"base"</span>:  dict(task_score=<span class="nm">0.50</span>, format_ok=<span class="nm">0.61</span>, mean_len=<span class="nm">180.0</span>, refusal_rate=<span class="nm">0.030</span>),
+    <span class="st">"sft"</span>:   dict(task_score=<span class="nm">0.55</span>, format_ok=<span class="nm">0.97</span>, mean_len=<span class="nm">240.0</span>, refusal_rate=<span class="nm">0.018</span>),
+    <span class="st">"pref"</span>:  dict(task_score=<span class="nm">0.56</span>, format_ok=<span class="nm">0.96</span>, mean_len=<span class="nm">330.0</span>, refusal_rate=<span class="nm">0.012</span>),
+    <span class="st">"rl"</span>:    dict(task_score=<span class="nm">0.62</span>, format_ok=<span class="nm">0.95</span>, mean_len=<span class="nm">470.0</span>, refusal_rate=<span class="nm">0.009</span>),
+}
+GATE = dict(
+    task_score=dict(min_abs=<span class="nm">0.50</span>, max_regress=<span class="nm">0.01</span>),
+    format_ok=dict(min_abs=<span class="nm">0.85</span>, max_regress=<span class="nm">0.01</span>),
+    mean_len=dict(min_abs=<span class="kw">None</span>, max_regress=<span class="nm">0.25</span>),     <span class="cm"># relative: 25% longer than base is a FAIL</span>
+    refusal_rate=dict(min_abs=<span class="kw">None</span>, max_regress=<span class="kw">None</span>, band=(<span class="nm">0.005</span>, <span class="nm">0.10</span>)),
+)
+
+<span class="kw">def</span> check(name, v, g, ref):
+    <span class="kw">if</span> g.get(<span class="st">"band"</span>):
+        lo, hi = g[<span class="st">"band"</span>]
+        <span class="kw">return</span> (lo &lt;= v &lt;= hi), f<span class="st">"band {lo}-{hi}"</span>
+    <span class="kw">if</span> g.get(<span class="st">"min_abs"</span>) <span class="kw">is</span> <span class="kw">not</span> <span class="kw">None</span>:
+        <span class="kw">return</span> v &gt;= g[<span class="st">"min_abs"</span>], f<span class="st">"&gt;= {g['min_abs']}"</span>
+    <span class="cm"># regression against the base</span>
+    rel = (v - ref) / ref
+    <span class="kw">return</span> rel &lt;= g[<span class="st">"max_regress"</span>], f<span class="st">"rel &lt;= {g['max_regress']:+.0%} vs base"</span>
+
+<span class="kw">print</span>(f<span class="st">"{'stage':&lt;7}"</span> + <span class="st">""</span>.join(f<span class="st">"{m:&gt;13}"</span> <span class="kw">for</span> m <span class="kw">in</span> METRICS) + <span class="st">"   verdict"</span>)
+blocked = []
+<span class="kw">for</span> stage <span class="kw">in</span> (<span class="st">"sft"</span>, <span class="st">"pref"</span>, <span class="st">"rl"</span>):
+    row, ok = <span class="st">""</span>, <span class="kw">True</span>
+    <span class="kw">for</span> m <span class="kw">in</span> METRICS:
+        good, rule = check(m, meas[stage][m], GATE[m], meas[<span class="st">"base"</span>][m])
+        ok &amp;= good
+        val = f<span class="st">"{meas[stage][m]:.3f}"</span> <span class="kw">if</span> meas[stage][m] &lt; <span class="nm">1.5</span> <span class="kw">else</span> f<span class="st">"{meas[stage][m]:.0f}"</span>
+        row += f<span class="st">"{val:&gt;10}{'P' if good else '!':&gt;3}"</span>
+    <span class="kw">print</span>(f<span class="st">"{stage:&lt;7}{row}   {'PROMOTE' if ok else 'BLOCK'}"</span>)
+    <span class="kw">if</span> <span class="kw">not</span> ok:
+        blocked.append(stage)
+
+<span class="kw">print</span>(f<span class="st">"\nstages blocked by a GLOBAL gate anchored at base: {blocked}"</span>)
+<span class="kw">print</span>(<span class="st">"stage-local gates passed: every stage improved task_score on its own input."</span>)
+<span class="kw">print</span>(<span class="st">"the drift is visible only when mean_len and refusal_rate are compared to BASE."</span>)
+</div><div class="code out-block" data-lang="output">
+stage     task_score    format_ok     mean_len refusal_rate   verdict
+sft         0.550  P     0.970  P       240  !     0.018  P   BLOCK
+pref        0.560  P     0.960  P       330  !     0.012  P   BLOCK
+rl          0.620  P     0.950  P       470  !     0.009  P   BLOCK
+
+stages blocked by a GLOBAL gate anchored at base: ['sft', 'pref', 'rl']
+stage-local gates passed: every stage improved task_score on its own input.
+the drift is visible only when mean_len and refusal_rate are compared to BASE.
+</div>
+      <p class="expect">All three stages BLOCK, and the only column that fails is mean length &mdash; 240, 330, then 470 tokens against a base of 180, which is 33%, 83% and 161% longer. Staging drift is invisible to any gate that compares a stage to its immediate predecessor; the anchor must be the base.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the run card for a stage</h4>
+      <p>Five immutable artefacts per stage. If any is missing, the stage cannot be shown to have improved anything.</p>
+      <div class="code" data-lang="text">
+stage: rl-verifiable-v2
+  data_hash      : sha256:...
+  checkpoint     : runs/4120/ckpt-final   sha256:...
+  gate_json      : {"primary":+0.11, "capability":-0.01, "kl":0.31, "verdict":"PASS"}
+  sampler_config : {"temp":0.6, "top_p":0.95, "stop":["&lt;|end|&gt;"], "max_tokens":8192}
+  diff_vs_prev   : gate_prev.json -> gate_cur.json (one line per metric)
+      </div>
+      <p class="expect">The sampler config is the field people omit and the one that makes an eval unreproducible in serving. The diff is"
+      " what turns five snapshots into a history; a gate result without the previous stage's result is a number without a baseline.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c53-s5">5 &middot; Failure modes <a class="hook" href="#c53-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Gate on a moving eval set.</strong> Symptom: every stage passes and staged comparisons are meaningless, because the eval was regenerated between stages. Freeze eval sets by hash and pin them in the run card.</li>
+        <li><strong>Training loss used as the gate.</strong> Symptom: the stage that overfits hardest looks best at the gate, and the drop shows up two stages later as a capability regression nobody can localise.</li>
+        <li><strong>No capability floor.</strong> Symptom: the target behaviour improves 8 points and an unrelated capability regresses 4 points, and nobody notices because it was not in the gate.</li>
+        <li><strong>Distributed data with no lineage.</strong> Symptom: a rejection-sampling stage folds teacher outputs into the SFT set and the contamination check is now impossible, because you cannot say which records came from which model.</li>
+        <li><strong>Sampler settings not part of the artifact.</strong> Symptom: the eval reproduces in the training harness and not in serving, because serving uses a different temperature, top-p, or stop sequence. The checkpoint is not the product; checkpoint + sampler config is.</li>
+        <li><strong>Staging drift compounding.</strong> Symptom: three stage gates pass, the final model is verbose, and each stage's author can point to their own green gate. The fix is a global metric (length, refusal rate, format compliance) evaluated identically at every stage against the <em>base</em>, not the previous stage.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Keep the pipeline auditable with five immutable artefacts per stage: dataset hash, checkpoint hash,
+      gate results as machine-readable JSON, the sampler config, and the diff versus the previous stage's
+      gate results. If any of the five is missing, you cannot prove the stage improved anything &mdash; you can
+      only assert it.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c53-s6">6 &middot; Connects to <a class="hook" href="#c53-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="51-post-training.html">L51 &middot; Post-training map</a>,
+    <a class="tag-c" href="52-sft.html">L52 &middot; SFT</a>, and
+    <a class="tag-d" href="../track-d/88-evals.html">L88 &middot; Evals and statistical power</a>.</p>
+    <p><strong>Unlocks:</strong> staged distillation (L66), data synthesis (L67), and the production checklist (L96).</p>
+
+    <ul>
+      <li><a class="tag-c" href="54-preference-learning.html">L54 &middot; Preference data</a> &mdash; stage 2's input and the reason gates need a length check.</li>
+      <li><a class="tag-c" href="57-ppo.html">L57 &middot; PPO</a> &mdash; stage 3 with four models and a KL budget.</li>
+      <li><a class="tag-c" href="66-distilling-reasoning.html">L66 &middot; Distilling reasoning</a> &mdash; the same gate machinery for teacher&rarr;student transfer.</li>
+      <li><a class="tag-c" href="74-eval-contamination.html">L74 &middot; Contamination</a> &mdash; why the gate's eval set must be hashed and held out from all stages.</li>
+      <li><a class="tag-d" href="../track-d/96-production-checklist.html">L96 &middot; Production checklist</a> &mdash; the go/no-go version of these gates.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c53-s7">7 &middot; Self-check <a class="hook" href="#c53-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Your eval has 200 items and the base model scores 50%. A new stage scores 53%. Can the gate pass at a 5% significance level?</p>
+        <details><summary>Reveal answer</summary><p>Standard error of a single proportion is &radic;(0.5&middot;0.5/200) &asymp; 0.035, i.e. 3.5 points. For a difference of two independentestimates the SE is about &radic;2&middot;3.5 &asymp; 5.0 points. A 3-point delta is 0.6 SE &mdash; nowhere near the 1.96 SE neededfor a two-sided 5% test. The gate must not pass; you either accept a larger minimum effect or grow the eval.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why is the capability floor measured against the <em>base</em> checkpoint rather than the previous stage, while the primary metric is measured against the previous stage?</p>
+        <details><summary>Reveal answer</summary><p>Primary metrics are incremental: you want each stage to improve on its input, so the previous checkpoint is the rightcomparator. Capability regressions compound silently across stages, so a floor must be anchored at the base where thecontract was defined. Anchoring the floor to the previous stage lets each stage regress a little and pass.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> A pipeline reports: SFT primary +6, capability &minus;1; preference +0.4, capability &minus;0.2; RL proxy +0.9, bracket +0.3. Which gate is the strongest evidence and which is the weakest?</p>
+        <details><summary>Reveal answer</summary><p>Strongest: the RL stage, because it moves the proxy and an independent bracket together by a meaningful amount &mdash; that isthe one pattern that is hard to fake. Weakest: the preference stage, because a pairwise accuracy gain of 0.4 points on anunknown-size set is indistinguishable from noise, and the inputs to it are not described. Compute the SE before accepting either.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: the gate passes in training and the same eval fails on the served model. Name the three most likely causes in order of cheapness of the check.</p>
+        <details><summary>Reveal answer</summary><p>(1) Sampler config mismatch: compare temperature, top-p, stop sequences, and max tokens &mdash; one diff. (2) Chat templatemismatch: dump token IDs from both paths and diff. (3) Quantisation or serving-engine precision change: same checkpoint, differentnumerics. All three are checks that take minutes; none of them require retraining, which is why they go first.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> You must fold 20k teacher traces into your SFT set before the next gate. What lineage record is non-negotiable, and what gate item does it protect?</p>
+        <details><summary>Reveal answer</summary><p>Per-record provenance: teacher model id and version, generating prompt, sampler settings, and the acceptance rule that kept it.It protects two gate items: contamination (you must be able to subtract trace-derived data from any eval comparison) andcapability attribution (if a regression appears, you can segment it by source and tell whether teacher traces caused it).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="52-sft.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L52 &middot; SFT: data quality, format, masking, loss weighting</span></a>
+    <a class="next" href="54-preference-learning.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L54 &middot; Preference data: pairwise comparisons and annotator bias</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

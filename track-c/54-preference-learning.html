@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c54">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L54 &middot; Preference data: pairwise comparisons and annotator bias &mdash; AILearn</title>
+<meta name="description" content="Preference data as a measurement instrument: kappa, chance correction, length and position bias, and a protocol that records what makes a label auditable.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L54</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L54 &middot; Preference data: pairwise comparisons and annotator bias</h1>
+  <p class="lede">A reward model is a compression of your annotation protocol including its biases. This page measures the instrument before you build anything on it &mdash; chance-corrected agreement, length bias recovery, and the per-pair fields without which no disagreement is ever attributable.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: a preference dataset with a protocol</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">pairwise label</span>
+  <span class="pill">Bradley-Terry</span>
+  <span class="pill">Cohen's kappa</span>
+  <span class="pill">chance correction</span>
+  <span class="pill">length bias</span>
+  <span class="pill">position bias</span>
+  <span class="pill">annotator drift</span>
+  <span class="pill">rubric version</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c54-s1">1 &middot; Why it exists <a class="hook" href="#c54-s1">#</a></h2>
+
+    <p>The demonstration has run out. You can show a model one good answer, but you cannot show it the
+    <em>reason</em> one answer beats another &mdash; and the moment the task is "which of these two explanations a
+    clinician would trust", the demonstration does not encode the judgement at all. Worse, the two failure
+    modes of preference data are opposite and simultaneous:</p>
+
+    <ul>
+      <li><strong>Preference data that is an easy ranking scripted by one criterion.</strong> If every pair is
+      "longer wins", the model learns verbosity, and you have not captured judgement at all; you have
+      captured a rule you could have written in one line of code.</li>
+      <li><strong>Preference data that is genuine but noisy.</strong> Ten annotators, no rubric, no tie option,
+      no attention checks. Agreement is below chance on hard pairs, and that noise is not neutral: it
+      <em>biases toward the confident, fluent, wrong</em> answer, because fluency is what annotators can
+      actually see.</li>
+    </ul>
+
+    <p>Both failures produce the same symptom at the end of the pipeline: the learned preference ordering
+    transfers to the reward model, the reward model trains the policy, and the policy gets <em>more</em> of a
+    behaviour your evaluation says is not better.</p>
+
+    <div class="callout boss">
+      <p>Preference data is not "A vs B". It is a pair, a rubric, an annotator population, and a tie policy &mdash; and
+      the reward you eventually learn is <em>exactly</em> as good as the smallest of those four decisions. A reward
+      model is a compression of your annotation protocol, including its biases.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c54-s2">2 &middot; The mental model <a class="hook" href="#c54-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> an annotator is a noisy sensor of a latent quality score, read out
+    through a threshold. Each pair is one comparison of two sensor readings. What you actually measure is not
+    quality; it is quality plus annotator-specific bias plus comparison noise.</p>
+
+    <div class="formula">
+      P(A &#8811; B) = &sigma;( q(A) &minus; q(B) + b<sub>annotator</sub>(A,B) ), &nbsp; b = length bias, fluency bias, position bias
+      <span class="note">q is the latent quality you want. If b is correlated with a visible property, the learned reward is q + b, and RL will maximise b.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Design decision</th><th>What you are buying</th><th>Symptom when you get it wrong</th></tr></thead>
+      <tbody>
+        <tr><td>Rubric vs gut</td><td>Comparability across annotators</td><td>Same pair flipped by two annotators; agreement below 70% and no way to attribute it</td></tr>
+        <tr><td>Tie / "both unusable" option</td><td>Removes forced noise on near-identical pairs</td><td>Random labels on pairs that should be discarded; the reward model learns to be confidently wrong on close calls</td></tr>
+        <tr><td>Position randomisation</td><td>Kills left/right bias</td><td>Reward model predicts whichever answer is shown <em>first</em> rather than what is better</td></tr>
+        <tr><td>Length-balanced sampling</td><td>Separates quality from verbosity</td><td>Learned reward is a length proxy; RL produces runaway verbosity (lesson 58 measures this directly)</td></tr>
+        <tr><td>Annotator id + agreement stats</td><td>Weighting and drift detection</td><td>One annotator with a systematic preference silently steers the whole reward model</td></tr>
+        <tr><td>Held-out annotator</td><td>Honest estimate of transfer</td><td>You measure agreement with the <em>same</em> annotators and call it quality</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "sensor" gets right</h4><p>It separates the signal (a latent ordering) from the
+      instrument (a person with a rubric). You can calibrate an instrument, measure its noise, and weight
+      readings by reliability, all of which are meaningless for "labels are labels".</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Sensors do not have differing <em>theories</em>. Two annotators
+      can disagree because they define quality differently, not because one is noisier, and no weighting
+      scheme resolves a disagreement about the target. That is why the rubric is part of the data.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c54-s3">3 &middot; The mechanism <a class="hook" href="#c54-s3">#</a></h2>
+
+    <p>Measure the instrument before you build anything on it.</p>
+
+    <div class="formula">
+      Cohen's &kappa; = ( p<sub>o</sub> &minus; p<sub>e</sub> ) / ( 1 &minus; p<sub>e</sub> )
+      <span class="note">p<sub>o</sub> = observed agreement. p<sub>e</sub> = agreement expected if both annotators guessed from their own marginals. &kappa; corrects for chance; raw agreement does not.</span>
+    </div>
+
+    <p>The chance-correction is not pedantry. If 80% of your pairs have the same winner, two annotators who
+    randomly pick the majority 80% of the time agree on 68% of pairs while knowing nothing. Raw agreement
+    would call that "good"; &kappa; calls it zero. The snippet below computes both, then uses a logistic
+    regression to expose a bias you cannot see by reading transcripts: the annotator's rule is
+    <em>longer wins</em>.</p>
+
+    <p>The generative model is a Bradley&ndash;Terry read-out with two additive biases:</p>
+
+    <div class="formula">
+      P(choose A) = &sigma;( q<sub>A</sub> &minus; q<sub>B</sub> + &alpha;(len<sub>A</sub> &minus; len<sub>B</sub>) )
+      <span class="note">q is true latent quality (0-1), len is response length in characters. &alpha; is the annotator's length bias &mdash; the number you must drive toward zero.</span>
+    </div>
+<div class="code" data-lang="python">
+<span class="cm"># L54: measure the instrument before you build on it. Pure stdlib -- no numpy needed.</span>
+<span class="kw">import</span> math, random
+
+rng = random.Random(<span class="nm">7</span>)
+ALPHA_TRUE = <span class="nm">0.0035</span>           <span class="cm"># annotator's real length bias, logits per character</span>
+POS_LEAN = <span class="nm">0.25</span>               <span class="cm"># extra logit for "the left column looks better"</span>
+
+
+<span class="kw">def</span> quality(i):
+    <span class="kw">return</span> <span class="nm">0.30</span> + <span class="nm">0.40</span> * ((i * <span class="nm">37</span> % <span class="nm">11</span>) / <span class="nm">10.0</span>)
+
+
+<span class="kw">def</span> length(i):
+    <span class="kw">return</span> <span class="nm">120</span> + (i * <span class="nm">53</span> % <span class="nm">17</span>) * <span class="nm">22</span>
+
+
+<span class="kw">def</span> sig(z):
+    <span class="kw">if</span> z &gt;= <span class="nm">0</span>:
+        <span class="kw">return</span> <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z))
+    e = math.exp(max(z, -<span class="nm">700</span>))       <span class="cm"># clip: exp underflows gracefully, never raises</span>
+    <span class="kw">return</span> e / (<span class="nm">1</span> + e)
+
+
+<span class="kw">def</span> annotate(i, j, position):
+    z = quality(i) - quality(j) + ALPHA_TRUE * (length(i) - length(j))
+    <span class="kw">if</span> position == <span class="st">"BA"</span>:
+        z = -z + POS_LEAN
+    <span class="kw">return</span> <span class="nm">1</span> <span class="kw">if</span> rng.random() &lt; sig(z) <span class="kw">else</span> <span class="nm">0</span>
+
+
+pairs = []
+<span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">600</span>):
+    i, j = rng.randrange(<span class="nm">12</span>), rng.randrange(<span class="nm">12</span>)
+    <span class="kw">if</span> i != j:
+        pairs.append((i, j, <span class="st">"BA"</span> <span class="kw">if</span> k % <span class="nm">2</span> <span class="kw">else</span> <span class="st">"AB"</span>))
+labels = [annotate(i, j, p) <span class="kw">for</span> i, j, p <span class="kw">in</span> pairs]
+a2 = [annotate(i, j, p) <span class="kw">for</span> i, j, p <span class="kw">in</span> pairs]
+b2 = [<span class="nm">1</span> - annotate(j, i, p) <span class="kw">for</span> i, j, p <span class="kw">in</span> pairs]
+
+
+<span class="kw">def</span> kappa(x, y):
+    n = len(x)
+    po = sum(u == v <span class="kw">for</span> u, v <span class="kw">in</span> zip(x, y)) / n
+    pa, pb = sum(x) / n, sum(y) / n
+    pe = pa * pb + (<span class="nm">1</span> - pa) * (<span class="nm">1</span> - pb)
+    <span class="kw">return</span> po, pe, (po - pe) / (<span class="nm">1</span> - pe)
+
+
+po, pe, kap = kappa(a2, b2)
+<span class="kw">print</span>(f<span class="st">"two annotators, columns swapped: p_o={po:.3f}  p_e={pe:.3f}  kappa={kap:+.3f}"</span>)
+
+<span class="cm"># y = 0 means "left column chosen". Features: dq = quality difference, dl = length difference.</span>
+rows = []
+<span class="kw">for</span> (i, j, pos), y <span class="kw">in</span> zip(pairs, labels):
+    left, right = (i, j) <span class="kw">if</span> pos == <span class="st">"AB"</span> <span class="kw">else</span> (j, i)
+    rows.append((quality(left) - quality(right), length(left) - length(right), y))
+
+<span class="cm"># 2-parameter Bradley-Terry by Newton steps, gradients in closed form</span>
+beta, alpha = <span class="nm">0.5</span>, <span class="nm">0.0</span>
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">40</span>):
+    gb = ga = hbb = hba = haa = <span class="nm">0.0</span>
+    <span class="kw">for</span> dq, dl, y <span class="kw">in</span> rows:
+        p = sig(beta * dq + alpha * dl)
+        e = y - p
+        w = p * (<span class="nm">1</span> - p)
+        gb += e * dq
+        ga += e * dl
+        hbb += w * dq * dq
+        hba += w * dq * dl
+        haa += w * dl * dl
+    hbb += <span class="nm">1.0</span>
+    haa += <span class="nm">1.0</span>
+    det = hbb * haa - hba * hba
+    db = (haa * gb - hba * ga) / det
+    da = (hbb * ga - hba * gb) / det
+    beta, alpha = beta + db, alpha + da
+
+<span class="kw">print</span>(f<span class="st">"fitted   beta(quality)={beta:+.3f}   alpha(length)={alpha:+.5f}   [true alpha={ALPHA_TRUE:+.5f}]"</span>)
+<span class="kw">print</span>(f<span class="st">"recovered share of the true length bias: {alpha / ALPHA_TRUE:.0%}"</span>)
+
+<span class="cm"># is the reward a length detector? correlation of the two features in this generator</span>
+dq_l, dl_l = [r[<span class="nm">0</span>] <span class="kw">for</span> r <span class="kw">in</span> rows], [r[<span class="nm">1</span>] <span class="kw">for</span> r <span class="kw">in</span> rows]
+mx, my = sum(dq_l) / len(dq_l), sum(dl_l) / len(dl_l)
+sxy = sum((x - mx) * (y - my) <span class="kw">for</span> x, y <span class="kw">in</span> zip(dq_l, dl_l))
+sxx = sum((x - mx) ** <span class="nm">2</span> <span class="kw">for</span> x <span class="kw">in</span> dq_l)
+syy = sum((y - my) ** <span class="nm">2</span> <span class="kw">for</span> y <span class="kw">in</span> dl_l)
+<span class="kw">print</span>(f<span class="st">"R^2 between quality and length in this generator: {sxy * sxy / (sxx * syy):.3f}"</span>)
+<span class="kw">print</span>(<span class="st">"an uncorrelated length feature still gets a large weight: that weight IS the protocol bug."</span>)
+</div><div class="code out-block" data-lang="output">
+two annotators, columns swapped: p_o=0.543  p_e=0.498  kappa=+0.089
+fitted   beta(quality)=+0.417   alpha(length)=+0.00252   [true alpha=+0.00350]
+recovered share of the true length bias: 72%
+R^2 between quality and length in this generator: 0.237
+an uncorrelated length feature still gets a large weight: that weight IS the protocol bug.
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c54-s4">4 &middot; Your hands <a class="hook" href="#c54-s4">#</a></h2>
+
+    <p>Three labs: build a preference dataset with a protocol attached, measure annotator quality properly,
+    and recover the bias that the protocol failed to remove.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; recover your annotator's length bias</h4>
+      <p>A synthetic annotation protocol with a known bias of 0.0035 logits per character. You are given only the pair outcomes, then asked to recover the bias by fitting two coefficients.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L54: measure the instrument before you build on it. Pure stdlib -- no numpy needed.</span>
+<span class="kw">import</span> math, random
+
+rng = random.Random(<span class="nm">7</span>)
+ALPHA_TRUE = <span class="nm">0.0035</span>           <span class="cm"># annotator's real length bias, logits per character</span>
+POS_LEAN = <span class="nm">0.25</span>               <span class="cm"># extra logit for "the left column looks better"</span>
+
+
+<span class="kw">def</span> quality(i):
+    <span class="kw">return</span> <span class="nm">0.30</span> + <span class="nm">0.40</span> * ((i * <span class="nm">37</span> % <span class="nm">11</span>) / <span class="nm">10.0</span>)
+
+
+<span class="kw">def</span> length(i):
+    <span class="kw">return</span> <span class="nm">120</span> + (i * <span class="nm">53</span> % <span class="nm">17</span>) * <span class="nm">22</span>
+
+
+<span class="kw">def</span> sig(z):
+    <span class="kw">if</span> z &gt;= <span class="nm">0</span>:
+        <span class="kw">return</span> <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z))
+    e = math.exp(max(z, -<span class="nm">700</span>))       <span class="cm"># clip: exp underflows gracefully, never raises</span>
+    <span class="kw">return</span> e / (<span class="nm">1</span> + e)
+
+
+<span class="kw">def</span> annotate(i, j, position):
+    z = quality(i) - quality(j) + ALPHA_TRUE * (length(i) - length(j))
+    <span class="kw">if</span> position == <span class="st">"BA"</span>:
+        z = -z + POS_LEAN
+    <span class="kw">return</span> <span class="nm">1</span> <span class="kw">if</span> rng.random() &lt; sig(z) <span class="kw">else</span> <span class="nm">0</span>
+
+
+pairs = []
+<span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">600</span>):
+    i, j = rng.randrange(<span class="nm">12</span>), rng.randrange(<span class="nm">12</span>)
+    <span class="kw">if</span> i != j:
+        pairs.append((i, j, <span class="st">"BA"</span> <span class="kw">if</span> k % <span class="nm">2</span> <span class="kw">else</span> <span class="st">"AB"</span>))
+labels = [annotate(i, j, p) <span class="kw">for</span> i, j, p <span class="kw">in</span> pairs]
+a2 = [annotate(i, j, p) <span class="kw">for</span> i, j, p <span class="kw">in</span> pairs]
+b2 = [<span class="nm">1</span> - annotate(j, i, p) <span class="kw">for</span> i, j, p <span class="kw">in</span> pairs]
+
+
+<span class="kw">def</span> kappa(x, y):
+    n = len(x)
+    po = sum(u == v <span class="kw">for</span> u, v <span class="kw">in</span> zip(x, y)) / n
+    pa, pb = sum(x) / n, sum(y) / n
+    pe = pa * pb + (<span class="nm">1</span> - pa) * (<span class="nm">1</span> - pb)
+    <span class="kw">return</span> po, pe, (po - pe) / (<span class="nm">1</span> - pe)
+
+
+po, pe, kap = kappa(a2, b2)
+<span class="kw">print</span>(f<span class="st">"two annotators, columns swapped: p_o={po:.3f}  p_e={pe:.3f}  kappa={kap:+.3f}"</span>)
+
+<span class="cm"># y = 0 means "left column chosen". Features: dq = quality difference, dl = length difference.</span>
+rows = []
+<span class="kw">for</span> (i, j, pos), y <span class="kw">in</span> zip(pairs, labels):
+    left, right = (i, j) <span class="kw">if</span> pos == <span class="st">"AB"</span> <span class="kw">else</span> (j, i)
+    rows.append((quality(left) - quality(right), length(left) - length(right), y))
+
+<span class="cm"># 2-parameter Bradley-Terry by Newton steps, gradients in closed form</span>
+beta, alpha = <span class="nm">0.5</span>, <span class="nm">0.0</span>
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">40</span>):
+    gb = ga = hbb = hba = haa = <span class="nm">0.0</span>
+    <span class="kw">for</span> dq, dl, y <span class="kw">in</span> rows:
+        p = sig(beta * dq + alpha * dl)
+        e = y - p
+        w = p * (<span class="nm">1</span> - p)
+        gb += e * dq
+        ga += e * dl
+        hbb += w * dq * dq
+        hba += w * dq * dl
+        haa += w * dl * dl
+    hbb += <span class="nm">1.0</span>
+    haa += <span class="nm">1.0</span>
+    det = hbb * haa - hba * hba
+    db = (haa * gb - hba * ga) / det
+    da = (hbb * ga - hba * gb) / det
+    beta, alpha = beta + db, alpha + da
+
+<span class="kw">print</span>(f<span class="st">"fitted   beta(quality)={beta:+.3f}   alpha(length)={alpha:+.5f}   [true alpha={ALPHA_TRUE:+.5f}]"</span>)
+<span class="kw">print</span>(f<span class="st">"recovered share of the true length bias: {alpha / ALPHA_TRUE:.0%}"</span>)
+
+<span class="cm"># is the reward a length detector? correlation of the two features in this generator</span>
+dq_l, dl_l = [r[<span class="nm">0</span>] <span class="kw">for</span> r <span class="kw">in</span> rows], [r[<span class="nm">1</span>] <span class="kw">for</span> r <span class="kw">in</span> rows]
+mx, my = sum(dq_l) / len(dq_l), sum(dl_l) / len(dl_l)
+sxy = sum((x - mx) * (y - my) <span class="kw">for</span> x, y <span class="kw">in</span> zip(dq_l, dl_l))
+sxx = sum((x - mx) ** <span class="nm">2</span> <span class="kw">for</span> x <span class="kw">in</span> dq_l)
+syy = sum((y - my) ** <span class="nm">2</span> <span class="kw">for</span> y <span class="kw">in</span> dl_l)
+<span class="kw">print</span>(f<span class="st">"R^2 between quality and length in this generator: {sxy * sxy / (sxx * syy):.3f}"</span>)
+<span class="kw">print</span>(<span class="st">"an uncorrelated length feature still gets a large weight: that weight IS the protocol bug."</span>)
+</div><div class="code out-block" data-lang="output">
+two annotators, columns swapped: p_o=0.543  p_e=0.498  kappa=+0.089
+fitted   beta(quality)=+0.417   alpha(length)=+0.00252   [true alpha=+0.00350]
+recovered share of the true length bias: 72%
+R^2 between quality and length in this generator: 0.237
+an uncorrelated length feature still gets a large weight: that weight IS the protocol bug.
+</div>
+      <p class="expect">The fit recovers roughly three-quarters of the true length coefficient from 600 pairs, and the two annotators' raw agreement is only about 0.54 with kappa near 0.09 &mdash; near-chance. If your real pairs show kappa below about 0.4, stop collecting preferences and rewrite the rubric.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the position-bias swap test</h4>
+      <p>Every reward model gate should include this. Take 200 held-out pairs, score them, then swap A and B in each pair and"
+      "score again. The mean absolute change is your position leak.</p>
+      <div class="code" data-lang="python">
+import json
+
+def swap_report(path="pairs.jsonl"):
+    n = changed = 0
+    for line in open(path):
+        r = json.loads(line)
+        # your scorer MUST be order-canonical: score(text) with no pair context
+        raise SystemExit("plug in your scorer here")
+    return changed / max(n, 1)
+
+# the invariant, stated as a test:
+#   for every pair, |score(A) - score(B)| must be identical before and after swapping columns
+# a scorer that reads "the first answer" instead of "this answer" fails this test.
+      </div>
+      <p class="expect">Any non-zero rate means the scorer leaks column position. If your scorer takes the pair as input"
+      " rather than scoring responses independently, the test is also telling you something about your API shape.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the per-pair record you must store</h4>
+      <p>Copy this schema into your dataset. Each field exists because a specific failure becomes unattributable without it.</p>
+      <div class="code" data-lang="json">
+{"pair_id": "p_000123",
+ "prompt_hash": "sha256:...",
+ "resp_a_hash": "sha256:...", "resp_b_hash": "sha256:...",
+ "shown_order": "AB",
+ "chosen": "A",
+ "annotator_id": "ann_017",
+ "rubric_version": "2026-10-r3",
+ "seconds_to_decide": 41,
+ "flags": ["length_mismatch_gt_2x"],
+ "label": "usable"}
+      </div>
+      <p class="expect">Remove <code>shown_order</code> and position bias becomes unmeasurable forever. Remove"
+      " <code>rubric_version</code> and you cannot explain a reward shift. Remove <code>annotator_id</code> and no"
+      " future disagreement is attributable. These three fields are the audit minimum.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c54-s5">5 &middot; Failure modes <a class="hook" href="#c54-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Verbosity bias.</strong> Symptom: chosen answers are systematically longer than rejected ones by a margin that reproduces across annotators; the learned reward correlates with token count better than with any rubric criterion.</li>
+        <li><strong>Position bias.</strong> Symptom: reward model accuracy drops when you swap the order in each pair. Measure it: the delta between original and swapped accuracy is your position-bias leak.</li>
+        <li><strong>Sycophancy leakage.</strong> Symptom: pairs where the response agrees with a false premise in the prompt are systematically <em>chosen</em>, because agreement reads as confidence. This bias is inherited by RLHF and is one of the hardest to remove later.</li>
+        <li><strong>Annotator drift over a long project.</strong> Symptom: the same pairs, re-annotated with a fresh cohort, disagree at a higher rate than the original cohort does with itself.</li>
+        <li><strong>Forced-choice on indistinguishable pairs.</strong> Symptom: high label noise concentrated on the pairs closest in quality &mdash; which is precisely the region the reward model most needs to be right about.</li>
+        <li><strong>Selection bias in sampling pairs.</strong> Symptom: the pair distribution over prompts differs from the prompt distribution at serving time; the reward model is excellent on the data you collected and blind to the traffic you serve.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Record per pair: prompt hash, both response hashes, chosen side, the order shown, annotator id,
+      time taken, rubric version, and a mandate to mark "unusable". Without the shown-order field you cannot
+      measure position bias; without the rubric version you cannot explain a shift in the reward; without
+      annotator id every future disagreement is unattributable.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c54-s6">6 &middot; Connects to <a class="hook" href="#c54-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="52-sft.html">L52 &middot; SFT</a> (the data-hygiene habits transfer),
+    <a class="tag-d" href="../track-d/89-llm-as-judge.html">L89 &middot; LLM-as-judge</a> (the same bias questions, cheaper annotators).</p>
+    <p><strong>Unlocks:</strong> DPO, reward modelling, PPO &mdash; all three consume exactly this data.</p>
+
+    <ul>
+      <li><a class="tag-c" href="55-dpo.html">L55 &middot; DPO</a> &mdash; consumes pairs directly; every bias here becomes a loss term there.</li>
+      <li><a class="tag-c" href="57-ppo.html">L57 &middot; PPO</a> &mdash; consumes the reward model trained on these pairs.</li>
+      <li><a class="tag-c" href="58-reward-modeling.html">L58 &middot; Reward modelling</a> &mdash; Bradley&ndash;Terry fit and the length-hack demo.</li>
+      <li><a class="tag-c" href="72-constitutional.html">L72 &middot; Constitutional AI</a> &mdash; replacing annotators with a rubric-driven critic, inheriting fewer but different biases.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; where these biases end up.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c54-s7">7 &middot; Self-check <a class="hook" href="#c54-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Two annotators agree on 68% of 1000 pairs. Their marginal preference for option A is 80% each. What is kappa, and what does it mean?</p>
+        <details><summary>Reveal answer</summary><p>p_e = 0.8&middot;0.8 + 0.2&middot;0.2 = 0.68. p_o = 0.68. kappa = (0.68 &minus; 0.68)/(1 &minus; 0.68) = 0. Their agreement isexactly what chance would produce given their shared bias toward option A. This is the canonical scripted-data case: the label carries the annotator's prior, not the comparison.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: your chosen responses average 410 characters and rejected average 300. An annotator measures quality as q + 0.002&middot;(&Delta;length). How large is the bias term on a typical pair?</p>
+        <details><summary>Reveal answer</summary><p>&Delta;length = 110 characters, so the bias adds 0.002 &times; 110 = 0.22 nats of logit in favour of the longer answer.With true quality differences often around 0.1-0.3 nats, the length term is comparable to the signal &mdash; the annotator isroughly half-measuring verbosity. That is the number the logistic-regression coef in the lab recovers.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> You swap the order of every pair and re-run the reward model. Accuracy drops from 0.71 to 0.64. What have you learned, and what do you do?</p>
+        <details><summary>Reveal answer</summary><p>Seven points of accuracy are position-driven, not quality-driven. Immediately: randomise or balance the shown orderin the dataset (and regenerate anything already trained). Then: add a swap-augmented validation split to the rewardmodel's gate, so any future position leak is caught automatically.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: the reward model scores 0.78 on held-out pairs but the RL policy's outputs get longer every day and judges rate them flat. Is the preference data bad, or is it the RL?</p>
+        <details><summary>Reveal answer</summary><p>Most likely the preference data: if chosen-minus-rejected length is positive and systematic, the reward learnedverbosity and RL is faithfully maximising it. Test it directly: regress the reward model's score on log-length forfixed-quality samples. An R&sup2; above about 0.3 means your reward is a length detector. The RL is not the bug;it is the messenger.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why must the rubric version be stored per pair rather than per project?</p>
+        <details><summary>Reveal answer</summary><p>Because rubrics get edited mid-project to resolve disagreements. Without a per-pair version you cannot tell whether ashift in the reward model comes from the data, the model, or a redefinition of the target. With it, you can segmentaccuracy by rubric version and measure whether the change helped.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="53-standard-pipeline.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L53 &middot; The standard pipeline and its gates</span></a>
+    <a class="next" href="55-dpo.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L55 &middot; DPO: RLHF without RL</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

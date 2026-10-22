@@ -1,0 +1,1209 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="calibration">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Level calibration &middot; The level-100 formula — AILearn</title>
+<meta name="description" content="A deterministic, evidence-gated formula that turns five channels of measurable evidence into a level from L1 to L10 — plus a working self-assessment tool with localStorage and an exportable evidence log.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+/* ---------- page-local styles: calibration widget only ---------- */
+.cal-channels { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 16px 0 22px; }
+.ch { border: 1px solid var(--line); background: var(--card-2); border-radius: 12px; padding: 13px 15px; }
+.ch-hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 3px; }
+.ch-name { font-weight: 700; color: var(--txt); font-size: .93rem; }
+.ch-w { font-family: var(--mono); font-size: .68rem; color: var(--cyan); border: 1px solid rgba(56,189,248,.3);
+  background: rgba(56,189,248,.08); padding: 1px 7px; border-radius: 99px; white-space: nowrap; }
+.ch-desc { font-size: .78rem; color: var(--txt-3); line-height: 1.45; margin: 0 0 9px; }
+.ch-score { font-family: var(--mono); font-size: .72rem; color: var(--txt-2); margin-top: 8px; display: flex; justify-content: space-between; }
+.ch-score b { color: var(--txt); font-weight: 700; }
+.chr { display: block; cursor: pointer; font-size: .78rem; color: var(--txt-2); padding: 3px 0; line-height: 1.45; }
+.chr input { accent-color: #6366f1; margin: 0 6px 0 0; vertical-align: -1px; }
+.chr:hover { color: var(--txt); }
+.cal-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: .82rem; color: var(--txt-2); margin-bottom: 8px; }
+.cal-row input[type=number], .cal-row input[type=text], .cal-row input[type=date] {
+  font-family: var(--mono); font-size: .78rem; background: #060910; color: var(--txt);
+  border: 1px solid var(--line-strong); border-radius: 7px; padding: 5px 8px; width: 84px;
+}
+.cal-row input[type=text], .cal-row input[type=date] { width: 240px; }
+.cal-row input[type=date] { width: 148px; }
+html[data-theme="light"] .cal-row input[type=number],
+html[data-theme="light"] .cal-row input[type=text],
+html[data-theme="light"] .cal-row input[type=date] { background: #fff; }
+.cal-tool { border: 1px solid rgba(99,102,241,.35); background: linear-gradient(180deg, rgba(99,102,241,.08), rgba(99,102,241,.02));
+  border-radius: var(--r); padding: 20px 22px; margin: 22px 0; }
+.cal-out { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0 0; align-items: start; }
+@media (max-width: 720px) { .cal-out { grid-template-columns: 1fr; } }
+.cal-big { font-family: var(--mono); font-size: 2.6rem; font-weight: 700; line-height: 1.1;
+  background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.cal-sub { font-family: var(--mono); font-size: .72rem; color: var(--txt-3); letter-spacing: .5px; text-transform: uppercase; }
+.cal-level { font-family: var(--mono); font-weight: 700; font-size: 1.6rem; color: var(--amber); }
+.cal-verdict { font-size: .84rem; color: var(--txt-2); margin: 8px 0 0; }
+.bar { display: flex; height: 14px; border-radius: 99px; overflow: hidden; border: 1px solid var(--line); background: #060910; margin: 8px 0 12px; }
+.bar i { display: block; height: 100%; transition: width .25s ease; }
+.bar i.c0 { background: #6366f1; } .bar i.c1 { background: #8b5cf6; }
+.bar i.c2 { background: #a855f7; } .bar i.c3 { background: #38bdf8; } .bar i.c4 { background: #10b981; }
+.legend { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: .76rem; font-family: var(--mono); color: var(--txt-2); }
+.decay-box { border: 1px dashed var(--line-strong); border-radius: 10px; padding: 10px 13px; margin: 4px 0 16px; }
+.decay-inputs { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-family: var(--mono); font-size: .74rem; color: var(--txt-3); margin-top: 6px; }
+.decay-inputs .dl { color: var(--amber); letter-spacing: .5px; }
+.dwrap input { width: 58px; font-family: var(--mono); font-size: .76rem; background: #060910; color: var(--txt);
+  border: 1px solid var(--line-strong); border-radius: 6px; padding: 3px 6px; }
+html[data-theme="light"] .dwrap input { background: #fff; }
+.legend span.k { display: inline-flex; align-items: center; gap: 6px; }
+.legend i.sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.gate { display: flex; justify-content: space-between; font-size: .76rem; font-family: var(--mono); color: var(--txt-3); padding: 3px 0; border-top: 1px dashed var(--line); }
+.gate b { color: var(--txt); }
+.gate.pass b { color: var(--emerald); } .gate.fail b { color: var(--txt-3); }
+.notice { font-size: .78rem; color: var(--amber); font-family: var(--mono); margin: 10px 0 0; }
+#cal-log { width: 100%; min-height: 190px; font-family: var(--mono); font-size: .72rem; line-height: 1.5;
+  background: #060910; color: #a5b4fc; border: 1px solid var(--line-strong); border-radius: 10px; padding: 12px; resize: vertical; }
+.cal-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.cal-btns button { font-family: var(--mono); font-size: .72rem; background: rgba(255,255,255,.05); color: var(--txt-2);
+  border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px 12px; cursor: pointer; transition: .16s; }
+.cal-btns button:hover { color: var(--cyan); border-color: rgba(56,189,248,.45); }
+.tier { display: inline-block; font-family: var(--mono); font-size: .62rem; letter-spacing: .8px; padding: 1px 7px; border-radius: 99px; vertical-align: 2px; }
+.tier.pri { color: #fecaca; background: rgba(239,68,68,.14); border: 1px solid rgba(239,68,68,.35); }
+.tier.cf { color: #a7f3d0; background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.32); }
+.tier.hard { color: #fde68a; background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.32); }
+.tier.elite { color: #ddd6fe; background: rgba(139,92,246,.14); border: 1px solid rgba(139,92,246,.36); }
+.checklist { border: 1px solid var(--line); border-radius: var(--r); padding: 16px 20px; background: var(--card-2); margin: 16px 0; }
+.checklist h4 { margin-top: 0 !important; }
+.checklist ul { list-style: none; padding-left: 0; }
+.checklist li { padding: 4px 0 4px 26px; position: relative; font-size: .88rem; }
+.checklist li::before { content: "\2610"; position: absolute; left: 4px; color: var(--txt-3); font-size: 1rem; }
+.audit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 720px) { .audit-grid { grid-template-columns: 1fr; } }
+.audit-grid .card h4 { margin-top: 0 !important; }
+.audit-grid .card p, .audit-grid .card li { font-size: .86rem; }
+.audit-grid .card ul { padding-left: 18px; margin-bottom: 0; }
+@media print {
+  .nav, .toc, footer, .bg-aurora, .cal-btns, #cal-out-panel, .pager, .no-print { display: none !important; }
+  body { background: #fff !important; color: #000 !important; }
+  .layout { display: block !important; }
+  .prose p, .prose li, .prose td, .prose th { color: #000 !important; }
+  .code, .checklist, .cal-tool, .card, .table td, .callout { border-color: #999 !important; background: #fff !important; }
+  .prose h2 { color: #000 !important; page-break-after: avoid; }
+  .checklist { page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="../index.html">About</a> <span>/</span> <span>Calibration</span></div>
+  <div class="track-tag">CALIBRATION &middot; THE LEVEL-100 FORMULA</div>
+  <h1>The level-100 formula &mdash; measure the level, never feel it</h1>
+  <p class="lede">A proof that fails is a finding; a feeling that fails is a mood. This page replaces "I&rsquo;m roughly at level 100 out of 100" with a weighted score over five channels of linkable evidence, ten gates with objective pass conditions, and a tool that computes your level and prints an audit log you can hand to someone else.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">working tool: self-assessment</span>
+    <span class="chip">10 gates &middot; 5 channels</span>
+    <span class="chip"><span class="asof">rubric version 2026-10-01</span></span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">no self-attestation</span>
+  <span class="pill">evidence pointer</span>
+  <span class="pill">Teach gate</span>
+  <span class="pill">confidence interval</span>
+  <span class="pill">reproduced by a stranger</span>
+  <span class="pill">18-month decay</span>
+  <span class="pill">monotone gate floor</span>
+  <span class="pill">quarterly audit</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why level must be measured">
+    <h2 id="cal-s1">1 &middot; Why level must be measured <a class="hook" href="#cal-s1">#</a></h2>
+
+    <p>You spent seven years in an audit function. You already know the whole argument, so it takes one
+    paragraph: <strong>a claim without evidence is not a finding.</strong> An auditor does not record "the
+    enrollment file looked compliant". They record the file, the rule, the test that was run, the result, and the
+    date. Anyone later can re-run the test. If they cannot, the finding is withdrawn.</p>
+
+    <p>Skill self-assessment fails in exactly the way an unaudited file fails &mdash; in four specific ways, all of
+    which will happen to you on the first pass of this page:</p>
+
+    <div class="grid2">
+      <div class="card">
+        <h4>The recency illusion</h4>
+        <p>You finish <a class="tag-b" href="../track-b/26-scaling-laws.html">L26</a> and feel like you understand
+        scaling laws. Feeling is a function of the last hour, not of retained capability. A claim made in the last
+        hour decays; a repo made two years ago does not pretend to be recent. That is why the rubric has an
+        <strong>18-month decay</strong> rule and the feeling does not.</p>
+      </div>
+      <div class="card">
+        <h4>The fluency trap</h4>
+        <p>Reading code you can read is not knowing what the code computes. Recognising <code>loss.backward()</code>
+        produces a strong sense of competence and precisely zero derivational ability. The rubric answers this by
+        making the <strong>Teach</strong> channel a recording, and by making the <strong>Concept</strong> channel a
+        held-out check rather than a read-and-nod.</p>
+      </div>
+      <div class="card">
+        <h4>Ready access to transcripts, not evidence</h4>
+        <p>You can always write "yes I have done it". That is self-attestation &mdash; the accused writing the
+        verdict. The rubric answers this with a hard rule: <strong>no point without an evidence pointer</strong> &mdash;
+        a link, a repo, a commit SHA, or a measured number produced by a procedure someone else could repeat.</p>
+      </div>
+      <div class="card">
+        <h4>The national-average illusion</h4>
+        <p>Everyone in this field must first learn the material. Being a relative generalist and being a specialist
+        feel different in your own head only when you measure them separately. The rubric separates them because
+        you are <em>deliberately uneven</em> &mdash; high Build, high Reproduce, thin Measure and Teach. An average
+        would erase the three facts that matter most. The weighted sum plus the gate floor keeps them visible.</p>
+      </div>
+    </div>
+
+    <div class="callout audit">
+      <p>The audit lens, applied to yourself: your portfolio currently contains several strong claims &mdash;
+      76.47% vs 25.49%, zero false positives, 22 of 25 exact &mdash; each reported as a <em>point</em>. An auditor
+      would reject those as findings and hold them as observations pending a measurement procedure, a sample size,
+      and an interval. On this rubric they earn real Build and Reproduce credit and only partial Measure credit.
+      That is not a criticism; it is what the rubric is for.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The five channels and the formula">
+    <h2 id="cal-s2">2 &middot; The five channels and the formula <a class="hook" href="#cal-s2">#</a></h2>
+
+    <p>Every level in this course rests on five independent kinds of evidence. They are separate channels rather
+    than one blended score because they fail independently: a person can build without measuring, or measure
+    without teaching. The weights below are a deliberate design choice, not a neutral default, and section&nbsp;2.4
+    explains each one.</p>
+
+    <table class="table">
+      <thead><tr><th>Channel</th><th>Weight</th><th>What counts as evidence</th><th>What does not</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>1 &middot; Concept</strong></td>
+          <td><strong>20%</strong></td>
+          <td>Self-check items passed on held-out questions; hand-derived results that match a reference implementation to a stated tolerance; a written derivation with the step where you got stuck marked.</td>
+          <td>Having read the lesson. Having watched the video. "Understood the gist".</td>
+        </tr>
+        <tr>
+          <td><strong>2 &middot; Build</strong></td>
+          <td><strong>30%</strong></td>
+          <td>A working artefact in a repo at a specific commit: a script that prints numbers, a test suite, a harness, a service that ran. The commit SHA is the pointer.</td>
+          <td>A plan, a sketch, a prompt, a repo whose README claims a result you cannot see printed anywhere.</td>
+        </tr>
+        <tr>
+          <td><strong>3 &middot; Teach</strong></td>
+          <td><strong>20%</strong></td>
+          <td>A recorded 5-minute explanation to someone who does not know the field, plus their paraphrase of it and what they could not repeat.</td>
+          <td>Internal understanding. A blog post about the topic in general. A slide without an audience.</td>
+        </tr>
+        <tr>
+          <td><strong>4 &middot; Measure</strong></td>
+          <td><strong>20%</strong></td>
+          <td>A number produced by a declared procedure, reported with a sample size and a confidence interval, plus the falsifier: what result would have disconfirmed the design.</td>
+          <td>"It works." "Much better." "Zero failures" with no denominator. Any single run.</td>
+        </tr>
+        <tr>
+          <td><strong>5 &middot; Reproduce</strong></td>
+          <td><strong>10%</strong></td>
+          <td>A log, diff, or screen recording of a stranger (or a clean container) running your artefact from your written instructions and getting your number.</td>
+          <td>"You can just run it." A README that was written by the same person who never re-ran it.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>2.1 &middot; The scoring function</h3>
+
+    <p>Each channel has a set of checks. A check is worth its points only when its evidence pointer validates.
+    With <code>p<sub>i</sub></code> the points actually validated in channel <code>i</code> and
+    <code>P<sub>i</sub></code> the maximum available in that channel:</p>
+
+    <div class="formula">
+      LevelScore = &sum;<sub>i=1..5</sub> w<sub>i</sub> &middot; (p<sub>i</sub> / P<sub>i</sub>)
+      <span class="note">w = (0.20, 0.30, 0.20, 0.20, 0.10) for Concept, Build, Teach, Measure, Reproduce. Max score = 100 when every check validates.</span>
+    </div>
+
+    <p>The raw weighted score is <em>not</em> the level. The level is the highest gate your evidence clears,
+    and gates impose a floor:</p>
+
+    <div class="formula">
+      Level = max { n &isin; 1..10 : LevelScore &ge; S<sub>n</sub> &nbsp;&and;&nbsp; every mandatory channel of gate n is cleared }
+      <span class="note">S<sub>n</sub> = (15, 22, 30, 38, 46, 54, 63, 73, 84, 95) &mdash; thresholds in section&nbsp;4. The gate floor means a score cannot buy a level past a missing channel: with 90 points but zero Measure evidence you are still capped at L4.</span>
+    </div>
+
+    <div class="callout boss">
+      <p>Two numbers, one verdict. The <strong>score</strong> says how much evidence you have accumulated. The
+      <strong>gate floor</strong> says which evidence you do not have. The verdict is the smaller of the two. That is
+      the whole design &mdash; it is the same two-part logic as "the transaction matched every field
+      <em>and</em> the required documentation was present".</p>
+    </div>
+
+    <h3>2.2 &middot; Worked arithmetic (do this by hand before touching the tool)</h3>
+
+    <div class="code" data-lang="text">
+Every check is worth 4 points and each channel holds 5 checks, so 1 point of a channel = 5 percentage points
+of that channel's ratio. All three cases below were run through the section 5 tool and its output is quoted.
+
+Case A — beginner, three weeks in (2 concept checks, 1 build check, no pointers missing)
+  Concept   8 / 20  -> 0.20 x 0.400 =  8.0 pts
+  Build     4 / 20  -> 0.30 x 0.200 =  6.0 pts
+  Teach     0 / 20  -> 0.20 x 0.000 =  0.0 pts
+  Measure   0 / 20  -> 0.20 x 0.000 =  0.0 pts
+  Reproduce 0 / 20  -> 0.10 x 0.000 =  0.0 pts
+  Score = 14.0        S1 = 15 NOT met, so the top candidate gate is none.
+  Verdict = L0 (pre-course).  Correct: a beginner has produced a number and has proven nothing yet.
+  One more build check (Build 8/20) moves the score to 20.0 -> top candidate L1 -> gap of 2.0 to S2.
+
+Case B — this learner today (hypothesis, see 2.3)
+  Concept  16 / 20  -> 0.20 x 0.800 = 16.0 pts   (4 of 5: blind spots named, no hand-derivation on record)
+  Build    16 / 20  -> 0.30 x 0.800 = 24.0 pts   (4 of 5: no interval-carrying harness on record)
+  Teach     4 / 20  -> 0.20 x 0.200 =  4.0 pts   (1 of 5: no paraphrase, no second recording)
+  Measure   8 / 20  -> 0.20 x 0.400 =  8.0 pts   (2 of 5: falsifier declared, no negative result published)
+  Reproduce 4 / 20  -> 0.10 x 0.200 =  2.0 pts   (1 of 5: nobody outside has re-run it)
+  Score = 54.0        S6 = 54 met, S7 = 63 NOT met -> top candidate gate L6.
+  Gate floors L1..L6: Teach > 0 (yes, 4), Measure > 0 (yes, 8) -> all cleared. Verdict = L6.
+  Now move one number and watch the floor bite: drop the single Teach check to 0 and the same
+  54.0 caps at L4, because L5 and above require a recorded explanation on the record.
+
+Case C — strong candidate with one external reproduction
+  Concept  16 / 20  -> 0.20 x 0.800 = 16.0 pts
+  Build    20 / 20  -> 0.30 x 1.000 = 30.0 pts
+  Teach    16 / 20  -> 0.20 x 0.800 = 16.0 pts
+  Measure  16 / 20  -> 0.20 x 0.800 = 16.0 pts
+  Reproduce 8 / 20  -> 0.10 x 0.400 =  4.0 pts
+  Score = 82.0        S8 = 73 met, S9 = 84 NOT met -> top candidate L8.
+  Gate floors: external re-run ticked, Reproduce 8 >= 5 -> cleared. Verdict = L8.
+  What holds this candidate at L8 rather than L9: Reproduce 8 (not 9) and no dated pre-registration.
+  All ten checks would give Score = 100.0 but still only L7 if the external-reproduction box
+  is empty — 100 points cannot buy past a gate you have not passed.
+    </div>
+
+    <h3>2.3 &middot; Where you probably sit today &mdash; a hypothesis, not a fact</h3>
+
+    <p>The honest hypothesis is <strong>L6&ndash;L7</strong>, and the range exists because the only genuinely
+    uncertain inputs are Measure and Teach. Build is exceptional by any standard (an audited bug-bounty gate, a
+    hash-chained ledger outside the writable workspace, a validated simulator, a controlled six-way benchmark).
+    Reproduce is strong in the "I can show you the ledger" sense and weak in the "a stranger re-ran it" sense.
+    Measure is thin: numbers exist, intervals and sample sizes mostly do not. Teach is thinnest: there is
+    engineering writing, but not much five-minute explanation to a non-specialist with a paraphrase logged.</p>
+
+    <div class="callout warn">
+      <p>Do not accept this estimate. Run the tool in section&nbsp;5, then ask one other person to check your
+      pointers. The number you should trust is the one produced after someone else looks at your evidence list &mdash;
+      because that is the only number an employer will ever compute about you too.</p>
+    </div>
+
+    <h3>2.4 &middot; Why these five weights</h3>
+    <ul>
+      <li><strong>Build at 30%</strong> &mdash; the largest single weight, because an artefact in a repo is the
+      cheapest evidence for a stranger to verify and the most resistant to inflation. Code either runs or it does
+      not. If a whole course were Build only, the learner would optimise for volume: twenty half-finished demos.</li>
+      <li><strong>Concept at 20%</strong> &mdash; necessary but cheap to fake to yourself. A wrong mental model and a
+      right one produce identical feelings until a held-out question or a hand-derivation separates them. Hence a
+      full fifth, paid only against held-out checks.</li>
+      <li><strong>Teach at 20%</strong> &mdash; the Feynman gate. It is the only channel that fails on a
+      still-present misunderstanding while the author is confident. Explaining in five recorded minutes to a
+      non-specialist is the cheapest known detector of gaps that reading cannot see. It also produces the
+      artefact that is most scarce in this portfolio.</li>
+      <li><strong>Measure at 20%</strong> &mdash; the same weight as Teach, and the second thinnest channel.
+      A system that works on your machine, today, at 2 p.m., is not a system; a system with an interval and a
+      falsifier is. This is the channel that turns your portfolio's strong claims into findings.</li>
+      <li><strong>Reproduce at 10%</strong> &mdash; deliberately lower, not because it matters less, but because it
+      is expensive (it needs a second person) and because it is largely a property of your Build discipline.
+      A person with strong Build who writes setup instructions down and a person who does not will diverge
+      naturally here. Keep it scarce so that earning it means something.</li>
+    </ul>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; Five rules that make it non-gameable">
+    <h2 id="cal-s3">3 &middot; Five rules that make it non-gameable <a class="hook" href="#cal-s3">#</a></h2>
+
+    <p>A rubric is only as good as its resistance to the person using it. These five rules are load-bearing &mdash;
+    if you weaken one, delete the page.</p>
+
+    <h3>(a) No self-attestation &mdash; every point needs a pointer</h3>
+    <p>Each check contains a mandatory <em>evidence pointer</em>: a URL, a repository path with a commit SHA, a
+    file path and line range, or a measured number together with the procedure that produced it.
+    A check whose pointer is empty scores zero even if it is ticked. The pointer must be resolvable by someone
+    other than you: "I built this" is not a pointer; <code>github.com/you/repo@a1b2c3d</code> is.</p>
+    <div class="code" data-lang="text">
+A pointer is valid if a stranger can do this with it:
+  1. open it                      — the link resolves, or the path exists at that SHA
+  2. see the claim                — the number/log exists there, not in a README paraphrase
+  3. repeat it                    — the procedure is written down or the command is in the repo
+Anything shorter than 1-2-3 is a note, not evidence. Record it as a note and take 0 points.
+    </div>
+
+    <h3>(b) The Teach gate is a recorded five-minute explanation</h3>
+    <p>Not a blog post about the topic. Not a slide deck. A <strong>recording of at least five minutes</strong> in
+    which you explain one mechanism to a person who does not work in the field, followed by their
+    <strong>one-paragraph paraphrase in their own words</strong> and a list of the things they could not repeat.
+    A teaching claim requires both artefacts. If the listener's paraphrase is vague, the gate is failed &mdash;
+    the failure is the finding.</p>
+    <div class="callout note">
+      <p>This is the cheapest known detector of the fluency trap (section&nbsp;1). You will watch yourself say
+      "it's just like a lookup" about attention and then be unable to answer "so what is the model doing when
+      there is nothing to look up?" That stumble is worth more than another lesson finished.</p>
+    </div>
+
+    <h3>(c) The Measure gate requires a number with an interval</h3>
+    <p>Every measurement claim requires four fields: the <strong>procedure</strong> (command or script and the
+    data it ran on), the <strong>sample size</strong>, the <strong>point estimate with a 95% confidence
+    interval</strong>, and the <strong>falsifier</strong> &mdash; the pre-declared result that would have
+    disconfirmed the design. A number without an interval is a raw observation and earns nothing. This is
+    consistent with <a class="tag-d" href="../track-d/88-evals.html">L88</a>, which builds the harness.</p>
+    <div class="formula">
+      CI<sub>95%</sub> (&asymp; Wilson or percentile-bootstrap) &nbsp;&rarr;&nbsp; report as
+      &nbsp;estimate &plusmn; half-width &nbsp;or&nbsp; [lower, upper], with n.
+      <span class="note">Example of the difference: "76.47% vs 25.49%" is an observation. "76.47% [63.2, 86.0] vs 25.49% [16.5, 37.0], n = 51 per arm" is a finding, because the intervals do not overlap and the n is stated.</span>
+    </div>
+
+    <h3>(d) The Reproduce gate requires a stranger</h3>
+    <p>Reproduction is a log or a screen recording of <em>another person</em> (or a clean environment you never
+    tuned while running) executing your written setup and obtaining your number within a stated tolerance. The
+    required artefact is the log plus the exact commit SHA that was used. If someone had to ask you a question
+    during the run, record the question &mdash; it is a finding about your documentation, not a favour.</p>
+
+    <h3>(e) Decay &mdash; evidence older than 18 months counts at half weight</h3>
+    <p>Each evidence pointer carries a <code>dated</code> field. Points from evidence older than 18 months are
+    multiplied by 0.5, and nothing older than 36 months counts at all (it stays in the log for context, at zero
+    points). The comparison date is always the date the assessment was run, never the date of an earlier run.</p>
+    <p>In the section&nbsp;5 tool the unit of decay is the <strong>pointer</strong>, recorded per channel: you tick
+    the check, then enter in the <em>decayed</em> box how many of that channel's validated points are still
+    inside 18 months. <code>p<sub>i</sub></code> is then validated points plus half of the decayed ones, and the
+    live formula display re-derives the channel ratio from those two numbers.</p>
+    <div class="formula">
+      p<sub>i</sub> = (points<sub>i</sub> &minus; d<sub>i</sub>) + 0.5 &middot; d<sub>i</sub>
+      &nbsp;&nbsp;where d<sub>i</sub> = decayed (18&ndash;36 month) points still valid in channel i
+      <span class="note">Points older than 36 months are archived at zero. The tool in section 5 takes d<sub>i</sub> as an input per channel and computes the ratio (p<sub>i</sub> / P<sub>i</sub>) live — so a learning loop that never produces new artefacts visibly decays. The live formula display re-derives each channel's ratio from your inputs.</span>
+    </div>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Building with no measurement.</strong> Symptom: the Build channel is full and Measure is empty; you have shipped a lot and cannot say how much better anything is. Caught by: gate floors at L6.</li>
+        <li><strong>Reading with no teaching.</strong> Symptom: Concept is full, Teach is empty; the material feels understood and disappears in a conversation. Caught by: the L5 Teach floor.</li>
+        <li><strong>Claim inflation with no pointers.</strong> Symptom: a high score whose evidence box contains sentences rather than links. Caught by: every ticked check with an empty pointer counts as zero, visible in the log.</li>
+        <li><strong>Self-reproducing.</strong> Symptom: Reproduce points earned by running your own script twice. Caught by: the stranger requirement in rule (d).</li>
+        <li><strong>Frozen portfolio.</strong> Symptom: score stops moving after month three. Caught by: 18-month decay &mdash; frozen evidence is disposable work.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; The ten gates L1&ndash;L10">
+    <h2 id="cal-s4">4 &middot; The ten gates L1&ndash;L10 <a class="hook" href="#cal-s4">#</a></h2>
+
+    <p>Each gate names the lesson range it covers, the objective pass conditions, the artefacts required to
+    claim it, and the specific thing that separates it from the gate below. Thresholds are the
+    <code>S<sub>n</sub></code> from section&nbsp;2. Gates are <strong>cumulative</strong>: clearing L6 means L1&ndash;L5
+    are cleared too, and any L6 artefact may serve as the artefact for an earlier gate where the lesson ranges
+    overlap.</p>
+
+    <table class="table">
+      <thead><tr><th>Gate</th><th>Score &ge;</th><th>Lessons</th><th>Objective pass conditions &amp; required artefacts</th><th>What separates it from the gate below</th></tr></thead>
+      <tbody>
+
+        <tr>
+          <td><strong>L1</strong><br><span class="tier cf">COMFORT</span></td>
+          <td>15</td>
+          <td>01, 16, 76, 91</td>
+          <td>Concept: passes 4 of 5 self-checks in each of 4 lessons, on <em>unseen</em> questions.
+          Build: one script that prints a real number (a token count and its cost; a perplexity computed by hand).
+          Teach: not required. Measure: not required.
+          <br><strong>Artefact:</strong> <code>scripts/token_cost.py</code> + its output pasted as a dated evidence entry.</td>
+          <td>You have started and produced a number you did not already know. Below L1 you have only read.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L2</strong><br><span class="tier cf">COMFORT</span></td>
+          <td>22</td>
+          <td>02, 06, 17, 77</td>
+          <td>Build: numpy attention implemented from scratch and shown to match a reference to 1e-6; a sampler playground whose distribution you can explain.
+          Concept: derive <code>Q&middot;K<sup>T</sup>/&radic;d</code> on paper without notes.
+          Measure: the attention output difference printed with tolerance.
+          <br><strong>Artefact:</strong> <code>attention.py</code> + <code>test_attention.py</code> passing at a commit SHA.</td>
+          <td>A mechanism is <em>implemented</em>, not paraphrased. You can now read the rest of Track A as a set of variations on this block.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L3</strong><br><span class="tier cf">COMFORT</span></td>
+          <td>30</td>
+          <td>19, 20, 24, 25</td>
+          <td>Build: a tiny transformer trained end-to-end on a real corpus, with a resumable checkpoint and a stored loss curve.
+          Reproduce: the training command documented so that a clean run recreates the curve shape.
+          <br><strong>Artefact:</strong> repo + <code>results/loss_curve.json</code> + the exact command that produced it.</td>
+          <td>You have owned the whole loop once: data in, loss down, artefact out. Below L3 you own pieces.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L4</strong><br><span class="tier hard">HARD</span></td>
+          <td>38</td>
+          <td>26, 27, 28, 43</td>
+          <td>Build: fit your own scaling law to measured points and predict a held-out point &mdash; the prediction is the artefact.
+          Measure: report the fitted exponent with an interval, and the <em>relative</em> error of the held-out prediction.
+          Concept: reproduce Chinchilla&rsquo;s compute-optimal argument on a napkin, and a full FLOPs/$ cost model for one run.
+          <br><strong>Artefact:</strong> <code>scaling_fit.ipynb</code> or <code>.py</code>, plus a one-page prediction memo.</td>
+          <td>A <strong>prediction</strong> was made before seeing the answer. This is the first gate with any real Measure content, and it is the first that can genuinely be wrong.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L5</strong><br><span class="tier hard">HARD</span></td>
+          <td>46</td>
+          <td>06&ndash;10, 33, 38 + <strong>one recorded Teach</strong></td>
+          <td>Concept: KV-cache memory math and MLA-vs-GQA table derived by hand.
+          Teach <em>(now mandatory)</em>: one recorded five-minute explanation of attention or the KV cache to a non-specialist, with their paraphrase and their list of what they could not repeat.
+          Reproduce: a second person runs your attention test suite successfully using only your README.
+          <br><strong>Artefact:</strong> the recording, the paraphrase, and the run log.</td>
+          <td><strong>Teach becomes mandatory.</strong> From here on you must be able to move the idea into someone else&rsquo;s head &mdash; a capability that reading never produced.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L6</strong><br><span class="tier hard">HARD</span></td>
+          <td>54</td>
+          <td>55&ndash;59, 88 + <strong>one interval on the record</strong></td>
+          <td>Measure <em>(now mandatory)</em>: any real measurement of yours re-reported as point estimate + 95% interval + n + a falsifier declared <em>before</em> the run.
+          Concept: implement DPO&rsquo;s loss in numpy and derive one GRPO advantage term without notes.
+          Build: a reward-model or process-verifier toy at a pinned SHA.
+          Reproduce: an eval harness whose output includes the interval.
+          <br><strong>Artefact:</strong> <code>eval_report.md</code> containing the four Measure fields verbatim.</td>
+          <td><strong>Measure becomes mandatory.</strong> A number without an interval stops being evidence here. This gate is precisely the one the portfolio in <a href="prashanth.html">the profile</a> is shortest on.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L7</strong><br><span class="tier elite">ELITE</span></td>
+          <td>63</td>
+          <td>76&ndash;84, 89, 90</td>
+          <td>Build: an agent system that runs unattended for a long horizon with a real budget cap and a recorded trip.
+          Measure: the long-horizon failure curve (failure rate vs turns, or vs context length) with intervals, plus a judge-calibration report (agreement and agreement-with-expert intervals).
+          Teach: two five-minute recordings on two different mechanisms.
+          Reproduce: the agent system reproducibly starts from a documented, seeded state.
+          <br><strong>Artefact:</strong> system repo + failure-curve chart + judge-calibration report + two recordings.</td>
+          <td>You must <strong>measure a system, not a loss function</strong>, and the measurement must survive an adversarial judge. Also the first gate with two Teach recordings.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L8</strong><br><span class="tier elite">ELITE</span></td>
+          <td>73</td>
+          <td>88, 89, 91, 96 + <strong>an external re-run</strong></td>
+          <td>Reproduce: an independent person (not you, not an editor, not a co-author) re-runs one of your measurement procedures and obtains a value inside your declared interval. Their writeup is the artefact.
+          Measure: at least three intervals on record, including one negative or non-significant result &mdash; something you tried that did not work, reported honestly.
+          Build: a go/no-go production checklist executed against a real system with every item resolving to a pointer.
+          Teach: three recordings, at least one outside your own field of engineering.
+          <br><strong>Artefact:</strong> third-party reproduction writeup + a committed negative-result report.</td>
+          <td><strong>An outside party reproduced something.</strong> Your claims stop being self-reported. Below L8 every number in your portfolio is "trust the author"; at L8 one number is not.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L9</strong><br><span class="tier elite">ELITE</span></td>
+          <td>84</td>
+          <td>94, 95, 99 + two independent re-runs</td>
+          <td>Reproduce: two independent strangers reproduce two different artefacts, from written specifications only. Their writeups state what was unclear.
+          Measure: a pre-registered evaluation &mdash; predictions written down and dated <em>before</em> the experiment, then the result reported against them, including any disconfirmation.
+          Build: an audited agent system whose acceptance criteria were declared before the build, with a tamper-evident ledger and a second-party audit.
+          Teach: a recorded explanation with a listener who subsequently teaches it correctly in a third recording &mdash; the idea survived exactly two hops.
+          <br><strong>Artefact:</strong> pre-registration + audit + second-hop recording + two independent repro writeups.</td>
+          <td>The <strong>specification, not the person</strong>, transmits the system to other people, and your predictions were committed before you knew the answer. This is the "every part of the loop is externally checkable" gate.</td>
+        </tr>
+
+        <tr>
+          <td><strong>L10</strong><br><span class="tier elite">ELITE</span></td>
+          <td>95</td>
+          <td>Any &mdash; the artefact is the point, not the lesson list</td>
+          <td><strong>Publish one externally-cited measurement or artefact that other people reproduce without your help.</strong>
+          Objective pass conditions, all three of which must hold:
+          <ol>
+            <li><strong>External citation.</strong> At least one person with no prior connection to you references the result in their own work &mdash; a paper, a benchmark leaderboard, a maintained blog post, a teaching repo &mdash; and their description of it is accurate.</li>
+            <li><strong>Independent reproduction by a stranger, twice, without contact.</strong> Two parties you have never corresponded with reproduce the result from the published specification alone. Neither asks you a question. Their writeups state the obtained number and it falls inside your declared interval.</li>
+            <li><strong>The measurement survives an adversarial check and a stated falsifier.</strong> You publish the procedure, the n, the interval, the failure modes, and the exact result that would have refuted your claim &mdash; and the artefact carries a stable identifier (DOI, versioned release tag) so a later reader can pin what they cited.</li>
+          </ol>
+          <br><strong>Artefact:</strong> the published work + two uncontacted reproduction logs + one external citation.</td>
+          <td><strong>Your evidence now validates itself in public, and it outlives your attention.</strong> At L9 people reproduce your work when you are in the room. At L10 people you have never met reproduce it from the document, cite it correctly, and the citation is still accurate a year later. This is the gate that cannot be passed alone, cannot be passed by effort in a single quarter, and is the only one where failing for a year while a reproduction is pending is the expected cost.</td>
+        </tr>
+
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <p><strong>What L10 is not.</strong> L10 is not "published a paper". A preprint nobody cites earns the citation
+      condition zero. L10 is not "went viral". A blog post with 100k views and no reproduction earns condition 2
+      zero. L10 is not "a large project". Size is not the variable; <em>external, contact-free validation</em> is.</p>
+    </div>
+
+    <div class="callout boss">
+      <p>Why L10 is defined this way: because it is the exact thing you spent seven years being able to spot in
+      everyone else&rsquo;s filing. A claim that only its author can check is not a finding. L10 is the first gate
+      where your own work passes that test, and it is the only gate whose evidence you cannot generate alone.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; The self-assessment tool">
+    <h2 id="cal-s5">5 &middot; The self-assessment tool <a class="hook" href="#cal-s5">#</a></h2>
+
+    <p>Tick every check whose <strong>evidence pointer</strong> is filled in and resolvable. A ticked check with an
+    empty pointer is scored as zero and flagged in the log. The tool stores your state in
+    <code>localStorage</code>, computes channels, score, gate floor and level, and emits a copyable
+    evidence-log JSON you can paste into a quarterly review or hand to a reviewer.</p>
+
+    <div class="callout audit">
+      <p><strong>How the floor works in the tool.</strong> The score selects the top candidate gate from the
+      thresholds. Then each candidate gate is checked against its mandatory channels. The level is the highest
+      gate whose threshold <em>and</em> mandatory channels both hold: <strong>L5</strong> requires Teach &gt; 0,
+      <strong>L6</strong> and above require Measure &gt; 0, <strong>L7 and above</strong> require Teach &ge; 7
+      (i.e. a second recording), <strong>L8 and above</strong> require Reproduce &ge; 5 (an external re-run),
+      <strong>L9 and above</strong> require Reproduce &ge; 9 and a dated pre-registration, and
+      <strong>L10</strong> requires all five channels full plus the external-citation and uncontacted-reproduction
+      checklist in section&nbsp;4.</p>
+    </div>
+
+    <!-- ======================= THE WIDGET ======================= -->
+    <div class="cal-tool" id="cal-tool">
+      <h4>Channels &mdash; tick what is proven</h4>
+
+      <div class="cal-row">
+        <label for="cal-name">Name for the log</label>
+        <input type="text" id="cal-name" placeholder="Prashanth Kumar Kadasi" maxlength="60">
+        <label for="cal-date">Assessment date</label>
+        <input type="date" id="cal-date">
+      </div>
+
+      <div class="cal-channels" id="cal-channels"><!-- built by JS --></div>
+
+      <div class="decay-box">
+        <div class="cal-row" style="margin-bottom:4px">
+          <span><strong>Decay</strong> &mdash; points from evidence 18&ndash;36 months old count at half weight</span>
+          <label><input type="checkbox" id="cal-decay"> enable decay</label>
+        </div>
+        <div id="cal-decay-inputs" class="decay-inputs" hidden>
+          <span class="dl">decayed &rarr;</span>
+          <span class="dwrap">concept <input type="number" data-decay="concept" min="0" max="20" step="4" value="0"></span>
+          <span class="dwrap">build <input type="number" data-decay="build" min="0" max="20" step="4" value="0"></span>
+          <span class="dwrap">teach <input type="number" data-decay="teach" min="0" max="20" step="4" value="0"></span>
+          <span class="dwrap">measure <input type="number" data-decay="measure" min="0" max="20" step="4" value="0"></span>
+          <span class="dwrap">reproduce <input type="number" data-decay="repro" min="0" max="20" step="4" value="0"></span>
+        </div>
+      </div>
+
+      <h4>Gate checklist &mdash; for L8 and above</h4>
+      <label class="chr"><input type="checkbox" data-gate="ext"> Someone with no connection to me has reproduced one of my measurements (L8 external re-run)</label>
+      <label class="chr"><input type="checkbox" data-gate="prereg"> I have a dated pre-registration of predictions that predates the result (L9)</label>
+      <label class="chr"><input type="checkbox" data-gate="cite"> My result has an accurate external citation from someone unconnected to me (L10)</label>
+      <label class="chr"><input type="checkbox" data-gate="two"> Two uncontacted strangers reproduced it from the specification alone (L10)</label>
+      <label class="chr"><input type="checkbox" data-gate="doi"> The artefact has a stable identifier &mdash; DOI, versioned release tag (L10)</label>
+
+      <div class="cal-out">
+        <div>
+          <div class="cal-sub">Weighted score</div>
+          <div class="cal-big" id="cal-score">0.0</div>
+          <div class="cal-sub" style="margin-top:10px">Level (score &cap; gate floor)</div>
+          <div class="cal-level" id="cal-level">L0</div>
+          <p class="cal-verdict" id="cal-verdict">Nothing proven yet.</p>
+        </div>
+        <div>
+          <div class="cal-sub">Channel breakdown</div>
+          <div class="bar" id="cal-bar"><i class="c0" style="width:0"></i><i class="c1" style="width:0"></i><i class="c2" style="width:0"></i><i class="c3" style="width:0"></i><i class="c4" style="width:0"></i></div>
+          <div class="legend" id="cal-legend"></div>
+          <div style="margin-top:12px" id="cal-gates"></div>
+        </div>
+      </div>
+
+      <p class="notice" id="cal-notice"></p>
+
+      <h4 style="margin-top:20px">Evidence log (copyable JSON)</h4>
+      <textarea id="cal-log" spellcheck="false" readonly aria-label="Evidence log JSON">(complete a check to generate the log)</textarea>
+      <div class="cal-btns no-print">
+        <button type="button" id="cal-copy">copy JSON</button>
+        <button type="button" id="cal-reset">reset</button>
+        <button type="button" id="cal-print">print / save as PDF</button>
+      </div>
+      <p style="font-size:.76rem;color:var(--txt-3);margin:10px 0 0">
+        Stored under <code>localStorage['AILearn::calibration::v1']</code>. Nothing leaves this browser.
+      </p>
+    </div>
+    <!-- ===================== /THE WIDGET ====================== -->
+
+    <h3>5.1 &middot; Pointer validity check</h3>
+    <p>For each ticked check, paste its pointer into this box. If a stranger cannot do the three steps in
+    section&nbsp;3(a) with it, untick the check. The empty-pointer count is the number of points you are about
+    to claim dishonestly.</p>
+    <div class="cal-row">
+      <input type="text" id="cal-ptr" placeholder="paste a pointer (URL, repo@sha, path:lines, command)" style="width:100%">
+    </div>
+    <p style="font-size:.8rem;color:var(--txt-3)">
+      Guidelines: a repo path must include a commit SHA &mdash; <code>github.com/u/r@a1b2c3d</code>; a measurement
+      must include the command and the n &mdash; <code>python eval.py --set held_out.txt &rarr; n=240</code>;
+      a lesson artifact must name the lesson &mdash; <code>track-b/26 + fit.py, held-out rel-err 4.1%</code>.
+    </p>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; The printable audit + quarterly review">
+    <h2 id="cal-s6">6 &middot; The printable audit and the quarterly review <a class="hook" href="#cal-s6">#</a></h2>
+
+    <p>Print this page (browser print, or the button in the tool) and keep the checklist physically. A rubric you
+    only ever view on the screen you are also working on is a rubric that gets edited by mood.</p>
+
+    <h3>6.1 &middot; The quarterly self-audit, in 90 minutes</h3>
+    <table class="table">
+      <thead><tr><th>#</th><th>Step</th><th>Time</th><th>Output</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Collect every evidence pointer you have used before. For each, open it. Delete or demote any pointer that no longer resolves, that requires private access, or whose number is not visible there.</td><td>20 min</td><td>A reduced pointer list. Deletions are the goal, not a failure.</td></tr>
+        <tr><td>2</td><td>Mark the date of each pointer. Anything older than 18 months moves to half weight; older than 36 moves to the archive at zero.</td><td>10 min</td><td>Dated list; decayed points.</td></tr>
+        <tr><td>3</td><td>Run the tool with only what survived steps 1&ndash;2. Record the score and the level.</td><td>15 min</td><td>This quarter&rsquo;s <code>score</code> and <code>level</code>.</td></tr>
+        <tr><td>4</td><td>Ask one other person to review only the pointers, not the claims. Ask: "could you re-run this?" Record every "no" as a finding.</td><td>15 min</td><td>A list of documentation findings.</td></tr>
+        <tr><td>5</td><td>For each Measure check on record, re-derive the interval from the stored numbers. If a stored number has no n, it is now demoted to an observation.</td><td>15 min</td><td>Original-vs-reported difference count.</td></tr>
+        <tr><td>6</td><td>Write one sentence: the gate floor that currently blocks you, and the single artefact that would clear it.</td><td>10 min</td><td>The one deliverable for next quarter.</td></tr>
+        <tr><td>7</td><td>Append the run&rsquo;s JSON to a dated log file. Never overwrite a previous quarter &mdash; diffing the years is where the real signal is.</td><td>5 min</td><td><code>calibration/YYYY-QN.json</code></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout note">
+      <p><strong>The rule that matters most in the review:</strong> a score that does not fall after a rigorous review
+      means the review was not rigorous. The honest pattern over four quarters is small, lumpy gains with
+      occasional drops when old evidence decays &mdash; that shape is the rubric working.</p>
+    </div>
+
+    <h3>6.2 &middot; Printable checklist</h3>
+
+    <div class="audit-grid">
+      <div class="checklist">
+        <h4>Pointers &amp; integrity</h4>
+        <ul>
+          <li>Every ticked check has a pointer (URL, repo@SHA, path:lines, or command + n).</li>
+          <li>Every pointer opens without private access.</li>
+          <li>Every number exists at the pointer, not in a paraphrase.</li>
+          <li>No shared or borrowed artefacts counted twice.</li>
+          <li>Dates are recorded for every pointer.</li>
+          <li>Older than 18 months: halved. Older than 36 months: archived.</li>
+          <li>Previous quarter&rsquo;s JSON is preserved and diffed.</li>
+        </ul>
+      </div>
+      <div class="checklist">
+        <h4>Teach gate</h4>
+        <ul>
+          <li>Recording is at least 5 minutes long.</li>
+          <li>The listener does not work in the field.</li>
+          <li>A one-paragraph paraphrase in the listener&rsquo;s words is stored.</li>
+          <li>The list of things the listener could not repeat is stored.</li>
+          <li>The idea was stated without notes or slides.</li>
+          <li>For L9&ndash;10: a third recording shows the listener teaching it correctly.</li>
+        </ul>
+      </div>
+      <div class="checklist">
+        <h4>Measure gate</h4>
+        <ul>
+          <li>The procedure (command or script) is recorded.</li>
+          <li>Sample size n is stated.</li>
+          <li>Point estimate plus 95% interval is reported.</li>
+          <li>The falsifier was declared <em>before</em> the run and dated.</li>
+          <li>Negative and non-significant results are reported, not deleted.</li>
+          <li>For L9&ndash;10: the evaluation is pre-registered.</li>
+        </ul>
+      </div>
+      <div class="checklist">
+        <h4>Reproduce gate</h4>
+        <ul>
+          <li>A clean environment, or a person who is not the author, ran it.</li>
+          <li>Their log is stored with the commit SHA used.</li>
+          <li>The README they used was not written after their run.</li>
+          <li>Every question they asked is recorded as a finding.</li>
+          <li>Their obtained number is inside the declared interval.</li>
+          <li>For L10: two strangers, no contact, both logs attached.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>6.3 &middot; Applying it to the profile in this course</h3>
+    <p>The honest hypothesis for the learner this course was written for is <strong>L6&ndash;L7</strong>, for exactly
+    the reason visible in <a href="prashanth.html">the profile</a>: an unusually complete Build record, a
+    self-reviewed rather than externally re-run Reproduce record, point estimates without intervals in Measure, and
+    almost no recorded Teach. Run the tool, and treat the result as a benchmark to beat rather than a grade &mdash;
+    <a class="tag-d" href="../track-d/100-annual-plan.html">L100</a> schedules the whole thing.</p>
+
+    <div class="callout boss">
+      <p>In one line: <strong>your level is the highest gate whose evidence survives a stranger.</strong> Not the
+      highest lesson you finished, not the hardest paper you read, not the strongest claim in your portfolio &mdash;
+      the one a stranger can re-run.</p>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="prashanth.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">Profile &middot; who this course was written for</span></a>
+    <a class="next" href="../index.html"><span class="dir">COURSE &rarr;</span><span class="ttl">All 100 lessons, 4 tracks</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+
+<script>
+/* ==========================================================================
+   AILearn — level calibration widget (self-contained, no dependencies).
+   State  : localStorage['AILearn::calibration::v1']
+   Scoring: LevelScore = sum_i w_i * (p_i / P_i), w = (.20,.30,.20,.20,.10)
+            p_i = validated points - 0.5 * decayed points
+            Level = highest gate whose threshold AND mandatory channels are met.
+   Rule   : a ticked check with an empty/too-short evidence pointer scores 0.
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var KEY = 'AILearn::calibration::v1';
+  var RUBRIC = '2026-10-01';
+
+  var CHANNELS = [
+    { id: 'concept', name: 'Concept', weight: 0.20, max: 20,
+      desc: 'Held-out self-checks passed; hand-derivations that matched a reference to a stated tolerance.',
+      checks: [
+        { id: 'c1', t: 'Passed a held-out self-check set (4 lessons\u2019 worth) without reopening the lesson' },
+        { id: 'c2', t: 'Derived a mechanism by hand (attention, KV memory, DPO loss) and it matched code to a stated tolerance' },
+        { id: 'c3', t: 'Explained a failure mode from code alone, without the lesson text' },
+        { id: 'c4', t: 'Predicted the shape of a curve or a cost before running the experiment, and was right' },
+        { id: 'c5', t: 'Can name the blind spots in your own model in writing, with the lesson number where each breaks' }
+      ] },
+    { id: 'build', name: 'Build', weight: 0.30, max: 20,
+      desc: 'Artefacts in a repo at a pinned SHA that print real numbers.',
+      checks: [
+        { id: 'b1', t: 'A from-scratch mechanism (attention / autograd / sampler) that passes its own tests' },
+        { id: 'b2', t: 'A trained or fine-tuned model end to end, with a stored loss curve and a resumable checkpoint' },
+        { id: 'b3', t: 'A measurement harness (eval / judge / RAG eval) whose output includes an interval' },
+        { id: 'b4', t: 'A production agent system with a budget cap, a gate, and a recorded trip' },
+        { id: 'b5', t: 'A system that survived an external outage or quota event without losing state' }
+      ] },
+    { id: 'teach', name: 'Teach', weight: 0.20, max: 20,
+      desc: 'A recorded 5-minute explanation to a non-specialist, plus their paraphrase.',
+      checks: [
+        { id: 't1', t: 'Recorded a 5-minute explanation to someone outside the field (recording stored)' },
+        { id: 't2', t: 'Stored the listener\u2019s one-paragraph paraphrase, in their own words' },
+        { id: 't3', t: 'Stored the list of points the listener could not repeat' },
+        { id: 't4', t: 'Recorded a second explanation on a different mechanism' },
+        { id: 't5', t: 'A listener later taught the idea correctly in a third recording' }
+      ] },
+    { id: 'measure', name: 'Measure', weight: 0.20, max: 20,
+      desc: 'A number with a procedure, an n, a 95% interval and a pre-declared falsifier.',
+      checks: [
+        { id: 'm1', t: 'Reported any result as point estimate + 95% interval + n' },
+        { id: 'm2', t: 'Declared the falsifier before running the experiment, and the declaration is dated' },
+        { id: 'm3', t: 'Published at least one negative or non-significant result' },
+        { id: 'm4', t: 'Calibrated a judge or arbiter and reported agreement with an interval' },
+        { id: 'm5', t: 'Pre-registered an evaluation and reported the result against the registration' }
+      ] },
+    { id: 'repro', name: 'Reproduce', weight: 0.10, max: 20,
+      desc: 'A stranger ran it from your written instructions and got your number.',
+      checks: [
+        { id: 'r1', t: 'A clean-environment run of your own artefact, logged, with the command and the SHA' },
+        { id: 'r2', t: 'Someone else ran your artefact successfully using only the README' },
+        { id: 'r3', t: 'An independent party reproduced one of your measurements inside your interval' },
+        { id: 'r4', t: 'Two independent parties reproduced two different artefacts' },
+        { id: 'r5', t: 'Two uncontacted strangers reproduced it from the specification alone' }
+      ] }
+  ];
+
+  var GATES = [
+    { n: 1, thresh: 15 }, { n: 2, thresh: 22 }, { n: 3, thresh: 30 }, { n: 4, thresh: 38 },
+    { n: 5, thresh: 46 }, { n: 6, thresh: 54 }, { n: 7, thresh: 63 }, { n: 8, thresh: 73 },
+    { n: 9, thresh: 84 }, { n: 10, thresh: 95 }
+  ];
+
+  var LEVEL_WORDS = {
+    0: 'Pre-course. Nothing is proven yet \u2014 the correct starting state, not a failure.',
+    1: 'You have produced a real number. Reading has become doing.',
+    2: 'A mechanism is implemented, not paraphrased.',
+    3: 'You have owned the whole train-and-check loop once.',
+    4: 'You make predictions before seeing the answer, and say how wrong you were.',
+    5: 'You can move an idea into someone else\u2019s head \u2014 Teach is on the record.',
+    6: 'Every headline number carries an interval. Claims became findings.',
+    7: 'You measure whole systems, including adversarial judges, not only losses.',
+    8: 'Someone outside your own head has reproduced a result.',
+    9: 'The specification, not the person, transmits the work; predictions are pre-registered.',
+    10: 'The evidence validates itself in public: cited accurately, reproduced without you, outliving your attention.'
+  };
+
+  var SWATCH = { concept: '#6366f1', build: '#8b5cf6', teach: '#a855f7', measure: '#38bdf8', repro: '#10b981' };
+  var BARC = ['c0', 'c1', 'c2', 'c3', 'c4'];
+
+  /* ---------- evidence pointer validity (rule a) ---------- */
+  function validPointer(p) {
+    if (typeof p !== 'string') return false;
+    var s = p.replace(/\s/g, '');
+    return s.length >= 8;
+  }
+
+  /* ---------- state ---------- */
+  function blank() {
+    return { name: '', date: '', checked: {}, ptr: {}, decayOn: false, decayed: {}, gates: {} };
+  }
+  var state = blank();
+
+  function hydrate(raw) {
+    var s = blank();
+    if (!raw || typeof raw !== 'object') return s;
+    if (typeof raw.name === 'string') s.name = raw.name.slice(0, 80);
+    if (typeof raw.date === 'string') s.date = raw.date.slice(0, 10);
+    if (raw.checked && typeof raw.checked === 'object') {
+      Object.keys(raw.checked).forEach(function (k) { s.checked[k] = !!raw.checked[k]; });
+    }
+    if (raw.ptr && typeof raw.ptr === 'object') {
+      Object.keys(raw.ptr).forEach(function (k) {
+        if (typeof raw.ptr[k] === 'string') s.ptr[k] = raw.ptr[k].slice(0, 300);
+      });
+    }
+    if (raw.decayed && typeof raw.decayed === 'object') {
+      Object.keys(raw.decayed).forEach(function (k) { var v = Number(raw.decayed[k]); if (isFinite(v) && v > 0) s.decayed[k] = Math.min(20, v); });
+    }
+    s.decayOn = !!raw.decayOn;
+    if (raw.gates && typeof raw.gates === 'object') {
+      Object.keys(raw.gates).forEach(function (k) { s.gates[k] = !!raw.gates[k]; });
+    }
+    return s;
+  }
+
+  function load() {
+    try {
+      var raw = localStorage.getItem(KEY);
+      if (!raw) return false;
+      var obj = JSON.parse(raw);
+      state = hydrate(obj);
+      return true;
+    } catch (e) { state = blank(); return false; }
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private mode */ }
+  }
+  function hasWork() {
+    return Object.keys(state.checked).some(function (k) { return !!state.checked[k]; }) ||
+           Object.keys(state.gates).some(function (k) { return !!state.gates[k]; }) ||
+           Object.keys(state.decayed).some(function (k) { return Number(state.decayed[k]) > 0; });
+  }
+
+  /* ---------- scoring ---------- */
+  function floorBlock(n, pts, gates) {
+    if (n >= 5 && pts.teach <= 0) return 'L' + n + ' needs Teach > 0 (a recorded 5-minute explanation)';
+    if (n >= 6 && pts.measure <= 0) return 'L' + n + ' needs Measure > 0 (an interval on the record)';
+    if (n >= 7 && pts.teach < 7) return 'L' + n + ' needs Teach \u2265 7 (two recordings)';
+    if (n >= 8 && !gates.ext) return 'L' + n + ' needs an external re-run (gate checklist)';
+    if (n >= 8 && pts.repro < 5) return 'L' + n + ' needs Reproduce \u2265 5';
+    if (n >= 9 && pts.repro < 9) return 'L' + n + ' needs Reproduce \u2265 9 (two independent re-runs)';
+    if (n >= 9 && !gates.prereg) return 'L' + n + ' needs a dated pre-registration (gate checklist)';
+    if (n >= 10 && (pts.concept < 20 || pts.build < 20 || pts.teach < 20 || pts.measure < 20 || pts.repro < 20))
+      return 'L' + n + ' needs all five channels at full points';
+    if (n >= 10 && !(gates.cite && gates.two && gates.doi))
+      return 'L' + n + ' needs an external citation, two uncontacted reproductions and a stable identifier';
+    return null;
+  }
+
+  function compute() {
+    var out = { channels: [], pts: {}, score: 0, level: 0, topGate: 0, emptyPtr: 0, ticked: 0, scored: 0, blocked: {} };
+
+    CHANNELS.forEach(function (ch) {
+      var validated = 0, expired = 0, claimed = 0, scoredHere = 0;
+      ch.checks.forEach(function (ck) {
+        if (!state.checked[ck.id]) return;
+        claimed++;
+        var ptr = validPointer(state.ptr[ck.id]);
+        var d = state.decayOn ? Math.min(20, Math.max(0, Number(state.decayed[ch.id]) || 0)) : 0;
+        if (!ptr) return;
+        scoredHere++;
+        validated += 4;
+        if (d > 0) { expired = Math.min(validated, d); }
+      });
+      /* decay applies only to validated points; the decayed count is a per-channel input */
+      var lostPoints = Math.min(validated, expired) * 0.5;
+      var p = validated - lostPoints;
+      var ratio = Math.min(1, p / ch.max);
+      var obj = {
+        id: ch.id, name: ch.name, weight: ch.weight, max: ch.max,
+        validated: validated, lost: lostPoints, pts: p, ratio: ratio,
+        contribution: ch.weight * ratio, claimed: claimed, scored: scoredHere
+      };
+      out.channels.push(obj);
+      out.pts[ch.id] = p;
+      out.score += obj.contribution;
+      out.ticked += claimed;
+      out.scored += scoredHere;
+      out.emptyPtr += (claimed - scoredHere);
+    });
+    out.score = Math.round(out.score * 100 * 1000) / 1000;
+
+    /* Highest gate whose score threshold is met = topGate. The level is the highest
+       gate that ALSO clears its mandatory channels. The blocking reason reported is the
+       one for the most demanding gate still blocked, so a 100-point assessment missing
+       only the external citation is told about the citation, not about an older floor. */
+    var topScored = 0;
+    GATES.forEach(function (g) { if (out.score + 1e-9 >= g.thresh) topScored = g.n; });
+    out.topGate = topScored;
+
+    var blocking = null;
+    for (var n = topScored; n >= 1; n--) {
+      var b = floorBlock(n, out.pts, state.gates);
+      if (b === null) { out.level = n; break; }
+      out.blocked[n] = b;
+      if (!blocking) blocking = b;   /* first failure walking down from the top */
+    }
+    out.blocker = blocking;
+    return out;
+  }
+
+  /* ---------- dom refs ---------- */
+  function $(id) { return document.getElementById(id); }
+  var elChannels = $('cal-channels'), elScore = $('cal-score'), elLevel = $('cal-level'),
+      elVerdict = $('cal-verdict'), elBar = $('cal-bar'), elLegend = $('cal-legend'),
+      elGates = $('cal-gates'), elNotice = $('cal-notice'), elLog = $('cal-log'),
+      elName = $('cal-name'), elDate = $('cal-date'), elDecay = $('cal-decay'),
+      elDecayBox = $('cal-decay-inputs');
+
+  /* ---------- build the check rows ---------- */
+  function buildDom() {
+    var html = '';
+    CHANNELS.forEach(function (ch) {
+      html += '<div class="ch"><div class="ch-hd"><span class="ch-name">' + ch.name +
+        '</span><span class="ch-w">w ' + Math.round(ch.weight * 100) + '%</span></div>';
+      html += '<p class="ch-desc">' + ch.desc + '</p>';
+      ch.checks.forEach(function (ck) {
+        html += '<label class="chr" for="ck-' + ck.id + '"><input type="checkbox" id="ck-' + ck.id +
+          '" data-ck="' + ck.id + '"> ' + ck.t + '</label>';
+        html += '<input type="text" id="pt-' + ck.id + '" data-ptr="' + ck.id +
+          '" autocomplete="off" spellcheck="false" placeholder="evidence pointer \u2014 empty = 0 pts">';
+      });
+      html += '<div class="ch-score"><span>validated</span><b id="sc-' + ch.id + '">0 / ' + ch.max + '</b></div>';
+      html += '</div>';
+    });
+    elChannels.innerHTML = html;
+
+    [].slice.call(elChannels.querySelectorAll('input[data-ck]')).forEach(function (cb) {
+      cb.addEventListener('change', function () {
+        state.checked[cb.getAttribute('data-ck')] = cb.checked; save(); render();
+      });
+    });
+    [].slice.call(elChannels.querySelectorAll('input[data-ptr]')).forEach(function (ip) {
+      ip.addEventListener('input', function () {
+        state.ptr[ip.getAttribute('data-ptr')] = ip.value; save(); render();
+      });
+    });
+    [].slice.call(document.querySelectorAll('input[data-gate]')).forEach(function (cb) {
+      cb.addEventListener('change', function () {
+        state.gates[cb.getAttribute('data-gate')] = cb.checked; save(); render();
+      });
+    });
+    [].slice.call(document.querySelectorAll('input[data-decay]')).forEach(function (nb) {
+      nb.addEventListener('input', function () {
+        var v = Number(nb.value);
+        state.decayed[nb.getAttribute('data-decay')] = isFinite(v) ? Math.min(20, Math.max(0, v)) : 0;
+        save(); render();
+      });
+    });
+  }
+
+  function restore() {
+    [].slice.call(elChannels.querySelectorAll('input[data-ck]')).forEach(function (cb) {
+      cb.checked = !!state.checked[cb.getAttribute('data-ck')];
+    });
+    [].slice.call(elChannels.querySelectorAll('input[data-ptr]')).forEach(function (ip) {
+      ip.value = state.ptr[ip.getAttribute('data-ptr')] || '';
+    });
+    [].slice.call(document.querySelectorAll('input[data-gate]')).forEach(function (cb) {
+      cb.checked = !!state.gates[cb.getAttribute('data-gate')];
+    });
+    [].slice.call(document.querySelectorAll('input[data-decay]')).forEach(function (nb) {
+      nb.value = state.decayed[nb.getAttribute('data-decay')] || 0;
+    });
+    elDecay.checked = !!state.decayOn;
+    elDecayBox.hidden = !state.decayOn;
+    elName.value = state.name || '';
+    elDate.value = state.date || '';
+  }
+
+  /* ---------- render ---------- */
+  function render() {
+    var r = compute();
+
+    elScore.textContent = r.score.toFixed(1);
+    elLevel.textContent = 'L' + r.level;
+
+    var verdict = LEVEL_WORDS[r.level] || LEVEL_WORDS[0];
+    if (r.topGate > r.level) {
+      verdict += ' \u2014 score reaches the L' + r.topGate + ' threshold, but the gate floor holds it back: ' + r.blocker + '.';
+    }
+    elVerdict.textContent = verdict;
+
+    r.channels.forEach(function (c) {
+      var el = $('sc-' + c.id);
+      if (el) el.textContent = (Math.round(c.pts * 10) / 10) + ' / ' + c.max;
+    });
+
+    [].slice.call(elBar.children).forEach(function (seg, i) {
+      var c = r.channels[i];
+      seg.style.width = c ? (c.contribution * 100).toFixed(3) + '%' : '0%';
+    });
+
+    var lg = '';
+    r.channels.forEach(function (c, i) {
+      lg += '<span class="k"><i class="sw" style="background:' + SWATCH[c.id] + '"></i>' + c.name + '</span>';
+      lg += '<span style="text-align:right">' + (c.contribution * 100).toFixed(1) + ' pts \u00b7 ' +
+        Math.round(c.ratio * 100) + '%</span>';
+    });
+    elLegend.innerHTML = lg;
+
+    var gh = '';
+    GATES.forEach(function (g) {
+      var scoreOk = r.score + 1e-9 >= g.thresh;
+      var block = floorBlock(g.n, r.pts, state.gates);
+      var ok = scoreOk && !block;
+      var right = ok ? 'met' : (scoreOk ? 'floor' : '\u2212' + (g.thresh - r.score).toFixed(1));
+      gh += '<div class="gate ' + (ok ? 'pass' : 'fail') + '"><span>' + (ok ? '\u2713 ' : '\u00b7 ') +
+        'L' + g.n + ' &ge; ' + g.thresh + '</span><b>' + right + '</b></div>';
+    });
+    elGates.innerHTML = gh;
+
+    var notes = [];
+    if (r.emptyPtr > 0) notes.push(r.emptyPtr + ' ticked check(s) have an empty or too-short pointer and scored 0.');
+    if (state.decayOn) notes.push('Decay active: validated points beyond the decayed count of each channel now count at half weight.');
+    if (!state.date) notes.push('Set an assessment date \u2014 decay and the log both need it.');
+    elNotice.textContent = notes.length ? notes.join(' ') : 'Pointers look consistent. Remember: a reviewer must be able to re-run each one without you.';
+
+    /* ---------- evidence log JSON ---------- */
+    var payload = {
+      schema: 'AILearn.calibration/1',
+      rubric_version: RUBRIC,
+      name: state.name || null,
+      assessed_at: state.date || null,
+      decay_applied: !!state.decayOn,
+      weights: { concept: 0.20, build: 0.30, teach: 0.20, measure: 0.20, reproduce: 0.10 },
+      score: Math.round(r.score * 10) / 10,
+      level: r.level,
+      gate_checklist: {
+        external_reproduction: !!state.gates.ext,
+        pre_registration: !!state.gates.prereg,
+        external_citation: !!state.gates.cite,
+        two_uncontacted_reproductions: !!state.gates.two,
+        stable_identifier: !!state.gates.doi
+      },
+      channels: r.channels.map(function (c) {
+        return {
+          id: c.id, weight: c.weight, validated_points: c.validated,
+          decayed_points: Math.round(c.lost * 2 * 10) / 10,
+          lost_points: c.lost, points: Math.round(c.pts * 10) / 10, max: c.max,
+          ratio: Math.round(c.ratio * 1000) / 1000,
+          contribution: Math.round(c.contribution * 1000) / 1000,
+          checks: CHANNELS.filter(function (x) { return x.id === c.id; })[0].checks.map(function (ck) {
+            var claimed = !!state.checked[ck.id];
+            return {
+              id: ck.id, points: 4, claimed: claimed,
+              scored: claimed && validPointer(state.ptr[ck.id]),
+              evidence: claimed ? (state.ptr[ck.id] || null) : null
+            };
+          })
+        };
+      }),
+      gates: GATES.map(function (g) {
+        var block = floorBlock(g.n, r.pts, state.gates);
+        var scoreOk = r.score + 1e-9 >= g.thresh;
+        var cleared = scoreOk && !block;
+        return {
+          gate: g.n, threshold: g.thresh, score_met: scoreOk, cleared: cleared,
+          reachable: cleared || (scoreOk && g.n <= r.topGate + 1),
+          blocked_by: cleared ? null : (block || (scoreOk ? null : 'score below threshold'))
+        };
+      }),
+      audit_flags: {
+        empty_pointer_checks: r.emptyPtr,
+        has_teach_evidence: r.pts.teach > 0,
+        has_measure_evidence: r.pts.measure > 0,
+        has_external_reproduction: !!state.gates.ext
+      }
+    };
+    elLog.value = JSON.stringify(payload, null, 2);
+  }
+
+  /* ---------- events ---------- */
+  elName.addEventListener('input', function () { state.name = elName.value.slice(0, 80); save(); render(); });
+  elDate.addEventListener('input', function () { state.date = elDate.value.slice(0, 10); save(); render(); });
+  elDecay.addEventListener('change', function () {
+    state.decayOn = elDecay.checked; elDecayBox.hidden = !state.decayOn; save(); render();
+  });
+
+  function doCopy() {
+    var txt = elLog.value || '';
+    var btn = $('cal-copy');
+    var reset = function () { btn.textContent = 'copy JSON'; };
+    var ok = function () { btn.textContent = 'copied \u2713'; setTimeout(reset, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(ok, legacy);
+    } else { legacy(); }
+    function legacy() {
+      try {
+        elLog.removeAttribute('readonly');
+        elLog.focus(); elLog.select();
+        var done = document.execCommand && document.execCommand('copy');
+        elLog.setAttribute('readonly', 'readonly');
+        if (done) { ok(); return; }
+      } catch (e) { /* fall through */ }
+      try { window.open('data:application/json;charset=utf-8,' + encodeURIComponent(txt), '_blank'); } catch (e2) { /* ignore */ }
+      btn.textContent = 'select manually';
+      setTimeout(reset, 1800);
+    }
+  }
+  $('cal-copy').addEventListener('click', doCopy);
+
+  $('cal-reset').addEventListener('click', function () {
+    if (!window.confirm('Clear every tick, pointer and decay value? The log clears too.')) return;
+    state = blank();
+    state.name = elName.value;
+    save(); restore(); render();
+  });
+
+  $('cal-print').addEventListener('click', function () { window.print(); });
+
+  /* ---------- boot ---------- */
+  var restored = load();           /* true only if a saved assessment existed */
+  buildDom();
+  if (!state.date) {
+    var d = new Date();
+    state.date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0');
+  }
+  save();                          /* safe: load() ran first, so this never overwrites saved state */
+  restore();
+  render();
+  if (restored && hasWork()) elNotice.textContent = 'Restored your saved assessment in this browser. ' +
+    'Tick, untick or edit any pointer to recompute. ' + elNotice.textContent;
+})();
+</script>
+</body>
+</html>

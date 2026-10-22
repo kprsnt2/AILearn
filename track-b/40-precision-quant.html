@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b40">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L40 · Quantization: PTQ, QAT, INT8, FP8, AWQ/GPTQ, KV Quant — AILearn</title>
+<meta name="description" content="Cutting precision is the cheapest throughput win available: int8 halves the decode weight stream and int4 halves it again. What breaks, how to measure it, and how to quantize the KV cache without wrecking long context.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L40</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L40 &middot; Precision &amp; Quantization: Weights, Activations, KV Cache</h1>
+  <p class="lede">Decode is bandwidth-bound, so precision is throughput: int8 halves the weight stream and roughly halves decode time, and int4 halves it again. The failure is not speed, it is the long tail of tasks that quietly lose accuracy while your average benchmark does not move.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: quantize a small model's weights</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">int8 / int4 weights</span>
+  <span class="pill">FP8 E4M3 / E5M2</span>
+  <span class="pill">per-channel scales</span>
+  <span class="pill">group-wise quant</span>
+  <span class="pill">AWQ</span>
+  <span class="pill">GPTQ</span>
+  <span class="pill">KV-cache quantization</span>
+  <span class="pill">QAT vs PTQ</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b40-s1">1 &middot; Why it exists <a class="hook" href="#b40-s1">#</a></h2>
+
+    <p>Lesson 35 established the bill: decode re-reads weights every token, so time per token is bytes divided by bandwidth. That
+    makes precision a direct throughput lever, and the arithmetic is unforgiving.</p>
+
+    <p>Take a 13B-active model and 3 TB/s of HBM bandwidth. Per token you must stream every active weight once:</p>
+    <table class="table">
+      <thead><tr><th>Precision</th><th>Bytes streamed per token</th><th>Floor latency per token</th><th>Relative throughput</th></tr></thead>
+      <tbody>
+        <tr><td>bf16 (16-bit)</td><td>26.0 GB</td><td>8.67 ms</td><td>1&times;</td></tr>
+        <tr><td>int8 (8-bit)</td><td>13.0 GB</td><td>4.33 ms</td><td><strong>2&times;</strong></td></tr>
+        <tr><td>int4 (4-bit)</td><td>6.50 GB</td><td>2.17 ms</td><td><strong>4&times;</strong></td></tr>
+      </tbody>
+    </table>
+
+    <p>Four times the throughput for a format change, with no architecture work. <span class="asof">state as of 2026-10</span> That is why quantization is the first thing
+    every serving team does. It is also why it is dangerous: the same change is a 4&times; reduction in the number of distinct
+    values used to represent every weight, and the model's behaviour on hard inputs is exactly where that shows up.</p>
+
+    <p>The failure that matters in production: average benchmark loss is negligible, the model ships, and three weeks later a
+    customer reports that numeric extraction from invoices is wrong in the 4th significant digit, or that a JSON field is
+    occasionally malformed. The average was fine because most tokens are easy. <strong>Quantization error is not
+    uniformly distributed &mdash; it concentrates in the weights that matter for rare behaviours.</strong></p>
+
+    <div class="callout boss">
+      <p>Halving the bits halves the bytes, and bytes are your decode bill. But you must measure the damage per task, not on
+      average &mdash; quantized models regress selectively on exactly the structured, numeric, and long-tail tasks that
+      businesses care about.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b40-s2">2 &middot; The mental model <a class="hook" href="#b40-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> replacing a photo with a lower-bit-depth version. Most of the image looks identical.
+    The damage is in gradients and shadows &mdash; the regions with the fewest distinct values to begin with.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Compression error is distributed unevenly and is invisible on
+      typical content. You need to look at the hard parts deliberately.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Weights are not a monotone signal. A single outlier weight can dominate a
+      channel's dynamic range, so naive per-tensor int4 would spend most of its 16 levels on one value and crush everything else.
+      That is why real methods are outlier-aware (AWQ) or error-compensating (GPTQ), and why group size matters more than bit
+      width.</p></div>
+    </div>
+
+    <h3>The three things you quantize, which fail differently</h3>
+    <table class="table">
+      <thead><tr><th>Target</th><th>What it buys</th><th>Primary failure</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Weights</strong></td><td>Decode speed (bandwidth) and memory footprint</td><td>Rare-token and numeric accuracy loss</td></tr>
+        <tr><td><strong>Activations</strong> (int8/FP8 compute)</td><td>Prefill/throughput FLOPs and memory traffic</td><td>Outlier channels cause large per-tensor scale; needs per-token/per-channel scaling</td></tr>
+        <tr><td><strong>KV cache</strong></td><td>Concurrency and long-context cost (L33)</td><td>Error accumulates with context length &mdash; fine at 4k, bad at 128k</td></tr>
+      </tbody>
+    </table>
+    <p>They are independent levers with independent damage. A team that quantizes weights but not cache gets throughput but not
+    concurrency; one that quantizes the cache aggressively gets concurrency and silently loses long-context recall.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b40-s3">3 &middot; The mechanism <a class="hook" href="#b40-s3">#</a></h2>
+
+    <h3>Uniform affine quantization</h3>
+    <div class="formula">
+      q = clamp( round( w / s ) + z , &minus;2<sup>b&minus;1</sup>, 2<sup>b&minus;1</sup>&minus;1 ) &nbsp;,&nbsp;
+      &wcirc; = s ( q &minus; z )
+      <span class="note">s = scale (a float, per tensor / per channel / per group), z = zero-point, b = bit width. Storage per weight is b bits plus the scale and zero-point amortised over the group: b/8 + 2&middot;scale_bytes/group_size bytes. Getting that overhead right is the difference between 4.0 and 4.6 effective bits per weight.</span>
+    </div>
+
+    <h3>Worked: what int4 with group size 128 actually costs</h3>
+    <p>4-bit weights with a fp16 scale and fp16 zero-point per group of 128 parameters:</p>
+    <ul>
+      <li>Payload: 4 bits = 0.5 bytes per parameter.</li>
+      <li>Overhead: 2 &times; 2 bytes = 4 bytes per 128 parameters = 0.03125 bytes per parameter.</li>
+      <li>Effective: <strong>0.53125 bytes per parameter = 4.25 bits per weight</strong>, not 4.0.</li>
+    </ul>
+    <table class="table">
+      <thead><tr><th>Model size</th><th>bf16</th><th>int8</th><th>int4 (4.0 b/param)</th><th>int4 g128 (4.25 b/param)</th></tr></thead>
+      <tbody>
+        <tr><td>7B</td><td>13.04 GiB</td><td>6.52 GiB</td><td>3.26 GiB</td><td><strong>3.67 GiB</strong></td></tr>
+        <tr><td>70B</td><td>130.39 GiB</td><td>65.19 GiB</td><td>32.60 GiB</td><td><strong>36.67 GiB</strong></td></tr>
+        <tr><td>552B (V4.1-Flash total)</td><td>1,028.18 GiB</td><td>514.09 GiB</td><td>257.05 GiB</td><td><strong>289.18 GiB</strong></td></tr>
+      </tbody>
+    </table>
+    <p>The 12.6% penalty at int4 is not a rounding detail: for a 552B model it is 32 GiB of extra HBM, which can decide whether
+    the model fits a node at all. This is precisely why compressed formats use shared scales across larger groups or a
+    double-quantization scheme, and why vendors quote "4-bit" while shipping 4.25&ndash;4.5 effective bits.</p>
+
+    <h3>Why outlier-aware methods exist</h3>
+    <p>Consider a channel whose weights are mostly in [&minus;1, 1] but contain one value of 100. A per-tensor scale must cover
+    [&minus;100, 100]. With 4 bits (16 levels), the step is 200/15 = 13.3, so every weight in [&minus;1, 1] rounds to about
+    <strong>zero</strong>. The channel is destroyed. Three families of fix:</p>
+    <ul>
+      <li><strong>Per-channel / per-group scales</strong> &mdash; confine a scale to a slice so one outlier only damages its own group.</li>
+      <li><strong>AWQ (activation-aware weight quantization)</strong> &mdash; scale weights by their corresponding <em>activation</em>
+      magnitude before quantization, so the channels that matter most (large activations) keep their resolution, then fold the
+      scale back into the preceding op.</li>
+      <li><strong>GPTQ</strong> &mdash; quantize column by column and, for each, adjust the remaining unquantized weights to
+      compensate for the error introduced, using second-order (Hessian) information. This is error compensation rather than
+      error avoidance.</li>
+    </ul>
+
+    <h3>FP8: why it is a different deal</h3>
+    <p>FP8 has two common variants: E4M3 (4 exponent, 3 mantissa bits) and E5M2 (5 exponent, 2 mantissa). The exponent gives it
+    a wide dynamic range &mdash; it handles outliers far better than integer formats &mdash; at the cost of mantissa precision.
+    That is why FP8 is often usable for <em>training</em> <span class="asof">state as of 2026-10</span> and activations with minimal perturbation, while int4 weight
+    quantization almost always needs calibration. Choosing between them is choosing which you have: range problems (FP8) or
+    resolution problems (int4).</p>
+
+    <h3>PTQ vs QAT</h3>
+    <table class="table">
+      <thead><tr><th>Method</th><th>Cost</th><th>When it works</th></tr></thead>
+      <tbody>
+        <tr><td>PTQ (post-training)</td><td>Calibration pass over a few hundred samples; minutes to hours</td><td>int8, FP8, and int4 with AWQ/GPTQ on large models</td></tr>
+        <tr><td>QAT (quantization-aware training)</td><td>A full fine-tune with simulated quantization in the forward pass</td><td>Aggressive formats (int4 without outlier handling, 3-bit) and small models where PTQ loss is large</td></tr>
+      </tbody>
+    </table>
+    <p>Practical rule: small models are easier to quantize (fewer layers to accumulate error) but have less redundancy to
+    absorb it; large models absorb int8 almost losslessly and need AWQ/GPTQ for int4. If PTQ at int8 shows any measurable
+    regression, that is a signal about your <em>evaluation</em> (it should be nearly lossless), not about the method.</p>
+
+    <div class="callout audit">
+      <p>Quantization needs a per-task regression suite, not an average. The artifact is a table: for each task in your
+      eval set, the metric before and after, plus the token-level agreement rate with the fp16 model. The failure signature to
+      look for is <strong>variance in the delta, not in the mean</strong> &mdash; a model that loses 0.3 points on average but 8
+      points on numeric extraction is a model that will fail in production.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b40-s4">4 &middot; Your hands <a class="hook" href="#b40-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; quantize weights by hand and measure the damage</h4>
+      <p>Do the arithmetic yourself on a synthetic weight matrix with one outlier. This is what every calibration routine is
+      approximating, and the result is subtler than the folklore claims &mdash; which is the point.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">40</span>)
+W = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (<span class="nm">64</span>, <span class="nm">128</span>))
+W[<span class="nm">3</span>, <span class="nm">17</span>] = <span class="nm">100.0</span>                      <span class="cm"># a single outlier in row 3</span>
+
+<span class="kw">def</span> <span class="fn">quant</span>(W, bits, group=<span class="kw">None</span>):
+    <span class="kw">if</span> group <span class="kw">is</span> <span class="kw">None</span>:                          <span class="cm"># per-row scale</span>
+        lo, hi = W.min(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>), W.max(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+        s = (hi - lo) / (<span class="nm">2</span>**bits - <span class="nm">1</span>)
+        <span class="kw">return</span> np.clip(np.round((W - lo)/s), <span class="nm">0</span>, <span class="nm">2</span>**bits-<span class="nm">1</span>) * s + lo
+    out = W.copy()
+    <span class="kw">for</span> c0 <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">0</span>, W.shape[<span class="nm">1</span>], group):   <span class="cm"># per-group scales</span>
+        blk = W[:, c0:c0+group]
+        lo, hi = blk.min(<span class="nm">1</span>, keepdims=<span class="kw">True</span>), blk.max(<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+        s = (hi - lo) / (<span class="nm">2</span>**bits - <span class="nm">1</span>)
+        out[:, c0:c0+group] = np.clip(np.round((blk-lo)/s), <span class="nm">0</span>, <span class="nm">2</span>**bits-<span class="nm">1</span>) * s + lo
+    <span class="kw">return</span> out
+
+<span class="kw">for</span> bits <span class="kw">in</span> (<span class="nm">8</span>, <span class="nm">4</span>):
+    <span class="kw">for</span> g <span class="kw">in</span> (<span class="kw">None</span>, <span class="nm">32</span>):
+        Wq = <span class="fn">quant</span>(W, bits, g)
+        <span class="fn">print</span>(<span class="st">f"int{bits} group={str(g):>4}: RMSE={np.sqrt(((W-Wq)**2).mean()):.4f} max_err={np.abs(W-Wq).max():.3f}"</span>)
+      </div>
+      <p class="expect">Measured: int8 per-row RMSE 0.0155, max error 0.199; int8 group-32 RMSE 0.0089; int4 per-row RMSE
+      <strong>0.3268</strong>; int4 group-32 RMSE 0.1693. Against a data standard deviation of 1.493, int4 per-row loses ~22% of
+      the signal energy and group-32 halves that. Two honest observations: (a) the outlier does dominate row 3's range, so
+      group-wise scaling helps a lot &mdash; the mechanism behind AWQ/GPTQ; (b) but the max error at int4 (3.416) is unchanged by
+      grouping, because the outlier itself is still reconstructed with a coarse scale. That residual is what methods with
+      per-group *and* outlier-aware handling (mixed precision, channel reordering) chase.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the bandwidth model that predicts your speedup</h4>
+      <p>Predict decode speedup from bit width before you touch a checkpoint. If your measured speedup is far from the
+      prediction, something else is the bottleneck.</p>
+      <div class="code" data-lang="bash">
+python -c "
+bw=3e12
+for N in (13e9, 16e9):
+    for bits in (16,8,4):
+        b=N*bits/8; print(f'N={N/1e9:.0f}B {bits:2d}-bit: {b/1e9:5.2f} GB/token, {b/bw*1000:5.2f} ms/token, {1/(b/bw):6.1f} tok/s ceiling')
+    print()
+"
+      </div>
+      <p class="expect">13B: 26.00 GB / 8.67 ms / 115 tok/s at 16-bit; 13.00 GB / 4.33 ms / 231 tok/s at 8-bit; 6.50 GB /
+      2.17 ms / 462 tok/s at 4-bit. Note these are <em>ceilings</em> for a batch of one; in practice kernel efficiency and any
+      batch sharing puts you below them. Interpretation rule: an observed speedup well under 0.5&times; when halving bits means
+      you are not bandwidth-bound &mdash; probably KV-bound at long context (L33) or launch-bound at small batch.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; why KV quantization behaves differently at long context</h4>
+      <p>Build a real attention layer (d = 64) with quantized keys, and measure output error against context length and bit
+      width. The interesting result is that <em>the quantizer's scheme</em>, not just its bit width, decides whether error grows.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+
+<span class="kw">def</span> <span class="fn">gap</span>(L, bits, per_token=<span class="kw">True</span>, seed=<span class="nm">0</span>):
+    rng = np.random.default_rng(seed); d = <span class="nm">64</span>
+    K = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (L, d)); V = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (L, d))
+    q = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, d)
+    <span class="kw">def</span> <span class="fn">att</span>(KK):
+        s = KK @ q; w = np.exp(s - s.max()); w /= w.sum(); <span class="kw">return</span> w @ V
+    <span class="kw">if</span> per_token:                      <span class="cm"># per-channel symmetric, computed per position</span>
+        m = np.abs(K).max(<span class="nm">1</span>, keepdims=<span class="kw">True</span>); s = m / (<span class="nm">2</span>**(bits-<span class="nm">1</span>) - <span class="nm">1</span>)
+        Kq = np.clip(np.round(K/s), -(<span class="nm">2</span>**(bits-<span class="nm">1</span>)), <span class="nm">2</span>**(bits-<span class="nm">1</span>)-<span class="nm">1</span>) * s
+    <span class="kw">else</span>:                             <span class="cm"># one global scale for the whole cache</span>
+        lo, hi = K.min(<span class="nm">0</span>), K.max(<span class="nm">0</span>); s = (hi-lo)/(<span class="nm">2</span>**bits-<span class="nm">1</span>)
+        Kq = np.clip(np.round((K-lo)/s), <span class="nm">0</span>, <span class="nm">2</span>**bits-<span class="nm">1</span>) * s + lo
+    <span class="kw">return</span> <span class="fn">float</span>(np.abs(<span class="fn">att</span>(K) - <span class="fn">att</span>(Kq)).mean())
+
+<span class="kw">for</span> bits <span class="kw">in</span> (<span class="nm">8</span>, <span class="nm">4</span>):
+    <span class="kw">for</span> pt <span class="kw">in</span> (<span class="kw">False</span>, <span class="kw">True</span>):
+        row = [<span class="fn">gap</span>(L, bits, pt, s) <span class="kw">for</span> L, s <span class="kw">in</span> [(<span class="nm">1000</span>,<span class="nm">0</span>), (<span class="nm">32000</span>,<span class="nm">1</span>), (<span class="nm">128000</span>,<span class="nm">2</span>)]]
+        <span class="fn">print</span>(<span class="st">f"int{bits} per_token={pt}: 1k={row[0]:.5f} 32k={row[1]:.5f} 128k={row[2]:.5f}"</span>)
+      </div>
+      <p class="expect">Measured: with a <em>global</em> scale, int8 error grows with context (0.00847 at 1k &rarr; 0.02027 at
+      128k); with a <em>per-position</em> scale it stays flat (0.00944 &rarr; 0.01029). At int4 the global scheme is noisy
+      (0.247 / 0.182 / 0.297) while per-position is 0.0897 / 0.2508 / 0.2826 &mdash; better at short context and still degrading
+      at long. The production rule: <strong>per-token/per-channel KV scales keep int8 safe at 128k; int4 KV needs more than scale
+      management.</strong> Falsification: if your per-position int8 row grows like the global row, the scale is being computed once
+      at prefill instead of per position.</p>
+    </div>
+
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b40-s5">5 &middot; Failure modes <a class="hook" href="#b40-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Average metric hides per-task damage.</strong> Symptom: MMLU-class average drops 0.4 points, but numeric
+        extraction drops 9 and JSON validity drops 6. Always report the per-task delta table.</li>
+        <li><strong>Calibration set mismatched to production.</strong> Symptom: quantization looks lossless on Wikitext and
+        degrades on your domain. Calibrate on samples from your actual traffic, including the long tail.</li>
+        <li><strong>Effective bits ignored.</strong> Symptom: your memory plan assumed 4.0 bits/param and the model does not fit
+        because it is really 4.25 with group-128 scales. Compute effective bits from the checkpoint config, not the marketing label.</li>
+        <li><strong>KV quantization across a context-length change.</strong> Symptom: p99 quality is fine at launch (8k average
+        context) and regressions appear months later when users start sending 100k documents. Gate KV quantization on
+        long-context evals specifically.</li>
+        <li><strong>Quantizing the wrong tensor.</strong> Symptom: first/last layers and the embedding/LM head show the largest
+        damage, so keeping them in higher precision recovers most of the loss at negligible memory cost. Always test
+        mixed-precision variants before accepting uniform int4.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b40-s6">6 &middot; Connects to <a class="hook" href="#b40-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L21 (numerics) and L38 (bandwidth-bound thinking). &nbsp;
+    <strong>Unlocks:</strong> serving concurrency (L44) and cost reduction (L45).</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/21-gpus-numerics.html">L21 &middot; GPUs, numerics, fp16/bf16/fp8</a> &mdash; the formats being compressed.</li>
+      <li><a class="tag-b" href="38-flash-attention.html">L38 &middot; FlashAttention</a> &mdash; why bytes-per-token sets decode speed.</li>
+      <li><a class="tag-b" href="33-mla.html">L33 &middot; MLA</a> &mdash; the cache being quantized, and its size.</li>
+      <li><a class="tag-b" href="39-kernels.html">L39 &middot; Kernels</a> &mdash; dequantization happens inside the matmul kernel.</li>
+      <li><a class="tag-b" href="41-distillation.html">L41 &middot; Distillation</a> &mdash; the other way to shrink a model.</li>
+      <li><a class="tag-d" href="../track-d/91-cost-latency.html">L91 &middot; Cost &amp; latency budgets</a> &mdash; where the 4&times; becomes money.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b40-s7">7 &middot; Self-check <a class="hook" href="#b40-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A 70B model in bf16 is 130.39 GiB. What is it at int4 with group size 128 and fp16 scales, and how many effective bits per parameter is that?</p>
+        <details><summary>Reveal answer</summary><p>Payload 0.5 B/param; overhead 4 B per 128 params = 0.03125 B/param; total 0.53125 B/param &times; 70&times;10<sup>9</sup>
+        = 3.719&times;10<sup>10</sup> B = 34.63 GiB. Effective bits = 0.53125 &times; 8 = <strong>4.25 bits</strong>. Compare to a nominal
+        int4 figure of 32.60 GiB &mdash; a 2.03 GiB difference that matters when fitting a node.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A model streams 26 GB per token at bf16 on a 3 TB/s device. What is the per-token floor, and what does int8 give you in tokens per second?</p>
+        <details><summary>Reveal answer</summary><p>26 GB / 3&times;10<sup>12</sup> B/s = 8.67 ms &rarr; 115 tok/s ceiling. int8 halves the stream to 13 GB &rarr;
+        4.33 ms &rarr; 231 tok/s. In practice batching already amortises weight reads across a batch, so the realised gain depends on
+        whether the endpoint is batch-1 (latency-sensitive) or heavily batched (where the win is in memory capacity, not bandwidth).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: int8 weights show a 0.2-point average regression but a 9-point regression on structured extraction. Is int8 the problem?</p>
+        <details><summary>Reveal answer</summary><p>Not necessarily &mdash; a 0.2-point average is close to noise for many benchmarks, while 9 points on extraction is a real
+        signal. First re-run with fp16 to confirm the baseline is stable, then look at which layers cause it (first/last layers and embedding/LM
+        head are the usual suspects) and try keeping them in higher precision. If the gap persists, the task is genuinely
+        outlier-sensitive and you should stay at int8 with mixed precision rather than push to int4.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does a single outlier of 100 in a channel of N(0,1) weights destroy per-tensor int4 but not per-group-32 int4?</p>
+        <details><summary>Reveal answer</summary><p>Per-tensor int4 has 15 steps covering [&minus;100, 100], so the step is 13.3 and all weights within &plusmn;6.6 round to 0 &mdash;
+        the entire channel becomes zero. Per-group-32 confines the outlier to its own group of 32 columns; the other groups have a range near
+        &plusmn;3 and a step near 0.4, so they retain real resolution. Only the one contaminated group is damaged, and AWQ/GPTQ
+        additionally mitigate even that group.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is KV-cache quantization riskier than weight quantization at long context, given both are "just lower precision"?</p>
+        <details><summary>Reveal answer</summary><p>Weight error is fixed in count: a wrong weight contributes the same error per token regardless of context.
+        Cache error compounds with the number of cached positions &mdash; at 128k tokens you have 128k perturbed keys each contributing to
+        the softmax, so the aggregate deviation grows with L. That is why a scheme validated at 4k can pass and fail at 128k, and why
+        KV quantization must be gated on long-context evals rather than short-prompt ones.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="39-kernels.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L39 &middot; CUDA / Triton / TileLang kernels</span></a>
+    <a class="next" href="41-distillation.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L41 &middot; Distillation: teacher&rarr;student</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

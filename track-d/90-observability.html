@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d90">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L90 · Observability &amp; tracing for agents — AILearn</title>
+<meta name="description" content="An agent trace is a causal DAG of spans, not a log file. Turn 12 costs 5.15× turn 1 because context grows; the last three turns are 38.8% of the bill. The schema and cost attribution that make that visible.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L90</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L90 &middot; Observability &amp; tracing for agents</h1>
+  <p class="lede">Turn 12 of an agent loop costs <strong>5.15&times;</strong> turn 1, and the last three turns are <strong>38.8%</strong> of the bill &mdash; because context grows and every turn re-pays for it. You cannot see that in a log file. You can see it in a span DAG with per-span cost.</p>
+  <div class="chips">
+    <span class="chip">~35 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: trace schema + cost attribution + hash-chained log</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">span DAG</span>
+  <span class="pill">causal parent</span>
+  <span class="pill">per-span cost attribution</span>
+  <span class="pill">input/output hashing</span>
+  <span class="pill">hash-chained event log</span>
+  <span class="pill">quadratic context cost</span>
+  <span class="pill">replayability</span>
+  <span class="pill">trace retention</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d90-s1">1 &middot; Why it exists <a class="hook" href="#d90-s1">#</a></h2>
+
+    <p>The failure: <strong>something went wrong in a 40-turn agent run and you cannot reconstruct the causal chain.</strong>
+    You have application logs &mdash; a stream of lines with timestamps and levels. Somewhere in there is the turn where the agent
+    read a stale file, and the twelve turns after it that built on the stale data. The logs cannot tell you that, because a
+    log line has no parent.</p>
+
+    <p>The second failure is economic and invisible: <strong>the cost per turn is not constant.</strong> Every turn re-sends the
+    whole context, so turn 12's input is roughly twelve times larger than turn 1's. In a 12-turn trace with 1,200 tokens of
+    growth per turn, turn 12 costs <strong>5.15&times;</strong> turn 1 and the final three turns are <strong>38.8%</strong> of the total
+    &mdash; even though they are only 25% of the turns. Without per-span cost you will attribute the bill to "the model" or "the
+    tool calls" and optimise the wrong thing.</p>
+
+    <p>The third failure is trust: <strong>the trace itself can be edited.</strong> If the evidence of what an agent did lives in a
+    mutable log, then "the agent did X" is a claim, not a record. This is where your AgentSwarm hash-chained ledger already
+    has the right answer, and the work here is extending it to cover every span, including oracle invocations.</p>
+
+    <div class="callout boss">
+      <p>A trace is a <strong>causal DAG of spans with attached cost and content hashes</strong>, and it is written append-only
+      outside the agent's writable scope. Its job is to answer three queries that a log cannot: <em>which span caused this
+      failure</em>, <em>which span cost this dollar</em>, and <em>was this record altered after the fact</em>.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d90-s2">2 &middot; The mental model <a class="hook" href="#d90-s2">#</a></h2>
+
+    <p>A span is one unit of work with a start, an end, a parent, and (for LLM spans) a token count. A trace is the closure of
+    spans sharing a <code>trace_id</code>. The parent pointer is what turns a list into a tree, and the tree is what makes
+    attribution possible.</p>
+
+    <table class="table">
+      <thead><tr><th>Field</th><th>Answers</th><th>Breaks if missing</th></tr></thead>
+      <tbody>
+        <tr><td><code>trace_id</code></td><td>which request is this?</td><td>cannot group a multi-agent run</td></tr>
+        <tr><td><code>span_id</code> / <code>parent_id</code></td><td>what caused this?</td><td>no causal chain; only a timeline</td></tr>
+        <tr><td><code>kind</code> (llm / tool / oracle / decision / error)</td><td>where did the time or money go?</td><td>cannot separate model cost from tool cost</td></tr>
+        <tr><td><code>t_start</code> / <code>t_end</code> (monotonic)</td><td>latency attribution; concurrency</td><td>wall-clock jumps make durations negative</td></tr>
+        <tr><td><code>tokens_in</code> / <code>tokens_out</code> / <code>model</code></td><td>cost, and which model version</td><td>cannot price the run or detect a model swap</td></tr>
+        <tr><td><code>input_hash</code> / <code>output_hash</code></td><td>replay; determinism audit (L94)</td><td>cannot tell whether a rerun saw the same inputs</td></tr>
+        <tr><td><code>status</code></td><td>error vs timeout vs ok</td><td>retries and failures blend into the success path</td></tr>
+        <tr><td><code>cost_usd</code></td><td>per-span and rolled-up cost</td><td>every dashboard is an estimate from a different source</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: distributed tracing, which already solved this</h4><p>A request in a microservice mesh is traced as a tree of spans with a shared trace id and parent pointers. Agent loops are the same shape: a request fans out to tool calls, subagents, and model calls, and the interesting questions are all causal or attributive. Adopt the OpenTelemetry span model rather than inventing one.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Request tracing assumes spans are <em>deterministic functions</em> of their inputs &mdash; replay a span and you get the same result. An LLM span is not: the same input can produce a different output (L94). So a trace needs the hashes and the actual output text (or a pointer to it) to be replayable, and it needs a record of nondeterministic events that the standard span model has no slot for: sampling seeds, serving version, batch composition. Extend the schema; do not assume the standard one suffices.</p></div>
+    </div>
+
+    <p>The practical consequence for retention: a trace without the <em>content</em> is not replayable, but content is large and
+    sensitive. The usual compromise &mdash; store hashes plus a pointer to content in a separate, access-controlled store with
+    its own retention &mdash; keeps the trace small while preserving the ability to reconstruct. What you must never do is store
+    neither.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d90-s3">3 &middot; The mechanism <a class="hook" href="#d90-s3">#</a></h2>
+
+    <p>Cost attribution first, because it is the number that changes behaviour. For a loop where each turn re-sends the growing
+    context:</p>
+
+    <div class="formula">
+      C<sub>total</sub> = &sum;<sub>t=1</sub><sup>T</sup> [ (b + g&middot;t)&thinsp;p<sub>in</sub> + o&thinsp;p<sub>out</sub> ] &nbsp;&nbsp;&rarr;&nbsp;&nbsp; C<sub>total</sub> = O(T&sup2;) in the growth term
+      <span class="note"><code>b</code> base context, <code>g</code> growth per turn, <code>o</code> output tokens, <code>p</code> prices. The growth term is quadratic in <code>T</code>, so <strong>halving the number of turns quarters the context cost</strong>. With <code>b=800, g=1200, o=300</code> and 12 turns: total $0.03286, of which the last turn alone is $0.00459 &mdash; 14% of the bill for one turn.</span>
+    </div>
+
+    <p>Then the integrity chain. Every span event is hashed together with the previous hash, so altering any event breaks all
+    subsequent hashes:</p>
+
+    <div class="formula">
+      h<sub>i</sub> = SHA256( h<sub>i&minus;1</sub> &#8214; canonical_json(span<sub>i</sub>) )
+      <span class="note"><code>&#8214;</code> = concatenation. The chain must be appended to storage <em>outside</em> the agent's writable scope (L84), or the agent can rewrite its own history and re-chain it. Verification is a single pass recomputing <code>h</code> from genesis; a 32/32 intact check is exactly this.</span>
+    </div>
+
+    <p>The implementation. A tracer that emits spans into a hash-chained append-only file.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json, time, os
+
+<span class="kw">def</span> <span class="fn">canon</span>(obj):
+    <span class="kw">return</span> json.<span class="fn">dumps</span>(obj, sort_keys=<span class="kw">True</span>, separators=(<span class="st">","</span>, <span class="st">":"</span>))
+
+<span class="kw">class</span> <span class="fn">Tracer</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, path, prices):
+        <span class="nm">self</span>.path = path                 <span class="cm"># MUST be outside the agent's writable scope</span>
+        <span class="nm">self</span>.prices = prices             <span class="cm"># {"in": $/tok, "out": $/tok, "cache": $/tok}</span>
+        <span class="nm">self</span>.prev = <span class="st">"0"</span> * <span class="nm">64</span>            <span class="cm"># genesis</span>
+        <span class="nm">self</span>.spans = []
+
+    <span class="kw">def</span> <span class="fn">span</span>(<span class="nm">self</span>, kind, parent=<span class="kw">None</span>, model=<span class="kw">None</span>,
+             tokens_in=<span class="nm">0</span>, tokens_out=<span class="nm">0</span>, cached_in=<span class="nm">0</span>,
+             input_obj=<span class="kw">None</span>, output_obj=<span class="kw">None</span>, status=<span class="st">"ok"</span>, meta=<span class="kw">None</span>):
+        t0 = time.<span class="fn">monotonic</span>()
+        cost = (tokens_in * <span class="nm">self</span>.prices[<span class="st">"in"</span>]
+                + tokens_out * <span class="nm">self</span>.prices[<span class="st">"out"</span>])
+        rec = {
+            <span class="st">"span_id"</span>: hashlib.<span class="fn">sha256</span>(<span class="fn">canon</span>([kind, parent, t0, tokens_in]).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">16</span>],
+            <span class="st">"parent_id"</span>: parent, <span class="st">"kind"</span>: kind, <span class="st">"model"</span>: model,
+            <span class="st">"t_start"</span>: t0, <span class="st">"tokens_in"</span>: tokens_in, <span class="st">"tokens_out"</span>: tokens_out,
+            <span class="st">"input_hash"</span>: hashlib.<span class="fn">sha256</span>(<span class="fn">canon</span>(input_obj).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">16</span>] <span class="kw">if</span> input_obj <span class="kw">is not None else None</span>,
+            <span class="st">"output_hash"</span>: hashlib.<span class="fn">sha256</span>(<span class="fn">canon</span>(output_obj).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">16</span>] <span class="kw">if</span> output_obj <span class="kw">is not None else None</span>,
+            <span class="st">"status"</span>: status, <span class="st">"cost_usd"</span>: cost, <span class="st">"meta"</span>: meta <span class="kw">or</span> {},
+        }
+        rec[<span class="st">"t_end"</span>] = time.<span class="fn">monotonic</span>()
+        rec[<span class="st">"h_prev"</span>] = <span class="nm">self</span>.prev
+        rec[<span class="st">"h"</span>] = hashlib.<span class="fn">sha256</span>((<span class="nm">self</span>.prev + <span class="fn">canon</span>(rec)).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()
+        <span class="nm">self</span>.prev = rec[<span class="st">"h"</span>]
+        <span class="nm">self</span>.spans.<span class="fn">append</span>(rec)
+        <span class="kw">with</span> <span class="fn">open</span>(<span class="nm">self</span>.path, <span class="st">"a"</span>, encoding=<span class="st">"utf-8"</span>) <span class="kw">as</span> f:
+            f.<span class="fn">write</span>(<span class="fn">canon</span>(rec) + <span class="st">"\n"</span>)
+        <span class="kw">return</span> rec[<span class="st">"span_id"</span>]
+
+<span class="kw">def</span> <span class="fn">verify_chain</span>(path, genesis=<span class="st">"0"</span>*<span class="nm">64</span>):
+    prev = genesis
+    n = <span class="nm">0</span>
+    <span class="kw">for</span> line <span class="kw">in</span> <span class="fn">open</span>(path, encoding=<span class="st">"utf-8"</span>):
+        rec = json.<span class="fn">loads</span>(line)
+        h = rec.<span class="fn">pop</span>(<span class="st">"h"</span>)
+        <span class="kw">if</span> rec[<span class="st">"h_prev"</span>] != prev:
+            <span class="kw">return</span> {<span class="st">"ok"</span>: <span class="kw">False</span>, <span class="st">"at"</span>: n, <span class="st">"reason"</span>: <span class="st">"h_prev mismatch"</span>}
+        <span class="kw">if</span> hashlib.<span class="fn">sha256</span>((prev + <span class="fn">canon</span>(rec)).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>() != h:
+            <span class="kw">return</span> {<span class="st">"ok"</span>: <span class="kw">False</span>, <span class="st">"at"</span>: n, <span class="st">"reason"</span>: <span class="st">"hash mismatch"</span>}
+        prev = h; n += <span class="nm">1</span>
+    <span class="kw">return</span> {<span class="st">"ok"</span>: <span class="kw">True</span>, <span class="st">"n"</span>: n, <span class="st">"head"</span>: prev[:<span class="nm">12</span>]}
+    </div>
+
+    <p>Four details in that code are not optional. <strong>(1) <code>time.monotonic()</code>, not wall clock</strong> &mdash; NTP steps
+    and clock skew produce negative durations that poison latency attribution. Wall-clock timestamps can be stored alongside;
+    they just must not be the measurement. <strong>(2) Content is hashed, not stored</strong> in the span &mdash; keeps the chain small
+    and lets sensitive content live in a separate store. <strong>(3) The chain starts from a genesis hash</strong>, so deleting the
+    first event is detectable, not just editing the middle. <strong>(4) Verification replays the chain from genesis</strong>, and returns
+    the index of the first break, which is the difference between "the log was altered" and "the log was altered at event 47".</p>
+
+    <div class="callout audit">
+      <p>The audit query a trace must support, stated as a test: <strong>given a failed output, return the ordered list of
+      spans from root to the span that introduced the bad data, with each span's input hash and cost.</strong> If your trace cannot
+      answer that, everything downstream &mdash; evals, incident review, cost optimisation &mdash; is guesswork dressed as analysis.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d90-s4">4 &middot; Your hands <a class="hook" href="#d90-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Cost is quadratic, and the tail dominates</h4>
+      <p>A 12-turn loop where context grows 1,200 tokens per turn. Per-turn and cumulative cost, then the same trace with
+      prefix caching.</p>
+      <div class="code" data-lang="python">
+PRICE_IN, PRICE_OUT = <span class="nm">0.28</span>/<span class="nm">1e6</span>, <span class="nm">1.10</span>/<span class="nm">1e6</span>
+<span class="kw">def</span> <span class="fn">simulate</span>(turns=<span class="nm">12</span>, base=<span class="nm">800</span>, grow=<span class="nm">1200</span>, out=<span class="nm">300</span>):
+    ctx, rows, cum = base, [], <span class="nm">0.0</span>
+    <span class="kw">for</span> t <span class="kw">in</span> <span class="fn">range</span>(turns):
+        ctx += grow
+        c = ctx*PRICE_IN + out*PRICE_OUT
+        cum += c
+        rows.<span class="fn">append</span>((t, ctx, c, cum))
+    <span class="kw">return</span> rows
+
+rows = <span class="fn">simulate</span>()
+<span class="kw">for</span> t, ctx, c, cum <span class="kw">in</span> rows:
+    print(<span class="st">f"turn {t:2d} in={ctx:6d} cost=${c:.5f} cum=${cum:.5f}"</span>)
+total = rows[-<span class="nm">1</span>][<span class="nm">3</span>]
+print(<span class="st">f"last/first = {rows[-1][2]/rows[0][2]:.2f}x  last3 share = "
+      f"{sum(r[2] for r in rows[-3:])/total:.1%}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>turn 0 in=2000 cost=$0.00089</code> &middot;
+      <code>turn 11 in=15200 cost=$0.00459</code>, cumulative <code>$0.03286</code>. Then
+      <code>last/first = 5.15x</code> and <code>last3 share = 38.8%</code>.
+      The measurement changes your optimisation target: the last three turns (25% of turns) are 38.8% of the bill, so
+      <strong>ending the run earlier is worth far more than making early turns cheaper</strong>. Compaction (L79) and a tighter budget
+      (L76) attack this directly; shaving the system prompt does not.
+      <strong>Falsifier:</strong> if your trace shows a flat per-turn cost, you either have prefix caching working or your context
+      is not growing &mdash; check <code>tokens_in</code> per span before concluding the agent is efficient.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Prove the ledger cannot be edited (copy-paste)</h4>
+      <p>Write five events, verify the chain, tamper with the middle, verify again. The second verification must fail and name
+      the position.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json, tempfile, os
+
+<span class="kw">def</span> <span class="fn">canon</span>(o): <span class="kw">return</span> json.<span class="fn">dumps</span>(o, sort_keys=<span class="kw">True</span>, separators=(<span class="st">","</span>,<span class="st">":"</span>))
+
+<span class="kw">def</span> <span class="fn">append</span>(path, prev, ev):
+    ev = <span class="fn">dict</span>(ev, h_prev=prev)
+    ev[<span class="st">"h"</span>] = hashlib.<span class="fn">sha256</span>((prev + <span class="fn">canon</span>(ev)).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()
+    <span class="kw">with</span> <span class="fn">open</span>(path, <span class="st">"a"</span>) <span class="kw">as</span> f: f.<span class="fn">write</span>(<span class="fn">canon</span>(ev) + <span class="st">"\n"</span>)
+    <span class="kw">return</span> ev[<span class="st">"h"</span>]
+
+<span class="kw">def</span> <span class="fn">verify</span>(path):
+    prev, n = <span class="st">"0"</span>*<span class="nm">64</span>, <span class="nm">0</span>
+    <span class="kw">for</span> line <span class="kw">in</span> <span class="fn">open</span>(path):
+        ev = json.<span class="fn">loads</span>(line); h = ev.<span class="fn">pop</span>(<span class="st">"h"</span>)
+        <span class="kw">if</span> ev[<span class="st">"h_prev"</span>] != prev: <span class="kw">return</span> (<span class="kw">False</span>, n, <span class="st">"h_prev"</span>)
+        <span class="kw">if</span> hashlib.<span class="fn">sha256</span>((prev + <span class="fn">canon</span>(ev)).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>() != h:
+            <span class="kw">return</span> (<span class="kw">False</span>, n, <span class="st">"hash"</span>)
+        prev = h; n += <span class="nm">1</span>
+    <span class="kw">return</span> (<span class="kw">True</span>, n, prev[:<span class="nm">10</span>])
+
+p = os.path.<span class="fn">path</span>.<span class="fn">join</span>(tempfile.<span class="fn">gettempdir</span>(), <span class="st">"ledger.jsonl"</span>)
+<span class="kw">if</span> os.<span class="fn">path</span>.<span class="fn">exists</span>(p): os.<span class="fn">remove</span>(p)
+prev = <span class="st">"0"</span>*<span class="nm">64</span>
+<span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">5</span>):
+    prev = <span class="fn">append</span>(p, prev, {<span class="st">"i"</span>: i, <span class="st">"tool"</span>: <span class="st">f"t{i}"</span>, <span class="st">"cost"</span>: <span class="nm">0.01</span>*(i+<span class="nm">1</span>)})
+print(<span class="st">"intact:  "</span>, <span class="fn">verify</span>(p))
+
+lines = <span class="fn">open</span>(p).<span class="fn">readlines</span>()
+ev = json.<span class="fn">loads</span>(lines[<span class="nm">2</span>]); ev[<span class="st">"cost"</span>] = <span class="nm">999.0</span>     <span class="cm"># tamper</span>
+lines[<span class="nm">2</span>] = <span class="fn">canon</span>(ev) + <span class="st">"\n"</span>
+<span class="fn">open</span>(p, <span class="st">"w"</span>).<span class="fn">writelines</span>(lines)
+print(<span class="st">"tampered:"</span>, <span class="fn">verify</span>(p))
+      </div>
+      <p class="expect">Expect <code>intact: (True, 5, '&lt;10 hex chars&gt;')</code> and
+      <code>tampered: (False, 2, 'hash')</code> &mdash; verification names <strong>event index 2</strong>, exactly where the edit happened.
+      That is the property that makes a trace evidence rather than documentation: an edit is not just detectable, it is
+      <em>located</em>.
+      <strong>Falsifier:</strong> if tampering with the <em>last</em> event still verifies, your verification is only checking
+      <code>h_prev</code> chains and not recomputing <code>h</code> &mdash; a common implementation bug that leaves the tail forgeable.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Answer the causal query (browser console)</h4>
+      <p>A trace as an array; the query walks parents from a failed span back to root. This is the operation a log file cannot
+      do.</p>
+      <div class="code" data-lang="javascript">
+<span class="kw">const</span> spans = [
+  {id:<span class="st">"r"</span>,   parent:<span class="kw">null</span>, kind:<span class="st">"decision"</span>, status:<span class="st">"ok"</span>},
+  {id:<span class="st">"a1"</span>,  parent:<span class="st">"r"</span>,  kind:<span class="st">"tool"</span>,     status:<span class="st">"ok"</span>,  note:<span class="st">"read stale cache"</span>},
+  {id:<span class="st">"a2"</span>,  parent:<span class="st">"a1"</span>, kind:<span class="st">"llm"</span>,      status:<span class="st">"ok"</span>,  tokens_in:<span class="nm">4100</span>},
+  {id:<span class="st">"a3"</span>,  parent:<span class="st">"a2"</span>, kind:<span class="st">"tool"</span>,     status:<span class="st">"ok"</span>,  note:<span class="st">"write migration"</span>},
+  {id:<span class="st">"a4"</span>,  parent:<span class="st">"a3"</span>, kind:<span class="st">"oracle"</span>,   status:<span class="st">"error"</span>, note:<span class="st">"schema mismatch"</span>},
+];
+<span class="kw">const</span> byId = Object.<span class="fn">fromEntries</span>(spans.<span class="fn">map</span>(s =&gt; [s.id, s]));
+<span class="kw">function</span> <span class="fn">chain</span>(id) {
+  <span class="kw">const</span> out = [];
+  <span class="kw">let</span> cur = byId[id];
+  <span class="kw">while</span> (cur) { out.<span class="fn">unshift</span>(cur); cur = cur.parent ? byId[cur.parent] : <span class="kw">null</span>; }
+  <span class="kw">return</span> out;
+}
+<span class="kw">const</span> failed = spans.<span class="fn">filter</span>(s =&gt; s.status === <span class="st">"error"</span>);
+<span class="kw">for</span> (<span class="kw">const</span> f <span class="kw">of</span> failed) {
+  console.<span class="fn">log</span>(<span class="st">"failure at"</span>, f.id);
+  <span class="kw">for</span> (<span class="kw">const</span> s <span class="kw">of</span> <span class="fn">chain</span>(f.id)) console.<span class="fn">log</span>(<span class="st">"   "</span> + s.id, s.kind, s.note ?? <span class="st">""</span>);
+}
+      </div>
+      <p class="expect">Expect the chain <code>r decision</code> &rarr; <code>a1 tool read stale cache</code> &rarr;
+      <code>a2 llm</code> &rarr; <code>a3 tool write migration</code> &rarr; <code>a4 oracle error schema mismatch</code>.
+      The provenance note on <code>a1</code> is the answer to "why did this happen", and it is only reachable by following
+      parents. Note <code>tokens_in: 4100</code> on <code>a2</code> &mdash; cost attribution says the expensive span is <em>not</em> the
+      one that failed.
+      <strong>Falsifier:</strong> if any failed span has no path to a root, your trace has an orphan &mdash; a span emitted without its
+      parent recorded, which usually means the parent id was assigned after the child was created. Fix by generating span ids
+      before the call, not after.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d90-s5">5 &middot; Failure modes <a class="hook" href="#d90-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Logs instead of spans.</strong> Flat lines with timestamps. Symptom: incident review cannot answer "which step caused this"; the timeline is reconstructed by eyeballing ordering.</li>
+        <li><strong>Missing parent ids.</strong> Spans emitted without causality. Symptom: orphaned spans, and multi-agent runs where attribution between agents is impossible.</li>
+        <li><strong>Wall-clock durations.</strong> NTP correction mid-run. Symptom: negative durations, impossible overlaps, latency dashboards that disagree with reality.</li>
+        <li><strong>Cost estimated, not measured.</strong> Dashboards multiply tokens by a price table that drifted. Symptom: the invoice and the dashboard disagree by a growing factor; nobody knows which is right.</li>
+        <li><strong>Ledger inside the workspace.</strong> The agent can write its own trace. Symptom: the chain verifies, but events contradict the artifacts &mdash; a re-chained history. This is the one that invalidates every other guarantee.</li>
+        <li><strong>Hashes without content.</strong> Replayable hashes but the content was discarded. Symptom: you can prove two runs differed but cannot see how.</li>
+        <li><strong>Unbounded trace growth.</strong> Full spans for every turn retained forever. Symptom: observability cost rivals inference cost; storage grows quadratically with context length.</li>
+        <li><strong>No trace in eval.</strong> Evals run without tracing. Symptom: a score drops and there is no per-item span to explain why; the eval cannot be debugged, only re-run.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d90-s6">6 &middot; Connects to <a class="hook" href="#d90-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="76-agents.html">L76 &middot; Budgeted loop</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="91-cost-latency.html">L91 &middot; Cost/latency</a>,
+    <a class="tag-d" href="94-determinism.html">L94 &middot; Determinism</a>,
+    <a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="76-agents.html">L76 &middot; Budgeted loop</a> &mdash; the ledger in that page is the trace; this page makes it a schema and a chain.</li>
+      <li><a class="tag-d" href="79-context-engineering.html">L79 &middot; Context</a> &mdash; the quadratic cost term is a context-growth measurement; <code>tokens_in</code> per span is how you see it.</li>
+      <li><a class="tag-d" href="84-safety-sandboxing.html">L84 &middot; Sandboxing</a> &mdash; the ledger must live outside the writable scope or it is not evidence.</li>
+      <li><a class="tag-d" href="94-determinism.html">L94 &middot; Determinism</a> &mdash; <code>input_hash</code> per span is the seed-audit primitive.</li>
+      <li><a class="tag-d" href="91-cost-latency.html">L91 &middot; Cost/latency</a> &mdash; routing and caching decisions are made from attribution data, not intuition.</li>
+      <li><a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a> &mdash; the harness consumes the span chain as its immutable per-run artifact bundle.</li>
+      <li><a class="tag-b" href="../track-b/45-caching.html">L45 &middot; Caching</a> &mdash; the largest single lever on the quadratic term; cache-hit rate belongs in the trace as <code>cached_in</code>.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d90-s7">7 &middot; Self-check <a class="hook" href="#d90-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is <code>time.monotonic()</code> mandatory for span durations rather than wall-clock time?</p>
+        <details><summary>Reveal answer</summary><p>Because wall-clock time can jump &mdash; NTP correction, DST, manual time changes, VM migration &mdash; and a jump during a run produces negative or absurd durations. Monotonic clocks are guaranteed non-decreasing and are the correct instrument for measuring elapsed time. Store wall-clock timestamps <em>in addition</em> (you need them for correlation with external systems), but compute duration and ordering from monotonic values. A negative duration in a trace is always a wall-clock bug, never a real concurrency anomaly.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> In a loop with base 800 tokens, growth 1,200/turn, output 300/turn, what fraction of a 12-turn run's cost is in the last three turns?</p>
+        <details><summary>Reveal answer</summary><p>Context at turn <code>t</code> is <code>800 + 1200(t+1)</code>: turn 9 = 12,800; turn 10 = 14,000; turn 11 = 15,200. Sum of last three inputs = 42,000 tokens vs total input 12&times;800 + 1200&times;(1+2+&hellip;+12) = 9,600 + 93,600 = 103,200. So the last three turns are <code>42,000/103,200 = 40.7%</code> of input tokens &mdash; matching the measured <strong>38.8%</strong> of total cost (the difference is the output term, which is constant per turn). The operational reading: the final quarter of a run accounts for ~two-fifths of spend, so <strong>shortening the run is the highest-leverage cost action available</strong>.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> You tamper with event 3 of 10 in a chained ledger and the chain still verifies. What is wrong?</p>
+        <details><summary>Reveal answer</summary><p>Two possibilities. (a) The verifier only compares <code>h_prev</code> links and never recomputes <code>h</code> from the event content &mdash; so content edits pass and only reordering is caught. (b) The verifier compares against a stored <code>h</code> field that was recomputed by the same tamperer. Both mean the chain is decorative. Correct verification recomputes <code>h = SHA256(h_prev &#8214; canon(rec))</code> from the <em>event content</em> and compares it to the stored <code>h</code>; tampering with content changes the recomputation at the edited index and every subsequent index also fails by construction. Fix by writing a tamper test into CI &mdash; the one in Experiment 2 &mdash; and asserting it fails at the right index.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: your cost dashboard says $0.031 for a run; the provider invoice allocates $0.048 to it. What do you check, in order?</p>
+        <details><summary>Reveal answer</summary><p>(1) <strong>Cached vs uncached input tokens</strong> &mdash; if the trace prices all input at the standard rate but the provider bills cache reads/writes differently, the totals diverge; add <code>cached_in</code> to the span. (2) <strong>Retries and failed calls</strong> &mdash; a timed-out call that the trace marks as an error span may still have been billed for its input tokens; log cost on error spans too. (3) <strong>Model/price version</strong> &mdash; a price table update the trace did not pick up. (4) <strong>Spans outside the trace</strong> &mdash; embedding calls, reranker calls, or a subagent whose span was never emitted. The general rule: reconcile the ledger against the invoice weekly, and treat a persistent gap as a missing span kind rather than a pricing error.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why must the ledger be written outside the agent's writable scope, when the chain already detects tampering?</p>
+        <details><summary>Reveal answer</summary><p>Because detection is only useful if the attacker cannot also fix the evidence. An agent with write access to the ledger can edit an event and then recompute every subsequent hash &mdash; producing a chain that verifies perfectly. Hash chaining protects against <em>undetected</em> edits, not against an adversary who owns the whole file. You need both: the chain to make any edit detectable, and the out-of-scope storage so the agent cannot re-chain what it edited. This is precisely why the ledger must be a separate process/volume from the workspace, and why the verifier should record its own head hash somewhere the agent never sees.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="89-llm-as-judge.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L89 &middot; LLM-as-judge</span></a>
+    <a class="next" href="91-cost-latency.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L91 &middot; Cost &amp; latency budgets</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

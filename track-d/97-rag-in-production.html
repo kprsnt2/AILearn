@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d97">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L97 · RAG in production: freshness, drift, index rebuilds — AILearn</title>
+<meta name="description" content="A query-distribution shift from 80/20 to 50/50 costs 27 recall points with no code change. Staleness math, incremental rebuild economics, and the eval-comparability trap across index versions.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L97</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L97 &middot; RAG in production: freshness, drift, index rebuilds</h1>
+  <p class="lede">Recall fell 27 points with no deploy. The cause was a query-distribution shift from 80/20 to 50/50 against an index built for the old mix. In production, an index is a <em>versioned snapshot of a world that has since changed</em>, and the drift is usually in the questions, not the documents.</p>
+  <div class="chips">
+    <span class="chip">~35 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: index lifecycle plan + drift monitor</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">index as versioned artifact</span>
+  <span class="pill">staleness fraction</span>
+  <span class="pill">incremental vs full rebuild</span>
+  <span class="pill">query distribution drift</span>
+  <span class="pill">eval comparability</span>
+  <span class="pill">shadow indexes</span>
+  <span class="pill">deletion / GDPR</span>
+  <span class="pill">embedding version lock</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d97-s1">1 &middot; Why it exists <a class="hook" href="#d97-s1">#</a></h2>
+
+    <p>The failure: <strong>retrieval degrades while every metric you have says nothing changed.</strong> Code is unchanged, the
+    model is pinned, the golden set scores the same. But users have started asking about a product line the index barely
+    covers, and recall for those queries is far below the average. Your aggregate recall is dominated by the 80% of queries in
+    the well-covered topic, so it moves by a point or two while the experience for a growing segment collapses.</p>
+
+    <p>The second failure is stale documents served confidently. A rebuilds-every-30-days policy in a system with 10,000
+    daily updates means <strong>every document has changed since the last index</strong> &mdash; the index is a snapshot of a different
+    world, and the model cites it as current.</p>
+
+    <p>The third failure invalidates your ability to make any of these claims: <strong>you cannot compare a score across index
+    versions.</strong> An index rebuild changes what retrieval returns even with identical code, so a score measured before and
+    after a rebuild is a measurement of two different systems. Teams routinely see a score move 7 points after a "routine
+    rebuild", attribute it to variance, and then stop trusting their evals &mdash; when the actual cause was an unversioned artifact.</p>
+
+    <div class="callout boss">
+      <p>Treat the index like a model: <strong>versioned, pinned, and re-baselined on every change.</strong> Three numbers must be
+      monitored separately &mdash; <strong>staleness</strong> (how much of the corpus changed since the snapshot), <strong>coverage drift</strong>
+      (is the query mix moving away from what you indexed?), and <strong>index version</strong> (which snapshot produced this answer?).
+      Without all three, "retrieval got worse" is unattributable.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d97-s2">2 &middot; The mental model <a class="hook" href="#d97-s2">#</a></h2>
+
+    <p>An index is a <strong>materialized view</strong>: a derived artifact that is always behind its source, and whose correctness is
+    measured in time, not in logic. Three clocks are running at once, and they usually have different periods.</p>
+
+    <table class="table">
+      <thead><tr><th>Clock</th><th>Changes at</th><th>Failure if too slow</th><th>Failure if too fast</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Corpus</strong></td><td>document updates, deletions</td><td>stale answers; deleted content still served</td><td>embedding cost, rebuild churn</td></tr>
+        <tr><td><strong>Query mix</strong></td><td>user behaviour, product changes, seasonality</td><td>recall drops for growing segments while aggregates look fine</td><td>constant golden-set churn, incomparable evals</td></tr>
+        <tr><td><strong>Embedding model</strong></td><td>upgrades, provider changes</td><td>never &mdash; but mixing versions breaks retrieval</td><td>full re-embed cost, downtime</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a materialized view with a refresh policy</h4><p>A database materialized view has an explicit refresh interval and staleness bound, and querying it is a considered trade rather than an oversight. An index with a rebuild schedule is exactly this: you are choosing <code>REFRESH COMPLETE EVERY 1 DAY</code> versus <code>REFRESH FAST ON COMMIT</code>, with the cost and staleness implications made explicit.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Databases track row versions and can tell you exactly which base rows a view reflects. A vector index has no such lineage: a chunk's embedding is a function of the document at some past moment, and nothing records <em>which</em> moment. So staleness is not queryable unless you add a timestamp to every chunk and store it with the embedding &mdash; that field is the difference between "assume it's current" and "know it's 8 days old".</p></div>
+    </div>
+
+    <p>The design follows: every chunk carries <code>(doc_id, doc_version_hash, indexed_at)</code>. Then three things become
+    possible that otherwise are not &mdash; answering "when was this snapshot taken", detecting that a returned chunk disagrees with
+    the live document, and deleting a document's chunks completely when the source is deleted.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d97-s3">3 &middot; The mechanism <a class="hook" href="#d97-s3">#</a></h2>
+
+    <p>First, staleness. The fraction of the corpus that has changed since the last rebuild is what matters, not the mean age:</p>
+
+    <div class="formula">
+      stale = min(1, U &middot; R / N<sub>docs</sub>) &nbsp;&nbsp;&nbsp;&nbsp; mean index age = R / 2
+      <span class="note"><code>U</code> = updates per day, <code>R</code> = rebuild interval in days, <code>N</code> = corpus size. With <code>U=1000, N=100,000</code>: <code>R=1 &rarr; 1.0%</code>, <code>R=7 &rarr; 7.0%</code>, <code>R=30 &rarr; 30.0%</code>. With <code>U=10,000</code> (a busy ticket system): <code>R=7 &rarr; 70%</code>, <code>R=30 &rarr; 100%</code>. The formula makes the policy decision arithmetic rather than taste.</span>
+    </div>
+
+    <p>Second, drift. Recall for a topic is capped by how much of that topic is in the index, so a shift in the query mix
+    moves effective recall even when every underlying number is unchanged:</p>
+
+    <div class="formula">
+      recall<sub>eff</sub> = &sum;<sub>t</sub> w<sub>t</sub> &middot; min(1, index<sub>t</sub>/w<sub>t</sub>) &middot; cap
+      <span class="note"><code>w<sub>t</sub></code> = live query share of topic <code>t</code>, <code>index<sub>t</sub></code> = indexed share, <code>cap</code> = the ceiling when coverage is adequate (0.90 here). Indexing an 80/20 mix and then serving a 50/50 mix gives <code>0.630</code> instead of <code>0.900</code> &mdash; <strong>a 27-point loss with no code change</strong>. Nothing in your system changed; the world did.</span>
+    </div>
+
+    <p>Third, rebuild economics, which is what makes the freshness policy defensible:</p>
+
+    <div class="formula">
+      C<sub>full</sub> = N<sub>chunks</sub> &middot; tokens &middot; p<sub>embed</sub> &nbsp;&nbsp;&nbsp;&nbsp; C<sub>incr</sub> = &chi; &middot; C<sub>full</sub>
+      <span class="note"><code>&chi;</code> = daily churn fraction. For 100,000 docs &times; 3 chunks &times; 400 tokens at $0.02/1M: <code>C_full = $2.40</code>. Daily full rebuilds are $72/month; <strong>daily incremental at 1% churn is $0.72/month</strong> &mdash; 100&times; cheaper for the same freshness. The freshness/cost tradeoff is not a tradeoff at all when incremental is available.</span>
+    </div>
+
+    <p>The lifecycle manager. Version the index, gate promotion on a shadow comparison, keep the old version warm for rollback.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, time
+
+<span class="kw">def</span> <span class="fn">doc_version</span>(doc):
+    <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(doc.<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">16</span>]
+
+<span class="kw">class</span> <span class="fn">IndexVersion</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, version_id, embed_model, created_at, doc_versions):
+        <span class="nm">self</span>.id = version_id
+        <span class="nm">self</span>.embed_model = embed_model        <span class="cm"># pins the model; mixing versions breaks retrieval</span>
+        <span class="nm">self</span>.created_at = created_at
+        <span class="nm">self</span>.doc_versions = doc_versions    <span class="cm"># doc_id -&gt; version hash at index time</span>
+        <span class="nm">self</span>.chunks = {}                    <span class="cm"># chunk_id -&gt; {doc_id, indexed_at, text_hash}</span>
+
+    <span class="kw">def</span> <span class="fn">staleness</span>(<span class="nm">self</span>, live_docs):
+        <span class="cm"># fraction of docs whose live version differs from the indexed version</span>
+        changed = <span class="fn">sum</span>(<span class="nm">1</span> <span class="kw">for</span> d, v <span class="kw">in</span> <span class="nm">self</span>.doc_versions.<span class="fn">items</span>()
+                      <span class="kw">if</span> d <span class="kw">not in</span> live_docs <span class="kw">or</span> <span class="fn">doc_version</span>(live_docs[d]) != v)
+        deleted = <span class="fn">sum</span>(<span class="nm">1</span> <span class="kw">for</span> d <span class="kw">in</span> <span class="nm">self</span>.doc_versions <span class="kw">if</span> d <span class="kw">not in</span> live_docs)
+        <span class="kw">return</span> {<span class="st">"n_docs"</span>: <span class="fn">len</span>(<span class="nm">self</span>.doc_versions),
+                <span class="st">"changed"</span>: changed, <span class="st">"deleted_still_indexed"</span>: deleted,
+                <span class="st">"stale_fraction"</span>: <span class="fn">round</span>(changed / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(<span class="nm">self</span>.doc_versions)), <span class="nm">4</span>)}
+
+
+<span class="kw">class</span> <span class="fn">Lifecycle</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, data_client, embed_model, slo):
+        <span class="nm">self</span>.dc, <span class="nm">self</span>.model, <span class="nm">self</span>.slo = data_client, embed_model, slo
+        <span class="nm">self</span>.versions = []
+        <span class="nm">self</span>.live = <span class="kw">None</span>
+
+    <span class="kw">def</span> <span class="fn">rebuild</span>(<span class="nm">self</span>, incremental=<span class="kw">True</span>):
+        v = <span class="fn">IndexVersion</span>(<span class="st">f"v{len(self.versions)+1}"</span>, <span class="nm">self</span>.model, time.<span class="fn">time</span>(), {})
+        base = <span class="nm">self</span>.live <span class="kw">if</span> (incremental <span class="kw">and</span> <span class="nm">self</span>.live) <span class="kw">else</span> <span class="kw">None</span>
+        <span class="kw">if</span> base:
+            v.doc_versions = <span class="fn">dict</span>(base.doc_versions)     <span class="cm"># carry forward</span>
+        changed = <span class="nm">self</span>.dc.<span class="fn">changed_since</span>(base.created_at <span class="kw">if</span> base <span class="kw">else</span> <span class="nm">0</span>)
+        <span class="kw">for</span> doc_id, text <span class="kw">in</span> changed.<span class="fn">items</span>():
+            v.doc_versions[doc_id] = <span class="fn">doc_version</span>(text)
+            <span class="kw">for</span> c <span class="kw">in</span> <span class="fn">chunk</span>(text):
+                cid = hashlib.<span class="fn">sha256</span>(c.<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">20</span>]
+                v.chunks[cid] = {<span class="st">"doc_id"</span>: doc_id, <span class="st">"indexed_at"</span>: v.created_at}
+        <span class="cm"># purge chunks of deleted docs -- do not leave them retrievable</span>
+        live = <span class="nm">self</span>.dc.<span class="fn">all_ids</span>()
+        v.chunks = {c: m <span class="kw">for</span> c, m <span class="kw">in</span> v.chunks.<span class="fn">items</span>() <span class="kw">if</span> m[<span class="st">"doc_id"</span>] <span class="kw">in</span> live}
+        <span class="nm">self</span>.versions.<span class="fn">append</span>(v)
+        <span class="kw">return</span> v
+
+    <span class="kw">def</span> <span class="fn">promote</span>(<span class="nm">self</span>, candidate):
+        <span class="cm"># shadow eval on the SAME golden set before switching traffic</span>
+        shadow = <span class="fn">eval_recall</span>(candidate, <span class="nm">self</span>.slo[<span class="st">"golden_set"</span>])
+        <span class="kw">if</span> shadow &lt; <span class="nm">self</span>.slo[<span class="st">"min_recall"</span>]:
+            <span class="kw">return</span> {<span class="st">"promoted"</span>: <span class="kw">False</span>, <span class="st">"shadow_recall"</span>: shadow}
+        <span class="nm">self</span>.live = candidate
+        <span class="kw">return</span> {<span class="st">"promoted"</span>: <span class="kw">True</span>, <span class="st">"shadow_recall"</span>: shadow}
+    </div>
+
+    <p>Three decisions. <strong>(1) <code>embed_model</code> is pinned on the version object</strong> &mdash; querying a v2 index with a v1
+    embedding model produces garbage silently, and the version id is what makes the mismatch detectable. <strong>(2) Deletion
+    purges chunks</strong>: leaving chunks for deleted documents means serving content that no longer exists, and in a regulated
+    setting it means failing a deletion obligation. <strong>(3) Promotion is a shadow eval, not a swap</strong> &mdash; the candidate
+    is scored on the same golden set before traffic moves, and the old version stays available for rollback.</p>
+
+    <table class="table">
+      <thead><tr><th>Signal</th><th>Metric</th><th>Alert when</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td>Staleness</td><td><code>stale_fraction</code> from <code>IndexVersion.staleness</code></td><td>&gt; 10%</td><td>trigger incremental rebuild</td></tr>
+        <tr><td>Deletion leakage</td><td><code>deleted_still_indexed</code></td><td>&gt; 0</td><td><strong>page immediately</strong> &mdash; compliance issue</td></tr>
+        <tr><td>Query drift</td><td>topic share in last 7 days vs index mix</td><td>any topic share moves &gt;10 pts</td><td>re-weight corpus; re-baseline recalls</td></tr>
+        <tr><td>Version mismatch</td><td>query embed model vs index embed model</td><td>mismatch</td><td>refuse to serve; re-embed</td></tr>
+        <tr><td>Recall regression</td><td>shadow recall on pinned golden set</td><td>&lt; <code>min_recall</code></td><td>block promotion</td></tr>
+        <tr><td>Cache staleness</td><td>semantic cache hit age</td><td>answer age &gt; document TTL</td><td>invalidate cache entries</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>The audit requirement for production RAG: <strong>every served answer records the index version and the chunk ids plus
+      their <code>indexed_at</code> timestamps.</strong> Then "the model said the wrong thing" can be resolved into: the index was 8 days
+      old, or the chunk came from a document deleted last week, or the version was not the one the eval measured. Without those
+      fields, every RAG incident ends in "retrieval is hard".</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d97-s4">4 &middot; Your hands <a class="hook" href="#d97-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Staleness is a function of rebuild interval, not of diligence</h4>
+      <p>Fraction of the corpus that changed since the last snapshot, across update rates and intervals.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">stale_fraction</span>(updates_per_day, total_docs, rebuild_days):
+    changed = <span class="fn">min</span>(total_docs, updates_per_day * rebuild_days)
+    <span class="kw">return</span> changed / total_docs
+
+TOTAL = <span class="nm">100_000</span>
+print(<span class="st">"upd/day  rebuild_d  mean_age  pct_stale"</span>)
+<span class="kw">for</span> rate <span class="kw">in</span> (<span class="nm">10</span>, <span class="nm">100</span>, <span class="nm">1000</span>, <span class="nm">10000</span>):
+    <span class="kw">for</span> rd <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">7</span>, <span class="nm">30</span>):
+        print(<span class="st">f"{rate:7d} {rd:10d} {rd/2:8.1f}d {stale_fraction(rate, TOTAL, rd):9.2%}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output</strong> (excerpt): <code>1000 updates/day, 30-day rebuild &rarr; 30.00%</code> stale;
+      <code>10000, 7-day &rarr; 70.00%</code>; <code>10000, 30-day &rarr; 100.00%</code>; <code>1000, 1-day &rarr; 1.00%</code>.
+      The important reading is the last column: a 30-day rebuild is fine for a slow-moving corpus (0.30% at 10 updates/day) and
+      catastrophic for a fast one (100% at 10,000). <strong>The same policy is correct in one system and wrong in another</strong>,
+      which is why the interval must be derived from <code>U/N</code> rather than copied from a blog post.
+      <strong>Falsifier:</strong> if your actual stale fraction is far below the formula's prediction, your corpus has a
+      concentrated update pattern (a few documents change constantly) &mdash; compute it per-document rather than in aggregate,
+      because "5% of docs changed" can still be all the docs that matter.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Query drift costs 27 recall points with no code change</h4>
+      <p>Index built on an 80/20 topic mix; serve a live mix that has shifted. Nothing else changes.</p>
+      <div class="code" data-lang="python">
+INDEX_MIX = {<span class="st">"A"</span>: <span class="nm">0.80</span>, <span class="st">"B"</span>: <span class="nm">0.20</span>}
+CAP = <span class="nm">0.90</span>      <span class="cm"># recall ceiling when topic coverage is adequate</span>
+
+<span class="kw">def</span> <span class="fn">effective_recall</span>(live_mix, index_mix=INDEX_MIX, cap=CAP):
+    rec = <span class="nm">0.0</span>
+    <span class="kw">for</span> t, w <span class="kw">in</span> live_mix.<span class="fn">items</span>():
+        cov = <span class="fn">min</span>(<span class="nm">1.0</span>, index_mix.<span class="fn">get</span>(t, <span class="nm">0.0</span>) / <span class="fn">max</span>(<span class="nm">1e-9</span>, w))
+        rec += w * cap * cov
+    <span class="kw">return</span> rec
+
+<span class="kw">for</span> label, mix <span class="kw">in</span> ((<span class="st">"baseline"</span>, {<span class="st">"A"</span>:<span class="nm">0.80</span>,<span class="st">"B"</span>:<span class="nm">0.20</span>}),
+                   (<span class="st">"mild"</span>,     {<span class="st">"A"</span>:<span class="nm">0.65</span>,<span class="st">"B"</span>:<span class="nm">0.35</span>}),
+                   (<span class="st">"even"</span>,     {<span class="st">"A"</span>:<span class="nm">0.50</span>,<span class="st">"B"</span>:<span class="nm">0.50</span>}),
+                   (<span class="st">"reversed"</span>, {<span class="st">"A"</span>:<span class="nm">0.20</span>,<span class="st">"B"</span>:<span class="nm">0.80</span>})):
+    print(<span class="st">f"  {label:9s} live={mix} -&gt; recall {effective_recall(mix):.3f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>baseline 0.900</code> &middot; <code>mild 0.765</code> &middot;
+      <code>even 0.630</code> &middot; <code>reversed 0.360</code>.
+      A shift from 80/20 to 50/50 costs <strong>27 points</strong>; a full reversal costs 54. And crucially, an <em>aggregate</em>
+      recall metric computed on a fixed golden set would not move at all, because the golden set still reflects the old mix. That
+      is the trap: your eval says nothing changed, and your users say it did.
+      <strong>Falsifier:</strong> if your golden set is re-sampled from live traffic each quarter, drift <em>does</em> show up &mdash;
+      at the cost of comparability across quarters (L88). The honest compromise is a fixed core set for comparability plus a
+      rolling sample for drift detection, reported separately.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; The index-version comparability trap (copy-paste)</h4>
+      <p>Three scores, two changes bundled. The CIs prove the change is real; they say nothing about which change caused it.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">wilson</span>(p, n, z=<span class="nm">1.96</span>):
+    d = <span class="nm">1</span> + z*z/n
+    c = (p + z*z/(<span class="nm">2</span>*n)) / d
+    h = z*math.<span class="fn">sqrt</span>(p*(<span class="nm">1</span>-p)/n + z*z/(<span class="nm">4</span>*n*n)) / d
+    <span class="kw">return</span> c-h, c+h
+
+<span class="kw">for</span> v, p <span class="kw">in</span> ((<span class="st">"v1 old index"</span>, <span class="nm">0.74</span>), (<span class="st">"v2 new index"</span>, <span class="nm">0.81</span>),
+             (<span class="st">"v2 + rerank"</span>, <span class="nm">0.86</span>)):
+    lo, hi = <span class="fn">wilson</span>(p, <span class="nm">200</span>)
+    print(<span class="st">f"  {v:14s} p={p:.2f} CI=[{lo:.3f},{hi:.3f}]"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>v1 old index    p=0.74 CI=[0.675,0.796]</code> &middot;
+      <code>v2 new index    p=0.81 CI=[0.750,0.858]</code> &middot; <code>v2 + rerank     p=0.86 CI=[0.805,0.901]</code>.
+      The v1 and v2 intervals are disjoint, so the improvement is real. But v2 bundles a <em>new index</em> with <em>unchanged code</em>
+      &mdash; and the next row adds a reranker, a second variable. To attribute, run: v1+no-rerank, v2+no-rerank, v2+rerank &mdash; one
+      variable per step, each with its own interval. <strong>Version the index and treat the version as part of the experiment
+      definition</strong>, exactly as you treat a code commit.
+      <strong>Falsifier:</strong> if v2's interval overlaps v1's, the rebuild produced no measurable change and you should not ship it
+      on a quality argument &mdash; ship it (or not) on freshness grounds alone.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d97-s5">5 &middot; Failure modes <a class="hook" href="#d97-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Stale index in a fast corpus.</strong> 30-day rebuild at 10k updates/day. Symptom: 100% of documents changed since the snapshot; answers cite superseded policy.</li>
+        <li><strong>Deleted content still retrievable.</strong> Chunks not purged on source deletion. Symptom: retrieval returns documents that 404; a compliance finding in a regulated setting.</li>
+        <li><strong>Query drift invisible in aggregates.</strong> Fixed golden set on a shifting live mix. Symptom: eval flat, user complaints rising; recall for the growing segment far below average.</li>
+        <li><strong>Embedding model mismatch.</strong> Query embedded with v2, index built with v1. Symptom: recall collapse from a specific timestamp; no error raised.</li>
+        <li><strong>Unversioned index.</strong> Scores compared across rebuilds. Symptom: eval scores move 5&ndash;8 points after "routine" rebuilds; nobody can say which version produced which number.</li>
+        <li><strong>Semantic cache serving stale answers.</strong> A cache hit returns an answer from before the document changed. Symptom: correct answer available but not served; a cache hit with a high similarity and a stale age.</li>
+        <li><strong>Partial rebuild failure.</strong> Rebuild crashes at 60%, old index left half-replaced. Symptom: recall is fine for some topics and zero for others; index metadata shows one version with two states.</li>
+        <li><strong>No rollback path.</strong> The only index is the current one. Symptom: a bad rebuild takes the system down until a full rebuild completes, with no way to serve the previous good state.</li>
+        <li><strong>Chunker change bundled with index change.</strong> Symptom: recall change unattributable; the golden set had to be re-labelled because chunk ids changed, destroying longitudinal comparison.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d97-s6">6 &middot; Connects to <a class="hook" href="#d97-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="85-rag-retrieval.html">L85 &middot; Hybrid retrieval</a>,
+    <a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG eval</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="98-finetune-vs-rag.html">L98 &middot; Decision matrix</a>,
+    <a class="tag-d" href="99-capstone.html">L99 &middot; Capstone</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="85-rag-retrieval.html">L85 &middot; Retrieval</a> &mdash; chunking and hybrid scoring; a chunker change is an index change.</li>
+      <li><a class="tag-d" href="86-rag-reranking.html">L86 &middot; Reranking</a> &mdash; the other variable most often bundled with a rebuild.</li>
+      <li><a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG evaluation</a> &mdash; the recall/faithfulness split that makes drift diagnosable.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; fixed vs rolling golden sets; the comparability tradeoff.</li>
+      <li><a class="tag-d" href="80-memory.html">L80 &middot; Memory</a> &mdash; supersession is the per-item analogue of index versioning.</li>
+      <li><a class="tag-d" href="94-determinism.html">L94 &middot; Determinism</a> &mdash; <code>index_version</code> is a manifest field for exactly this reason.</li>
+      <li><a class="tag-b" href="../track-a/22-vector-search.html">L22 &middot; ANN</a> &mdash; rebuilds change the ANN graph, so recall@k shifts even at identical embeddings.</li>
+      <li><a class="tag-b" href="../track-b/45-caching.html">L45 &middot; Caching</a> &mdash; cache invalidation is the freshness problem in miniature.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d97-s7">7 &middot; Self-check <a class="hook" href="#d97-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A 250,000-document corpus has 2,500 updates/day. What rebuild interval keeps the stale fraction at or below 5%, and what is the mean index age then?</p>
+        <details><summary>Reveal answer</summary><p>Solve <code>U&middot;R/N &le; 0.05</code>: <code>2500&middot;R/250000 &le; 0.05</code> &rarr; <code>R &le; 0.05&times;100 = 5</code> days. So rebuild at least every <strong>5 days</strong>, and the mean index age is <code>R/2 = 2.5 days</code>. Check: <code>2500&times;5 = 12,500</code> changed docs out of 250,000 = 5.0%. Note the ratio <code>U/N = 0.01/day</code> means the whole corpus turns over in 100 days, so a monthly rebuild would leave 30% stale.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Incremental rebuild at 1% daily churn versus a full daily rebuild, for a $3.10 full-rebuild embedding cost. Compute the monthly difference and name the failure mode of the incremental path.</p>
+        <details><summary>Reveal answer</summary><p>Incremental: <code>$3.10 &times; 0.01 = $0.031</code> per run, <code>$0.93/month</code> daily. Full: <code>$3.10 &times; 30 = $93/month</code>. Difference <strong>$92.07/month</strong> for equivalent freshness at 1% churn. The failure modes of the incremental path: (1) <strong>deleted documents are not in the change feed</strong>, so their chunks linger and get served &mdash; you must reconcile deletions explicitly; (2) <strong>drift accumulates silently</strong> if a change event is missed, so you need a periodic full reconciliation as a safety net; (3) <strong>ANN graph quality degrades</strong> under many incremental inserts, so plan periodic compaction. Incremental is right, but it needs a reconciliation job, not just a diff.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Aggregate recall on your fixed golden set is 0.86 and flat for six months, but complaints doubled. Give the diagnostic and the fix.</p>
+        <details><summary>Reveal answer</summary><p>The golden set is a fixed historical mix; live traffic has drifted. Diagnostic: segment recall by query topic (or by embedding cluster) and compare each segment's share of <em>live traffic</em> against its share of the golden set. If a segment's traffic share doubled while its recall stayed low, you have the drift signature &mdash; and the 0.86 aggregate is an average over the old mix, so it never moves. Fix: sample a rolling golden set from live traffic (with fresh labels) for drift detection, keep the fixed core set for longitudinal comparability, and report both. If a growing segment is under-covered in the corpus, that is a corpus problem, not a reranker problem.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: a retrieval query returns documents that were deleted last week. Trace the two most likely causes.</p>
+        <details><summary>Reveal answer</summary><p>(1) <strong>No deletion propagation</strong> &mdash; the rebuild is incremental and only processes updates/additions, so deleted documents' chunks were never purged. Check <code>deleted_still_indexed</code> from the version's staleness report. (2) <strong>Semantic or exact-match cache</strong> returning an answer citing a now-deleted chunk, even though the index is clean &mdash; check whether the answer's trace shows a cache hit and its age. Both are freshness failures with different fixes: (1) requires purge-on-delete plus a periodic full reconciliation; (2) requires cache entries to carry the index version and be invalidated on rebuild.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why must the embedding model be pinned per index version rather than configured globally?</p>
+        <details><summary>Reveal answer</summary><p>Because a query embedded with model B against vectors from model A is a <em>silent</em> failure: both vectors are valid float arrays of the expected dimension (if the dimension matches), so nothing errors, but the similarity scores are meaningless. Pinning the model on the version object makes the mismatch detectable before serving &mdash; you compare the query's model id against <code>version.embed_model</code> and refuse. A global config cannot express this, because during a migration both models are legitimately in use: new documents with B, old ones with A, and the only safe policy is to serve queries through a matching index version until the backfill completes.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="96-production-checklist.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L96 &middot; Production checklist</span></a>
+    <a class="next" href="98-finetune-vs-rag.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L98 &middot; Fine-tune vs RAG</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="track-c/index">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Track C - Post-training & Reasoning - AILearn</title>
+<meta name="description" content="How behaviour is manufactured: SFT, preferences, RL, and reasoning.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .hero { padding: 44px 0 8px; max-width: 92ch; }
+  .hero h1 { font-size: clamp(1.9rem, 4.4vw, 2.9rem); letter-spacing: -1.4px; line-height: 1.1; }
+  .thesis { border-left: 3px solid #f59e0b; padding-left: 20px; margin: 26px 0; font-size: 1.04rem;
+    color: var(--txt-2); line-height: 1.75; max-width: 88ch; }
+  .sec { margin: 46px 0; }
+  .sec h2 { font-size: 1.32rem; letter-spacing: -.5px; margin: 0 0 14px; color: var(--txt); }
+  .lesson-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px,1fr)); gap: 10px; }
+  .L { display: flex; gap: 12px; text-decoration: none; background: var(--card); border: 1px solid var(--line);
+    border-radius: 11px; padding: 12px 14px; transition: .16s; align-items: flex-start; }
+  .L:hover { border-color: #f59e0b66; transform: translateY(-2px); background: var(--card-2); }
+  .L .n { font-family: var(--mono); font-size: .72rem; font-weight: 700; color: #f59e0b; min-width: 26px; padding-top: 2px; }
+  .L .t { color: var(--txt); font-size: .89rem; font-weight: 550; line-height: 1.4; }
+  .L .b { color: var(--txt-3); font-size: .74rem; font-family: var(--mono); margin-top: 3px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 14px; }
+  .card h4 { margin: 0 0 7px !important; color: #f59e0b; font-size: .8rem; letter-spacing: .6px;
+    text-transform: uppercase; font-family: var(--mono); }
+  .card p { margin: 0; font-size: .87rem; }
+  ul.check { list-style: none; padding: 0; margin: 0; }
+  ul.check li { position: relative; padding-left: 26px; margin-bottom: 9px; font-size: .9rem; color: var(--txt-2); }
+  ul.check li::before { content: "\2713"; position: absolute; left: 0; color: #f59e0b; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="../agi/index.html">AGI Lab</a>
+      <a href="../tools/index.html">Tools</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="hero">
+  <div class="track-tag" style="color:#f59e0b;border-color:#f59e0b55;background:#f59e0b14;">TRACK C &middot; POST-TRAINING & REASONING</div>
+  <h1>Post-training &amp; Reasoning - 25 lessons</h1>
+  <p class="lede">How behaviour is manufactured: SFT, preferences, RL, and reasoning.</p>
+  <p class="thesis">A pretrained model is a predictor. Everything you actually interact with is a product of post-training. This track covers how behaviour is manufactured: supervised fine-tuning, preference learning, RL with verifiable rewards, the reasoning-model recipe, and the failure modes that make all of it fragile. Every objective is implemented, not described.</p>
+  <div class="chips">
+    <span class="chip">L51 &rarr; L75</span>
+    <span class="chip">build: A toy RL post-training loop with a verifiable reward</span>
+    <span class="chip">prereq: Track A lessons 03-04 (gradients), and Track B lessons 26-28</span>
+  </div>
+</header>
+
+<div class="sec">
+  <h2>Why this track exists</h2>
+  <div class="grid3">
+    <div class="card"><h4>01</h4><h4>You will implement the losses, not cite them</h4><p>DPO, GRPO and PPO clipped surrogate in numpy, so the equations stop being incantations.</p></div>
+<div class="card"><h4>02</h4><h4>Reward hacking becomes a design problem</h4><p>You already gate promotions. This track generalises the gate into an RL training discipline.</p></div>
+<div class="card"><h4>03</h4><h4>Reasoning becomes an engineering budget</h4><p>Chain-of-thought, test-time compute, and reasoning effort are all the same tradeoff viewed from different angles.</p></div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>By the end you can</h2>
+  <ul class="check"><li>Write the DPO and GRPO objectives from memory and explain the group baseline</li>
+    <li>Design a verifiable reward function and then attack it yourself</li>
+    <li>Explain when reasoning distillation beats RL and when it merely imitates</li>
+    <li>Detect reward hacking with a concrete invariant rather than a vibe</li></ul>
+</div>
+
+<div class="sec">
+  <h2>Prerequisites</h2>
+  <p style="color:var(--txt-2);">Track A lessons 03-04 (gradients), and Track B lessons 26-28. Probability helps.</p>
+  <p style="color:var(--txt-2);"><strong>The artifact:</strong> A toy RL post-training loop with a verifiable reward, a reward-hacking test suite, and a measured before/after.</p>
+</div>
+
+<div class="sec">
+  <h2>Lessons</h2>
+  <div class="lesson-list">
+    <a class="L" href="51-post-training.html"><span class="n">51</span><span><span class="t">Post-training map: SFT, preferences, RL, RLVR</span><span class="b">decision tree for tuning</span></span></a>
+    <a class="L" href="52-sft.html"><span class="n">52</span><span><span class="t">SFT: data quality, format, masking</span><span class="b">clean SFT JSONL</span></span></a>
+    <a class="L" href="53-standard-pipeline.html"><span class="n">53</span><span><span class="t">The standard pipeline and its gates</span><span class="b">gate checklist</span></span></a>
+    <a class="L" href="54-preference-learning.html"><span class="n">54</span><span><span class="t">Preference data and annotator bias</span><span class="b">build a preference set</span></span></a>
+    <a class="L" href="55-dpo.html"><span class="n">55</span><span><span class="t">RLHF without RL: DPO, IPO, KTO, ORPO</span><span class="b">DPO loss in numpy</span></span></a>
+    <a class="L" href="56-grpo.html"><span class="n">56</span><span><span class="t">GRPO: group-relative policy optimization</span><span class="b">GRPO on a toy bandit</span></span></a>
+    <a class="L" href="57-ppo.html"><span class="n">57</span><span><span class="t">PPO for LLMs: clipping, critic, KL leash</span><span class="b">PPO vs GRPO analysis</span></span></a>
+    <a class="L" href="58-reward-modeling.html"><span class="n">58</span><span><span class="t">Reward models: Bradley-Terry and calibration</span><span class="b">tiny reward model</span></span></a>
+    <a class="L" href="59-process-reward.html"><span class="n">59</span><span><span class="t">Outcome vs process rewards</span><span class="b">process verifier</span></span></a>
+    <a class="L" href="60-chain-of-thought.html"><span class="n">60</span><span><span class="t">Chain-of-thought: why tokens buy compute</span><span class="b">CoT vs no-CoT study</span></span></a>
+    <a class="L" href="61-test-time-compute.html"><span class="n">61</span><span><span class="t">Test-time compute and budget allocation</span><span class="b">budget allocator</span></span></a>
+    <a class="L" href="62-long-cot-r1.html"><span class="n">62</span><span><span class="t">Long CoT and R1-Zero</span><span class="b">reasoning-length curves</span></span></a>
+    <a class="L" href="63-verifiable-rewards.html"><span class="n">63</span><span><span class="t">Verifiable rewards and their limits</span><span class="b">reward design + attack</span></span></a>
+    <a class="L" href="64-rlvr-vs-rlhf.html"><span class="n">64</span><span><span class="t">RLVR vs RLHF: capability boundaries</span><span class="b">boundary table</span></span></a>
+    <a class="L" href="65-self-play-dialectic.html"><span class="n">65</span><span><span class="t">Self-play, debate, dialectic improvement</span><span class="b">debate harness</span></span></a>
+    <a class="L" href="66-distilling-reasoning.html"><span class="n">66</span><span><span class="t">Distilling reasoning models</span><span class="b">rejection-sampling loop</span></span></a>
+    <a class="L" href="67-data-synthesis.html"><span class="n">67</span><span><span class="t">Synthetic data and environment synthesis</span><span class="b">env generator</span></span></a>
+    <a class="L" href="68-self-feedback.html"><span class="n">68</span><span><span class="t">RL with self-feedback and its failure modes</span><span class="b">stop-rule critique loop</span></span></a>
+    <a class="L" href="69-reasoning-effort.html"><span class="n">69</span><span><span class="t">Thinking mode and effort budgets</span><span class="b">effort router</span></span></a>
+    <a class="L" href="70-tool-use-training.html"><span class="n">70</span><span><span class="t">Training tool use</span><span class="b">tool-call-from-execution</span></span></a>
+    <a class="L" href="71-agentic-rl.html"><span class="n">71</span><span><span class="t">Agentic RL and long-horizon credit</span><span class="b">credit assignment sim</span></span></a>
+    <a class="L" href="72-constitutional.html"><span class="n">72</span><span><span class="t">Constitutional AI and rubric critics</span><span class="b">rubric critic</span></span></a>
+    <a class="L" href="73-continual-learning.html"><span class="n">73</span><span><span class="t">Continual learning and forgetting</span><span class="b">measure forgetting</span></span></a>
+    <a class="L" href="74-eval-contamination.html"><span class="n">74</span><span><span class="t">Contamination and honest measurement</span><span class="b">contamination detector</span></span></a>
+    <a class="L" href="75-reward-hacking.html"><span class="n">75</span><span><span class="t">Reward hacking: taxonomy and hard gates</span><span class="b">adversarial reward suite</span></span></a>
+  </div>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="../track-b/index.html"><span class="dir">&larr; PREVIOUS TRACK</span><span class="ttl">Track B &middot; Scaling &amp; Architecture</span></a>
+  <a class="next" href="../track-d/index.html"><span class="dir">NEXT TRACK &rarr;</span><span class="ttl">Track D &middot; Agents, RAG, Evals, Production</span></a>
+</nav>
+
+</main>
+
+<footer>AILearn &middot; <a href="../about/calibration.html">level calibration</a> &middot; <a href="../tools/flashcards.html">flashcards</a></footer>
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d81">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L81 · Subagents and orchestration: fan-out, merge, conflicts — AILearn</title>
+<meta name="description" content="A sub-agent is a context compressor with a break-even. Fan-out 6 agents at 9k tokens each and delegation LOSES at one turn, wins at two. The arithmetic, plus the merge-conflict model.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L81</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L81 &middot; Subagents and orchestration: fan-out, merge, conflicts</h1>
+  <p class="lede">A subagent is a context compressor, and compression has a break-even turn count. Get that wrong and fanning out six agents at 9k tokens each makes the parent context <em>larger</em> (0.83&times;), not smaller &mdash; and the whole fan-out loses money on a one-shot task.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: orchestrator with disjoint scopes</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">subagent as context compressor</span>
+  <span class="pill">break-even turn count</span>
+  <span class="pill">disjoint write scopes</span>
+  <span class="pill">merge conflict probability</span>
+  <span class="pill">fan-out union bound</span>
+  <span class="pill">orchestrator vs worker</span>
+  <span class="pill">scope as a lock</span>
+  <span class="pill">report schema</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d81-s1">1 &middot; Why it exists <a class="hook" href="#d81-s1">#</a></h2>
+
+    <p>The failure: <strong>you fanned out five agents, they all finished, and the merged result is worse than not having
+    split the work.</strong> Three causes, all arithmetic, none of them model quality:</p>
+
+    <p><strong>(1) The compression is fake.</strong> If each child reads 9,000 tokens and returns a 400-token report, the parent
+    sees 2,400 tokens instead of 45,000 &mdash; a real 18&times; win. But the children each paid 9,000 tokens plus a setup
+    overhead, so <em>total</em> spend can be higher than the parent reading everything once. At one turn of parent use,
+    six children at 9k raw cost 65,400 tokens versus 54,000 for the direct path. Fan-out lost.</p>
+
+    <p><strong>(2) Fan-out multiplies failure.</strong> Six children that each succeed at 90% give a whole-fan-out success rate
+    of <code>0.9<sup>6</sup> = 0.531</code>. Half your orchestrations have at least one broken input.</p>
+
+    <p><strong>(3) Merge conflicts are quadratic in overlap.</strong> Two agents each writing to 5 random units of a 200-unit
+    workspace still collide with probability 0.85 over six agents. Disjoint scopes are not tidiness &mdash; they are the only
+    thing that makes merging a concatenation instead of a reconciliation.</p>
+
+    <div class="callout boss">
+      <p>A subagent buys <strong>context isolation</strong>, not parallelism. Its value is exactly the tokens it keeps out of the
+      parent, minus what it spent to produce its report, minus the merge cost. All three terms are computable before you
+      design the fan-out. Parallelism is a latency bonus that only pays if the children are actually independent.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d81-s2">2 &middot; The mental model <a class="hook" href="#d81-s2">#</a></h2>
+
+    <p>An orchestrator is a <em>process</em> and a subagent is a <em>message-passing thread with an isolated heap</em>. The heap is the
+    child's context; the message is its report. The thread cannot see the parent's heap and the parent cannot see the
+    thread's &mdash; that isolation is the entire product.</p>
+
+    <table class="table">
+      <thead><tr><th>Decision</th><th>What it controls</th><th>Break-even / failure if wrong</th></tr></thead>
+      <tbody>
+        <tr><td>Does this task need a subagent at all?</td><td>parent token savings</td><td>needs &gt; ~1.2 turns of parent reuse (Experiment 1)</td></tr>
+        <tr><td>How many?</td><td>union-bound failure rate</td><td><code>p<sup>n</sup></code>; 6 at 90% = 53% clean</td></tr>
+        <tr><td>What is each child's write scope?</td><td>merge conflict probability</td><td>overlap makes merge manual</td></tr>
+        <tr><td>What is the report schema?</td><td>mergeability and parent context</td><td>free-text reports can't be merged or checked</td></tr>
+        <tr><td>What does the child inherit?</td><td>repeated work</td><td>too little &rarr; children redo discovery; too much &rarr; no isolation</td></tr>
+        <tr><td>Who resolves a conflict?</td><td>correctness of merge</td><td>the orchestrator needs an oracle, else last-write-wins</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: map-reduce with a human-as-reducer obligation</h4><p>Fan-out is map, merge is reduce. The analogy is useful because it forces the right question: what is the reducer's associative operation? If you cannot name it (concatenate lists? union findings? pick max confidence?), you have not designed the merge and the fan-out will produce a pile, not a result.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Map-reduce assumes map outputs are <em>comparable</em> and the reduce operation is <em>associative and commutative</em>. Subagent reports are neither: they overlap, contradict, and have different confidence. And a child can produce a syntactically valid report that is semantically wrong with no error signal. So the reduce step needs an <strong>oracle or arbiter</strong> (L89), not just a fold. Reduce is where the hard part lives, and it is the part people skip.</p></div>
+    </div>
+
+    <p>The consequence for design: <strong>make children return facts with provenance, not conclusions.</strong>
+    A child reporting "the bug is in the retry logic" is unmergeable. A child reporting
+    <code>{"file": "...", "line": 212, "evidence": "...", "confidence": 0.7}</code> is mergeable, deduplicable, and checkable &mdash;
+    and the orchestrator can apply an oracle to each claim before composing them.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d81-s3">3 &middot; The mechanism <a class="hook" href="#d81-s3">#</a></h2>
+
+    <p>The economics, exactly. Let <code>n</code> children each read <code>r</code> tokens, return a report of
+    <code>s</code> tokens, and pay <code>o</code> tokens of setup overhead. The parent would otherwise read all
+    <code>n&middot;r</code> directly and reuse that context for <code>T</code> turns.</p>
+
+    <div class="formula">
+      D(T) = n &middot; r &middot; T &nbsp;&nbsp;&nbsp;&nbsp; S(T) = n&thinsp;(r + o) + n &middot; s &middot; T
+      <span class="note">Delegation wins when <code>S(T) &lt; D(T)</code>. Solving: <code>r&thinsp;T = r + o + s&thinsp;T</code>, so <code>T* = (r + o) / (r &minus; s)</code>. Note <code>s</code> (report size) barely affects the break-even because it appears on both sides &mdash; the binding constraint is the overhead <code>o</code> relative to <code>r</code>.</span>
+    </div>
+
+    <p>Substitute the realistic numbers (<code>r=9000, s=400, o=1500</code>): <code>T* = (9000+1500)/(9000&minus;400) = 1.22</code> turns.
+    So the rule is: <strong>delegate only when the parent will reuse the summary for two or more turns.</strong>
+    For a one-shot lookup, inline it.</p>
+
+    <p>Then the merge. The probability that two agents with write footprints of size <code>a</code> and <code>b</code> in a
+    workspace of <code>N</code> units touch at least one common unit:</p>
+
+    <div class="formula">
+      P(overlap) = 1 &minus; &prod;<sub>j=0</sub><sup>b&minus;1</sup> (N &minus; a &minus; j)/(N &minus; j)
+      <span class="note">This is the hypergeometric "no shared element" probability, exact for uniformly random footprints. For <code>N=200</code>, <code>a=b=5</code>: <code>P = 0.121</code> per pair, and over 15 pairs (6 agents) the chance of at least one conflict is <code>0.85</code>. Disjoint-by-assignment scopes have <code>P=0</code> by construction, which is why scope assignment is the orchestrator's first duty, not the last.</span>
+    </div>
+
+    <p>The orchestrator, with scope as an enforced lock rather than a convention.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> itertools, math
+
+<span class="cm"># ---- 1. Should this be a subagent at all? ----</span>
+<span class="kw">def</span> <span class="fn">breakeven_turns</span>(raw, summary, overhead):
+    <span class="kw">return</span> (raw + overhead) / (raw - summary) <span class="kw">if</span> raw &gt; summary <span class="kw">else</span> <span class="kw">math</span>.inf
+
+<span class="kw">def</span> <span class="fn">spend</span>(n, raw, summary, overhead, turns):
+    <span class="kw">return</span> (n * raw * turns,                                   <span class="cm"># direct</span>
+            n * (raw + overhead) + n * summary * turns)          <span class="cm"># delegated (total)</span>
+
+<span class="cm"># ---- 2. Conflict probability (exact, hypergeometric) ----</span>
+<span class="kw">def</span> <span class="fn">p_overlap</span>(total, a, b):
+    p_no = <span class="nm">1.0</span>
+    <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(b):
+        p_no *= <span class="fn">max</span>(<span class="nm">0.0</span>, total - a - j) / <span class="fn">max</span>(<span class="nm">1e-9</span>, total - j)
+    <span class="kw">return</span> <span class="nm">1</span> - p_no
+
+<span class="kw">def</span> <span class="fn">p_any_conflict</span>(total, scopes):
+    p = <span class="nm">0.0</span>
+    <span class="kw">for</span> a, b <span class="kw">in</span> <span class="fn">itertools</span>.<span class="fn">combinations</span>(scopes, <span class="nm">2</span>):
+        p = <span class="nm">1</span> - (<span class="nm">1</span> - p) * (<span class="nm">1</span> - <span class="fn">p_overlap</span>(total, a, b))
+    <span class="kw">return</span> p
+
+<span class="cm"># ---- 3. The scope lock: an assignment the orchestrator enforces ----</span>
+<span class="kw">class</span> <span class="fn">ScopeRegistry</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>): <span class="nm">self</span>.owner = {}
+    <span class="kw">def</span> <span class="fn">claim</span>(<span class="nm">self</span>, agent, paths):
+        <span class="kw">for</span> p <span class="kw">in</span> paths:
+            <span class="kw">if</span> p <span class="kw">in</span> <span class="nm">self</span>.owner <span class="kw">and</span> <span class="nm">self</span>.owner[p] != agent:
+                <span class="kw">raise</span> <span class="fn">ScopeConflict</span>(<span class="st">f"{agent} and {self.owner[p]} both claim {p}"</span>)
+            <span class="nm">self</span>.owner[p] = agent
+    <span class="kw">def</span> <span class="fn">guard_write</span>(<span class="nm">self</span>, agent, path):
+        <span class="kw">if</span> <span class="nm">self</span>.owner.<span class="fn">get</span>(path) != agent:
+            <span class="kw">raise</span> <span class="fn">ScopeViolation</span>(<span class="st">f"{agent} may not write {path}"</span>)
+    </div>
+
+    <p>Three things in that code carry the lesson. <strong>(1)</strong> The scope registry is a <em>pre-claim</em> system: conflicts are
+    rejected before any work starts, so a conflict is a planning error rather than a merge problem. <strong>(2)</strong>
+    <code>guard_write</code> is enforced at the tool boundary (L84), so a child that ignores its scope fails loudly instead of
+    silently corrupting a sibling's file. <strong>(3)</strong> The break-even formula sits <em>before</em> the orchestration code,
+    because the first question is whether to fan out at all.</p>
+
+    <table class="table">
+      <thead><tr><th>Merge strategy</th><th>Requires</th><th>Cost</th><th>Fails when</th></tr></thead>
+      <tbody>
+        <tr><td>Concatenate</td><td>disjoint scopes</td><td>O(n)</td><td>scopes overlap &rarr; duplicate or contradictory output</td></tr>
+        <tr><td>Union of structured claims</td><td>report schema + dedup key</td><td>O(n log n)</td><td>two claims contradict on the same key</td></tr>
+        <tr><td>Arbiter on conflicts</td><td>an oracle or a second judge</td><td>O(conflicts) &times; judge cost</td><td>the arbiter shares the children's blind spot</td></tr>
+        <tr><td>Vote / majority</td><td>independent children, same question</td><td>O(n)</td><td>children share context &rarr; correlated errors make voting useless</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>The audit question an orchestrator must answer: <strong>for each merged claim, which child produced it, with what
+      evidence, and was any conflicting claim suppressed?</strong> If suppression happened, by what rule. A merge that cannot
+      name its suppressed alternatives is indistinguishable from a merge that ignored them, and that is exactly where the
+      zero-false-positive property of a gate gets lost.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d81-s4">4 &middot; Your hands <a class="hook" href="#d81-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Find the turn at which fan-out starts paying</h4>
+      <p>Six children, 9,000 raw tokens each, 400-token reports, 1,500 tokens of per-child overhead. The parent reuse count
+      is the only free variable.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+N, RAW, SUM, OVER = <span class="nm">6</span>, <span class="nm">9000</span>, <span class="nm">400</span>, <span class="nm">1500</span>
+
+<span class="kw">def</span> <span class="fn">totals</span>(turns):
+    <span class="kw">return</span> N * RAW * turns, N * (RAW + OVER) + N * SUM * turns
+
+<span class="kw">def</span> <span class="fn">breakeven</span>(raw, summ, over):
+    <span class="kw">return</span> (raw + over) / (raw - summ) <span class="kw">if</span> raw &gt; summ <span class="kw">else</span> math.inf
+
+<span class="kw">for</span> t <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">1</span>, <span class="nm">6</span>):
+    d, s = <span class="fn">totals</span>(t)
+    print(<span class="st">f"turns={t}  direct={d:&gt;8,}  delegated={s:&gt;8,}  "
+          f"ratio={d/s:.2f}x  {'WIN' if s &lt; d else 'LOSE'}"</span>)
+print(<span class="st">f"\nbreak-even turns = {breakeven(RAW, SUM, OVER):.2f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>turns=1 direct=54,000 delegated=65,400 ratio=0.83x LOSE</code> &middot;
+      <code>turns=2 108,000 67,800 1.59x WIN</code> &middot; <code>turns=3 162,000 70,200 2.31x WIN</code> &middot;
+      <code>turns=4 216,000 72,600 2.98x WIN</code> &middot; <code>turns=5 270,000 75,000 3.60x WIN</code> &mdash;
+      break-even <code>1.22</code> turns.
+      So fan-out at these parameters is <strong>loss-making for one-shot work and increasingly profitable for reused work</strong>.
+      In dollars per 1M input at $0.28: turns=1 loses $0.00319; turns=5 saves $0.05460.
+      <strong>Falsifier:</strong> if your children do not actually cost <code>r + o</code> &mdash; e.g. they read the file before the parent
+      ever would have, so <code>r</code> is not avoidable &mdash; the direct arm is over-counted and the break-even moves toward 1.
+      Measure the real per-child token total from your trace before trusting <code>T*</code>.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The two ways fan-out multiplies failure</h4>
+      <p>Union bound on child failures, and the exact conflict probability for overlapping write scopes.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> itertools
+
+<span class="kw">def</span> <span class="fn">p_overlap</span>(total, a, b):
+    p_no = <span class="nm">1.0</span>
+    <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(b):
+        p_no *= <span class="fn">max</span>(<span class="nm">0.0</span>, total - a - j) / <span class="fn">max</span>(<span class="nm">1e-9</span>, total - j)
+    <span class="kw">return</span> <span class="nm">1</span> - p_no
+
+<span class="kw">def</span> <span class="fn">p_any</span>(total, scopes):
+    p = <span class="nm">0.0</span>
+    <span class="kw">for</span> a, b <span class="kw">in</span> itertools.<span class="fn">combinations</span>(scopes, <span class="nm">2</span>):
+        p = <span class="nm">1</span> - (<span class="nm">1</span> - p) * (<span class="nm">1</span> - <span class="fn">p_overlap</span>(total, a, b))
+    <span class="kw">return</span> p
+
+<span class="kw">print</span>(<span class="st">"child success p -&gt; P(at least one of 6 fails)"</span>)
+<span class="kw">for</span> p <span class="kw">in</span> (<span class="nm">0.99</span>, <span class="nm">0.95</span>, <span class="nm">0.90</span>, <span class="nm">0.85</span>):
+    <span class="kw">print</span>(<span class="st">f"  p={p:.2f} -&gt; {1-p**6:.4f}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\n6 agents, 200-unit workspace, scope = k units each"</span>)
+<span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>):
+    <span class="kw">print</span>(<span class="st">f"  scope={k:2d} -&gt; P(any conflict) = {p_any(200, [k]*6):.4f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>p=0.99 &rarr; 0.0585</code>, <code>0.95 &rarr; 0.2649</code>,
+      <code>0.90 &rarr; 0.4686</code>, <code>0.85 &rarr; 0.6229</code>. Even at 95% child reliability more than a quarter of
+      orchestrations have at least one broken child. And on conflicts:
+      <code>scope=1 &rarr; 0.0724</code>, <code>2 &rarr; 0.2609</code>, <code>5 &rarr; 0.8532</code>, <code>10 &rarr; 0.9996</code>,
+      <code>20 &rarr; 1.0000</code>. Five units each out of 200 &mdash; 2.5% of the workspace &mdash; and you are at an 85% chance of
+      a conflict. The two curves are the argument for (a) fewer, larger children and (b) assigned scopes.
+      <strong>Falsifier:</strong> if your children write to genuinely partitioned directories, <code>P=0</code> by construction and
+      this model does not apply &mdash; verify by checking that no two children's write logs share a path.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Assert scope disjointness in CI (copy-paste)</h4>
+      <p>The property to enforce mechanically: a child's declared scope and its actual writes must be identical sets.</p>
+      <div class="code" data-lang="python">
+<span class="kw">class</span> <span class="fn">ScopeViolation</span>(<span class="fn">Exception</span>): <span class="kw">pass</span>
+<span class="kw">class</span> <span class="fn">ScopeConflict</span>(<span class="fn">Exception</span>): <span class="kw">pass</span>
+
+<span class="kw">class</span> <span class="fn">ScopeRegistry</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>): <span class="nm">self</span>.owner = {}
+    <span class="kw">def</span> <span class="fn">claim</span>(<span class="nm">self</span>, agent, paths):
+        <span class="kw">for</span> p <span class="kw">in</span> paths:
+            <span class="kw">if</span> p <span class="kw">in</span> <span class="nm">self</span>.owner <span class="kw">and</span> <span class="nm">self</span>.owner[p] != agent:
+                <span class="kw">raise</span> <span class="fn">ScopeConflict</span>(<span class="st">f"{agent} and {self.owner[p]} both claim {p}"</span>)
+            <span class="nm">self</span>.owner[p] = agent
+    <span class="kw">def</span> <span class="fn">guard_write</span>(<span class="nm">self</span>, agent, path):
+        <span class="kw">if</span> <span class="nm">self</span>.owner.<span class="fn">get</span>(path) != agent:
+            <span class="kw">raise</span> <span class="fn">ScopeViolation</span>(<span class="st">f"{agent} may not write {path}"</span>)
+
+<span class="kw">def</span> <span class="fn">test_scopes</span>():
+    r = <span class="fn">ScopeRegistry</span>()
+    r.<span class="fn">claim</span>(<span class="st">"a"</span>, [<span class="st">"src/retry.py"</span>, <span class="st">"tests/test_retry.py"</span>])
+    r.<span class="fn">claim</span>(<span class="st">"b"</span>, [<span class="st">"src/queue.py"</span>])
+
+    <span class="kw">try</span>:
+        r.<span class="fn">claim</span>(<span class="st">"b"</span>, [<span class="st">"src/retry.py"</span>])
+        <span class="kw">raise</span> <span class="fn">AssertionError</span>(<span class="st">"duplicate claim must be rejected"</span>)
+    <span class="kw">except</span> <span class="fn">ScopeConflict</span>:
+        <span class="kw">pass</span>
+
+    <span class="kw">try</span>:
+        r.<span class="fn">guard_write</span>(<span class="st">"b"</span>, <span class="st">"src/retry.py"</span>)
+        <span class="kw">raise</span> <span class="fn">AssertionError</span>(<span class="st">"cross-scope write must be blocked"</span>)
+    <span class="kw">except</span> <span class="fn">ScopeViolation</span>:
+        <span class="kw">pass</span>
+
+    r.<span class="fn">guard_write</span>(<span class="st">"a"</span>, <span class="st">"src/retry.py"</span>)   <span class="cm"># in scope: allowed</span>
+    print(<span class="st">"PASS: scope lock holds"</span>)
+
+<span class="fn">test_scopes</span>()
+      </div>
+      <p class="expect">Prints <code>PASS: scope lock holds</code>. Run the equivalent in your orchestrator before dispatching any
+      child: if <code>claim</code> does not raise on a duplicate, two agents will edit the same file and your merge is a
+      race, not a merge. If <code>guard_write</code> does not raise, your children are trusted by convention &mdash; and one child
+      that "helpfully" fixes an out-of-scope file silently invalidates a sibling's verified result.
+      <strong>Falsifier:</strong> if your children run in separate worktrees with a real VCS merge, you can allow overlap &mdash;
+      but then measure merge-conflict rate, and expect it to track the hypergeometric model above (~85% at 5 units of 200).</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d81-s5">5 &middot; Failure modes <a class="hook" href="#d81-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Fan-out for a one-shot task.</strong> Six children assembled for work the parent reuses once. Symptom: total token spend up 21% with no quality change &mdash; exactly the <code>0.83&times;</code> row in Experiment 1.</li>
+        <li><strong>Correlated children.</strong> All six children get the same full context and produce six versions of the same answer. Symptom: reports are near-duplicates; voting adds confidence without information; the fan-out has the isolation of one agent at 6&times; the cost.</li>
+        <li><strong>Unmergeable reports.</strong> Children return prose. Symptom: the orchestrator's synthesis step is another LLM call whose output cannot be traced to any child; duplicate and contradictory findings both appear.</li>
+        <li><strong>Silent scope creep.</strong> A child writes outside its declared scope. Symptom: a sibling's verified change is reverted or corrupted; the audit shows a write with no matching claim.</li>
+        <li><strong>Lost child.</strong> A child times out or crashes and the orchestrator proceeds with <code>n&minus;1</code> reports. Symptom: merged output is subtly incomplete; nothing in the log says a child was missing. Fix: the merge counts expected vs received reports and hard-fails on mismatch.</li>
+        <li><strong>Arbiter shares the blind spot.</strong> Conflicts are resolved by the same model with the same context. Symptom: conflict resolution is confidently wrong and consistent across runs &mdash; a systematic bias, not noise.</li>
+        <li><strong>Merge without suppression record.</strong> Two conflicting claims, one silently wins. Symptom: you cannot tell later why a claim was dropped; this is where a gate's audit trail is lost.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d81-s6">6 &middot; Connects to <a class="hook" href="#d81-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="79-context-engineering.html">L79 &middot; Context budgets</a>,
+    <a class="tag-d" href="78-planning.html">L78 &middot; Plan subtrees</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="83-swarms.html">L83 &middot; Swarms</a> (fan-out at scale).</p>
+    <ul>
+      <li><a class="tag-d" href="80-memory.html">L80 &middot; Memory</a> &mdash; what a child should <em>not</em> inherit; shared memory across children destroys independence and makes voting useless.</li>
+      <li><a class="tag-d" href="83-swarms.html">L83 &middot; Swarms</a> &mdash; the role-selection experiment asks when fan-out beats one agent, which is this page's break-even extended to role diversity.</li>
+      <li><a class="tag-c" href="../track-c/65-self-play-dialectic.html">L65 &middot; Debate</a> &mdash; multi-agent consensus presupposes independent children; correlated children collapse debate to one opinion.</li>
+      <li><a class="tag-d" href="84-safety-sandboxing.html">L84 &middot; Sandboxing</a> &mdash; <code>guard_write</code> is a permission model; scopes and permissions should share one source of truth.</li>
+      <li><a class="tag-d" href="89-llm-as-judge.html">L89 &middot; Arbiters</a> &mdash; the conflict-resolution step needs calibration, position-bias control, and disagreement routing.</li>
+      <li><a class="tag-d" href="91-cost-latency.html">L91 &middot; Cost/latency</a> &mdash; fan-out trades tokens for wall-clock; only worth it when latency is the binding constraint.</li>
+      <li><a class="tag-c" href="../resources/papers.html">Voyager &middot; arXiv:2305.16291</a> &mdash; skill-library pattern: orchestration without fan-out, where the value is a growing procedural memory rather than parallel workers.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d81-s7">7 &middot; Self-check <a class="hook" href="#d81-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Derive <code>T*</code> and explain why the report size <code>s</code> matters less than people think.</p>
+        <details><summary>Reveal answer</summary><p>Set <code>n&middot;r&middot;T = n(r+o) + n&middot;s&middot;T</code>, divide by <code>n</code>, collect terms: <code>T(r&minus;s) = r+o</code>, so <code>T* = (r+o)/(r&minus;s)</code>. <code>s</code> appears in the denominator (which is nearly <code>r</code>) <em>and</em> in the numerator's implicit place &mdash; shrinking it from 400 to 200 changes the break-even from 1.22 to 1.19 turns. What actually moves the needle is <code>o/r</code>: the child's setup overhead relative to the material it processes. This is why "make reports shorter" is a weak optimization and "don't waste 1,500 tokens re-deriving what the parent knows" is a strong one.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Six children at 96% individual success. What is the probability the fan-out is fully clean, and what should the orchestrator do about the remainder?</p>
+        <details><summary>Reveal answer</summary><p><code>0.96<sup>6</sup> = 0.7828</code>, so ~22% of orchestrations have at least one failed child. The orchestrator must (a) track expected vs received child reports and refuse to merge an incomplete set, (b) retry the failed child with a fresh context rather than patching its partial output, and (c) record the retry in the ledger so the <code>n</code> is honest. Silently merging <code>n&minus;1</code> is the bug &mdash; the merged result looks complete and is missing a scope.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> You have a 500-unit workspace and 6 agents. What scope size keeps the expected number of conflicts below 1? Show the arithmetic.</p>
+        <details><summary>Reveal answer</summary><p>Expected conflicting pairs = 15 &times; <code>P(pair)</code>, and you want that below 1. At <code>N=500</code>: <code>scope=1</code> gives <code>P(pair)=0.00200</code> &rarr; 0.030 expected pairs; <code>scope=2</code> &rarr; 0.120; <code>scope=5</code> gives <code>P(pair)=0.04920</code> &rarr; <code>0.738</code> expected pairs (under 1, <code>P(any)=0.531</code>); <code>scope=10</code> gives <code>P(pair)=0.18445</code> &rarr; <code>2.767</code> expected pairs, already over. So <strong>scope &le; 5 units per agent at N=500</strong> keeps expected conflicts below one. Compare <code>N=200</code>, where <code>scope=5</code> already gives 1.80 expected pairs &mdash; the same scope size is safe in one workspace and unsafe in another, which is why the rule must be computed, not remembered.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: orchestration is 3&times; slower than a single agent on the same tasks, with unchanged token spend. What is happening?</p>
+        <details><summary>Reveal answer</summary><p>Fan-out traded latency for tokens but the children are running <em>sequentially</em> or contending on a shared resource &mdash; most often a single rate-limited API key or one thread pool. Token spend unchanged means the economics are as designed, and the extra wall clock is purely scheduling. Check: child start/end timestamps in the trace. If they are non-overlapping, you have serialization, not parallelism, and you're paying the orchestration coordination cost for nothing.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is "ask six agents and take the majority" worthless if all six receive the same full context?</p>
+        <details><summary>Reveal answer</summary><p>Because majority voting only adds information when errors are <em>independent</em>. Children given identical context see identical evidence and run the same model, so their errors are strongly correlated &mdash; six correlated voters behave like one voter with extra cost. Independence must be engineered: different retrieval, different temperatures or seeds, different tools, or genuinely different roles/expertise. The test is measurable: compare the disagreement rate between two children against the error rate of one. If disagreement &lt;&lt; error rate, the children are correlated and voting cannot help.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="80-memory.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L80 &middot; Memory</span></a>
+    <a class="next" href="82-long-horizon.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L82 &middot; Long-horizon autonomy</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

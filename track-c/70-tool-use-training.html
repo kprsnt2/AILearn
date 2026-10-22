@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c70">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L70 &middot; Training tool use: format, execution feedback, recovery &mdash; AILearn</title>
+<meta name="description" content="A tool call as a typed function application with an unknown return: the five break points, the reward that prices steps, and recovery as the real training target.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L70</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L70 &middot; Training tool use: format, execution feedback, recovery</h1>
+  <p class="lede">Formatting a tool call is the easy half. The behaviour that separates a demo from an agent is what happens after the tool returns an error &mdash; and only execution feedback can train it.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: tool-call-from-execution trainer</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">tool schema</span>
+  <span class="pill">argument validation</span>
+  <span class="pill">fault injection</span>
+  <span class="pill">recovery rate</span>
+  <span class="pill">final-state verifier</span>
+  <span class="pill">step budget</span>
+  <span class="pill">execution feedback</span>
+  <span class="pill">tool hallucination</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c70-s1">1 &middot; Why it exists <a class="hook" href="#c70-s1">#</a></h2>
+
+    <p>A model that emits a perfect tool call with the wrong argument types is worse than one that does not
+    call the tool at all: the failure is silent, the retry is invisible, and the agent's transcript looks
+    confident. The failure this lesson addresses is <strong>format without execution</strong> &mdash; models trained
+    on tool-call syntax but not on what happens when the call runs.</p>
+
+    <p>Execution feedback changes the learning signal in a way that is hard to overstate. Once a call actually
+    runs, you get three free supervision signals that no amount of textual imitation supplies:</p>
+    <ul>
+      <li><strong>Validity</strong>: the arguments parse against the schema and the tool accepts them.</li>
+      <li><strong>Outcome</strong>: the result is the one the task needed, checkable by the environment's verifier.</li>
+      <li><strong>Recoverability</strong>: the model's response to an error &mdash; timeout, 500, malformed JSON &mdash; is
+          observable and trainable, and this is the behaviour that separates a demo from an agent.</li>
+    </ul>
+
+    <div class="callout boss">
+      <p>Tool use is not a formatting skill, it is a control problem: choose a call, predict its effect, verify
+      the result, recover from failure. Train it against execution or you are training a text generator that
+      happens to emit JSON. <span class="asof">state as of 2026-10</span> &mdash; DeepSeek-V3.2 is described as
+      the first DeepSeek model to integrate thinking directly into tool-use, which is the same observation
+      from the model side: the model reasons <em>about</em> the tool result, not just before the call.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c70-s2">2 &middot; The mental model <a class="hook" href="#c70-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> a tool call is a typed function application with an unknown return
+    value. The training environment is a loop:</p>
+
+    <div class="seq">plan &rarr; call(tool, args) &rarr; validate(schema) &rarr; execute &rarr; observe(result | error) &rarr; reason &rarr; call | answer</div>
+
+    <p>There are five places it can break, and each needs its own supervision:</p>
+
+    <table class="table">
+      <thead><tr><th>Stage</th><th>Failure</th><th>What trains it</th></tr></thead>
+      <tbody>
+        <tr><td>Selection</td><td>Wrong tool, or no call when one is needed</td><td>Demonstrations + outcome reward</td></tr>
+        <tr><td>Arguments</td><td>Right tool, schema-invalid arguments</td><td>Schema validation as a hard gate; deterministic error message as feedback</td></tr>
+        <tr><td>Execution</td><td>Tool errors: timeout, 4xx/5xx, empty result</td><td>Fault-injected environments; train the recovery, not just the happy path</td></tr>
+        <tr><td>Interpretation</td><td>Reads the result wrong, or ignores it</td><td>Outcome reward on final state; tasks where the result must be used</td></tr>
+        <tr><td>Stopping</td><td>Loops forever, or stops before the state is correct</td><td>Step budget as part of the reward; final-state verifier</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "typed function application" gets right</h4><p>It makes the argument layer
+      decidable: a schema validator is a verifier with no ambiguity, and an invalid call is a training signal
+      with a precise error message attached.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Real tools are not pure functions. They have side effects,
+      rate limits, partial failures and stale reads. A model trained only on clean stub responses learns a
+      world that does not exist, and the first production incident teaches it something no amount of schema
+      validation will.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c70-s3">3 &middot; The mechanism <a class="hook" href="#c70-s3">#</a></h2>
+
+    <p>The reward, written so each component can be switched off to measure its contribution:</p>
+
+    <div class="formula">
+      R = 1[final state correct] &nbsp;+&nbsp; &lambda;<sub>s</sub> &middot; 1[all calls schema-valid] &nbsp;&minus;&nbsp; &lambda;<sub>b</sub> &middot; (steps / B)
+      <span class="note">The state term is the objective, the schema term is a guard against degenerate formatting, the step term prices the budget. Never reward call COUNT: that trains looping.</span>
+    </div>
+
+    <p>Two design choices that experiments will make for you:</p>
+    <ul>
+      <li><strong>Reward the recovery, not the retry.</strong> If a failed call followed by a correct call scores
+          the same as a first-try success, the model learns nothing about diagnosis. Give a small penalty for
+          each error observed and a larger one for failing to recover.</li>
+      <li><strong>Never reward the plan text.</strong> A well-written plan that is not executed is worth zero; the
+          final state is the only thing the environment can verify.</li>
+    </ul>
+<div class="code" data-lang="python">
+<span class="cm"># L70: a tool-use environment with seeded fault injection, plus the reward that prices it.</span>
+<span class="cm"># The "model" is a scripted policy, so the environment and the reward can be audited</span>
+<span class="cm"># independently of any language model. Pure stdlib.</span>
+<span class="kw">import</span> random
+
+START_BALANCE, TARGET = <span class="nm">250</span>, <span class="nm">200</span>       <span class="cm"># need to move 200 of 250; a blind 250 fails</span>
+
+
+<span class="kw">def</span> execute(tool, args, faults, rng):
+    <span class="st">""</span><span class="st">"Deterministic stub with seeded fault injection. Returns (ok, result_or_error)."</span><span class="st">""</span>
+    <span class="kw">if</span> tool == <span class="st">"get_balance"</span>:
+        <span class="kw">return</span> <span class="kw">True</span>, {<span class="st">"balance"</span>: START_BALANCE}
+    <span class="kw">if</span> tool == <span class="st">"transfer"</span>:
+        r = rng.random()
+        <span class="kw">if</span> r &lt; faults.get(<span class="st">"timeout"</span>, <span class="nm">0</span>):
+            <span class="kw">return</span> <span class="kw">False</span>, <span class="st">"timeout"</span>
+        <span class="kw">if</span> r &lt; faults.get(<span class="st">"timeout"</span>, <span class="nm">0</span>) + faults.get(<span class="st">"flaky_500"</span>, <span class="nm">0</span>):
+            <span class="kw">return</span> <span class="kw">False</span>, <span class="st">"http_500"</span>
+        <span class="kw">if</span> args[<span class="st">"amount"</span>] &gt; START_BALANCE - args.get(<span class="st">"already_sent"</span>, <span class="nm">0</span>):
+            <span class="kw">return</span> <span class="kw">False</span>, <span class="st">"insufficient_funds"</span>
+        <span class="kw">return</span> <span class="kw">True</span>, {<span class="st">"sent"</span>: args[<span class="st">"amount"</span>]}
+    <span class="kw">return</span> <span class="kw">False</span>, <span class="st">"unknown_tool"</span>
+
+
+<span class="kw">def</span> run_episode(policy, faults, seed):
+    rng = random.Random(seed)
+    history, sent = [], <span class="nm">0</span>
+    <span class="kw">for</span> step <span class="kw">in</span> range(<span class="nm">1</span>, <span class="nm">9</span>):
+        action = policy(history, sent)
+        <span class="kw">if</span> action <span class="kw">is</span> <span class="kw">None</span>:
+            <span class="kw">return</span> finish(history, sent, step - <span class="nm">1</span>)
+        tool, args = action
+        <span class="kw">if</span> tool == <span class="st">"get_balance"</span>:
+            ok, payload = execute(tool, args, faults, rng)
+        <span class="kw">else</span>:
+            ok, payload = execute(tool, {**args, <span class="st">"already_sent"</span>: sent}, faults, rng)
+            <span class="kw">if</span> ok:
+                sent += args[<span class="st">"amount"</span>]
+        history.append((tool, args, ok, payload))
+    <span class="kw">return</span> finish(history, sent, <span class="nm">8</span>)
+
+
+<span class="kw">def</span> finish(history, sent, steps):
+    errors = sum(<span class="nm">1</span> <span class="kw">for</span> _, _, ok, _ <span class="kw">in</span> history <span class="kw">if</span> <span class="kw">not</span> ok)
+    <span class="kw">return</span> dict(final_ok=sent &gt;= TARGET, steps=steps, errors=errors,
+                recovered=errors &gt; <span class="nm">0</span> <span class="kw">and</span> sent &gt;= TARGET)
+
+
+<span class="kw">def</span> reward(ep, lam_b=<span class="nm">0.1</span>, budget=<span class="nm">8</span>):
+    <span class="st">""</span><span class="st">"Final-state objective minus a step price. Never a reward for call count."</span><span class="st">""</span>
+    <span class="kw">return</span> (<span class="nm">1.0</span> <span class="kw">if</span> ep[<span class="st">"final_ok"</span>] <span class="kw">else</span> <span class="nm">0.0</span>) - lam_b * (ep[<span class="st">"steps"</span>] / budget)
+
+
+<span class="kw">def</span> blind_policy(history, sent):
+    <span class="st">""</span><span class="st">"One big transfer, ignores every error."</span><span class="st">""</span>
+    <span class="kw">return</span> (<span class="st">"transfer"</span>, {<span class="st">"amount"</span>: <span class="nm">250</span>}) <span class="kw">if</span> <span class="kw">not</span> history <span class="kw">else</span> <span class="kw">None</span>
+
+
+<span class="kw">def</span> adaptive_policy(history, sent):
+    <span class="st">""</span><span class="st">"Reads the error. Asks for the balance first, retries transient faults, shrinks on funds."</span><span class="st">""</span>
+    <span class="kw">if</span> <span class="kw">not</span> history:
+        <span class="kw">return</span> (<span class="st">"get_balance"</span>, {})
+    last_ok = history[-<span class="nm">1</span>][<span class="nm">2</span>]
+    last_payload = history[-<span class="nm">1</span>][<span class="nm">3</span>]
+    remaining = TARGET - sent
+    <span class="kw">if</span> remaining &lt;= <span class="nm">0</span>:
+        <span class="kw">return</span> <span class="kw">None</span>
+    <span class="kw">if</span> <span class="kw">not</span> last_ok <span class="kw">and</span> last_payload == <span class="st">"insufficient_funds"</span>:
+        <span class="kw">return</span> (<span class="st">"transfer"</span>, {<span class="st">"amount"</span>: max(remaining - <span class="nm">40</span>, <span class="nm">1</span>)})
+    <span class="kw">if</span> <span class="kw">not</span> last_ok <span class="kw">and</span> last_payload <span class="kw">in</span> (<span class="st">"timeout"</span>, <span class="st">"http_500"</span>):
+        <span class="kw">return</span> (<span class="st">"transfer"</span>, {<span class="st">"amount"</span>: remaining})
+    <span class="kw">if</span> sent == <span class="nm">0</span>:
+        <span class="kw">return</span> (<span class="st">"transfer"</span>, {<span class="st">"amount"</span>: <span class="nm">250</span>})        <span class="cm"># over-asks on purpose -&gt; learns from the error</span>
+    <span class="kw">return</span> <span class="kw">None</span>
+
+
+<span class="kw">print</span>(f<span class="st">"{'policy':&lt;12}{'faults':&lt;20}{'final ok':&gt;9}{'errors/ep':&gt;11}{'recovered':&gt;11}{'reward':&gt;9}"</span>)
+<span class="kw">for</span> name, pol <span class="kw">in</span> ((<span class="st">"blind"</span>, blind_policy), (<span class="st">"adaptive"</span>, adaptive_policy)):
+    <span class="kw">for</span> label, faults <span class="kw">in</span> ((<span class="st">"clean"</span>, {}), (<span class="st">"timeout 20%"</span>, {<span class="st">"timeout"</span>: <span class="nm">0.2</span>}),
+                          (<span class="st">"timeout+500 40%"</span>, {<span class="st">"timeout"</span>: <span class="nm">0.2</span>, <span class="st">"flaky_500"</span>: <span class="nm">0.2</span>})):
+        eps = [run_episode(pol, faults, seed) <span class="kw">for</span> seed <span class="kw">in</span> range(<span class="nm">200</span>)]
+        <span class="kw">print</span>(f<span class="st">"{name:&lt;12}{label:&lt;20}"</span>
+              f<span class="st">"{sum(e['final_ok'] for e in eps) / len(eps):&gt;9.3f}"</span>
+              f<span class="st">"{sum(e['errors'] for e in eps) / len(eps):&gt;11.2f}"</span>
+              f<span class="st">"{sum(1 for e in eps if e['recovered']) / len(eps):&gt;11.3f}"</span>
+              f<span class="st">"{sum(reward(e) for e in eps) / len(eps):&gt;9.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+policy      faults               final ok  errors/ep  recovered   reward
+blind       clean                   1.000       0.00      0.000    0.988
+blind       timeout 20%             0.785       0.21      0.000    0.772
+blind       timeout+500 40%         0.590       0.41      0.000    0.578
+adaptive    clean                   1.000       0.00      0.000    0.975
+adaptive    timeout 20%             1.000       0.24      0.215    0.972
+adaptive    timeout+500 40%         1.000       0.60      0.410    0.967
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c70-s4">4 &middot; Your hands <a class="hook" href="#c70-s4">#</a></h2>
+
+    <p>Three labs: run an execution loop against a deterministic stub with fault injection, score it with the
+    reward above, and measure how much recovery behaviour the reward actually teaches.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; two policies, three fault regimes</h4>
+      <p>A bank-transfer task, a deterministic stub with a seeded fault injector, and two scripted policies: one that makes a single large call and ignores every error, one that reads the error and adapts. The reward is the final state minus a step price.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L70: a tool-use environment with seeded fault injection, plus the reward that prices it.</span>
+<span class="cm"># The "model" is a scripted policy, so the environment and the reward can be audited</span>
+<span class="cm"># independently of any language model. Pure stdlib.</span>
+<span class="kw">import</span> random
+
+START_BALANCE, TARGET = <span class="nm">250</span>, <span class="nm">200</span>       <span class="cm"># need to move 200 of 250; a blind 250 fails</span>
+
+
+<span class="kw">def</span> execute(tool, args, faults, rng):
+    <span class="st">""</span><span class="st">"Deterministic stub with seeded fault injection. Returns (ok, result_or_error)."</span><span class="st">""</span>
+    <span class="kw">if</span> tool == <span class="st">"get_balance"</span>:
+        <span class="kw">return</span> <span class="kw">True</span>, {<span class="st">"balance"</span>: START_BALANCE}
+    <span class="kw">if</span> tool == <span class="st">"transfer"</span>:
+        r = rng.random()
+        <span class="kw">if</span> r &lt; faults.get(<span class="st">"timeout"</span>, <span class="nm">0</span>):
+            <span class="kw">return</span> <span class="kw">False</span>, <span class="st">"timeout"</span>
+        <span class="kw">if</span> r &lt; faults.get(<span class="st">"timeout"</span>, <span class="nm">0</span>) + faults.get(<span class="st">"flaky_500"</span>, <span class="nm">0</span>):
+            <span class="kw">return</span> <span class="kw">False</span>, <span class="st">"http_500"</span>
+        <span class="kw">if</span> args[<span class="st">"amount"</span>] &gt; START_BALANCE - args.get(<span class="st">"already_sent"</span>, <span class="nm">0</span>):
+            <span class="kw">return</span> <span class="kw">False</span>, <span class="st">"insufficient_funds"</span>
+        <span class="kw">return</span> <span class="kw">True</span>, {<span class="st">"sent"</span>: args[<span class="st">"amount"</span>]}
+    <span class="kw">return</span> <span class="kw">False</span>, <span class="st">"unknown_tool"</span>
+
+
+<span class="kw">def</span> run_episode(policy, faults, seed):
+    rng = random.Random(seed)
+    history, sent = [], <span class="nm">0</span>
+    <span class="kw">for</span> step <span class="kw">in</span> range(<span class="nm">1</span>, <span class="nm">9</span>):
+        action = policy(history, sent)
+        <span class="kw">if</span> action <span class="kw">is</span> <span class="kw">None</span>:
+            <span class="kw">return</span> finish(history, sent, step - <span class="nm">1</span>)
+        tool, args = action
+        <span class="kw">if</span> tool == <span class="st">"get_balance"</span>:
+            ok, payload = execute(tool, args, faults, rng)
+        <span class="kw">else</span>:
+            ok, payload = execute(tool, {**args, <span class="st">"already_sent"</span>: sent}, faults, rng)
+            <span class="kw">if</span> ok:
+                sent += args[<span class="st">"amount"</span>]
+        history.append((tool, args, ok, payload))
+    <span class="kw">return</span> finish(history, sent, <span class="nm">8</span>)
+
+
+<span class="kw">def</span> finish(history, sent, steps):
+    errors = sum(<span class="nm">1</span> <span class="kw">for</span> _, _, ok, _ <span class="kw">in</span> history <span class="kw">if</span> <span class="kw">not</span> ok)
+    <span class="kw">return</span> dict(final_ok=sent &gt;= TARGET, steps=steps, errors=errors,
+                recovered=errors &gt; <span class="nm">0</span> <span class="kw">and</span> sent &gt;= TARGET)
+
+
+<span class="kw">def</span> reward(ep, lam_b=<span class="nm">0.1</span>, budget=<span class="nm">8</span>):
+    <span class="st">""</span><span class="st">"Final-state objective minus a step price. Never a reward for call count."</span><span class="st">""</span>
+    <span class="kw">return</span> (<span class="nm">1.0</span> <span class="kw">if</span> ep[<span class="st">"final_ok"</span>] <span class="kw">else</span> <span class="nm">0.0</span>) - lam_b * (ep[<span class="st">"steps"</span>] / budget)
+
+
+<span class="kw">def</span> blind_policy(history, sent):
+    <span class="st">""</span><span class="st">"One big transfer, ignores every error."</span><span class="st">""</span>
+    <span class="kw">return</span> (<span class="st">"transfer"</span>, {<span class="st">"amount"</span>: <span class="nm">250</span>}) <span class="kw">if</span> <span class="kw">not</span> history <span class="kw">else</span> <span class="kw">None</span>
+
+
+<span class="kw">def</span> adaptive_policy(history, sent):
+    <span class="st">""</span><span class="st">"Reads the error. Asks for the balance first, retries transient faults, shrinks on funds."</span><span class="st">""</span>
+    <span class="kw">if</span> <span class="kw">not</span> history:
+        <span class="kw">return</span> (<span class="st">"get_balance"</span>, {})
+    last_ok = history[-<span class="nm">1</span>][<span class="nm">2</span>]
+    last_payload = history[-<span class="nm">1</span>][<span class="nm">3</span>]
+    remaining = TARGET - sent
+    <span class="kw">if</span> remaining &lt;= <span class="nm">0</span>:
+        <span class="kw">return</span> <span class="kw">None</span>
+    <span class="kw">if</span> <span class="kw">not</span> last_ok <span class="kw">and</span> last_payload == <span class="st">"insufficient_funds"</span>:
+        <span class="kw">return</span> (<span class="st">"transfer"</span>, {<span class="st">"amount"</span>: max(remaining - <span class="nm">40</span>, <span class="nm">1</span>)})
+    <span class="kw">if</span> <span class="kw">not</span> last_ok <span class="kw">and</span> last_payload <span class="kw">in</span> (<span class="st">"timeout"</span>, <span class="st">"http_500"</span>):
+        <span class="kw">return</span> (<span class="st">"transfer"</span>, {<span class="st">"amount"</span>: remaining})
+    <span class="kw">if</span> sent == <span class="nm">0</span>:
+        <span class="kw">return</span> (<span class="st">"transfer"</span>, {<span class="st">"amount"</span>: <span class="nm">250</span>})        <span class="cm"># over-asks on purpose -&gt; learns from the error</span>
+    <span class="kw">return</span> <span class="kw">None</span>
+
+
+<span class="kw">print</span>(f<span class="st">"{'policy':&lt;12}{'faults':&lt;20}{'final ok':&gt;9}{'errors/ep':&gt;11}{'recovered':&gt;11}{'reward':&gt;9}"</span>)
+<span class="kw">for</span> name, pol <span class="kw">in</span> ((<span class="st">"blind"</span>, blind_policy), (<span class="st">"adaptive"</span>, adaptive_policy)):
+    <span class="kw">for</span> label, faults <span class="kw">in</span> ((<span class="st">"clean"</span>, {}), (<span class="st">"timeout 20%"</span>, {<span class="st">"timeout"</span>: <span class="nm">0.2</span>}),
+                          (<span class="st">"timeout+500 40%"</span>, {<span class="st">"timeout"</span>: <span class="nm">0.2</span>, <span class="st">"flaky_500"</span>: <span class="nm">0.2</span>})):
+        eps = [run_episode(pol, faults, seed) <span class="kw">for</span> seed <span class="kw">in</span> range(<span class="nm">200</span>)]
+        <span class="kw">print</span>(f<span class="st">"{name:&lt;12}{label:&lt;20}"</span>
+              f<span class="st">"{sum(e['final_ok'] for e in eps) / len(eps):&gt;9.3f}"</span>
+              f<span class="st">"{sum(e['errors'] for e in eps) / len(eps):&gt;11.2f}"</span>
+              f<span class="st">"{sum(1 for e in eps if e['recovered']) / len(eps):&gt;11.3f}"</span>
+              f<span class="st">"{sum(reward(e) for e in eps) / len(eps):&gt;9.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+policy      faults               final ok  errors/ep  recovered   reward
+blind       clean                   1.000       0.00      0.000    0.988
+blind       timeout 20%             0.785       0.21      0.000    0.772
+blind       timeout+500 40%         0.590       0.41      0.000    0.578
+adaptive    clean                   1.000       0.00      0.000    0.975
+adaptive    timeout 20%             1.000       0.24      0.215    0.972
+adaptive    timeout+500 40%         1.000       0.60      0.410    0.967
+</div>
+      <p class="expect">The blind policy is perfect on a clean environment and falls to 0.785 and 0.590 as faults are injected. The adaptive policy stays at 1.000 in every regime. This is the argument for fault injection: the difference between the two policies is invisible on clean data, so a training suite without faults teaches the blind policy and reports success.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; remove the step price and re-run</h4>
+      <p>Set <code>lam_b = 0.0</code>, then set the budget to 2 so the 8-step cap is punitive.</p>
+<div class="code" data-lang="python">
+<span class="kw">def</span> reward(ep, lam_b=<span class="nm">0.0</span>, budget=<span class="nm">8</span>):
+</div>
+      <p class="expect">With no step price, a policy that reads the balance on every step scores the same as one that finishes in two, and the reported reward is dominated by episode length. With a tight budget the price is paid on every episode and final success no longer dominates &mdash; which is the cost you deliberately accept when latency is the product constraint.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the episode record you need for tool-use training</h4>
+      <p>These fields per episode are what make a tool-use run debuggable and auditable.</p>
+      <div class="code" data-lang="json">
+{"episode": 17,
+ "calls": [{"tool": "get_balance", "ok": true},
+           {"tool": "transfer", "args": {"amount": 250}, "ok": false, "error": "insufficient_funds"},
+           {"tool": "transfer", "args": {"amount": 160}, "ok": true}],
+ "steps": 3, "schema_violations": 0, "tool_errors": 1, "recovered": true,
+ "final_state_ok": true, "reward": 0.9625}
+      </div>
+      <p class="expect">Aggregate <code>recovered / tool_errors</code> across episodes: that ratio is the recovery rate, the number that"
+      " predicts production behaviour. Without per-episode records you can compute final accuracy and nothing else &mdash; which is how a"
+      " model that never recovers from a 500 ships without anyone noticing.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c70-s5">5 &middot; Failure modes <a class="hook" href="#c70-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Format-only mastery.</strong> Symptom: valid JSON in 100% of calls, invalid semantics in a large fraction; check by validating arguments against constraints, not just types.</li>
+        <li><strong>Never-recovers.</strong> Symptom: after a tool error the model repeats the same call verbatim; the environment never injected errors during training.</li>
+        <li><strong>Loops within budget.</strong> Symptom: step count at the cap on most tasks, with the final state unchanged; reward has no step term or the cap is too loose.</li>
+        <li><strong>Ignores the result.</strong> Symptom: the final answer contradicts the tool output it just received; the outcome verifier should catch it &mdash; if it only checks the answer string, it will not.</li>
+        <li><strong>Tool hallucination.</strong> Symptom: calls to tools that do not exist or with fields the schema never defined; a schema validator as a hard gate fixes the reward, not the model.</li>
+        <li><strong>Overfitting to stubs.</strong> Symptom: excellent on the synthetic environment, poor on the real API; the realistic difference is latency, pagination, rate limits and partial data.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Log per episode: calls made, schema violations, tool errors, recoveries, steps used, final-state
+      correctness. The interesting one is recoveries &mdash; a tool-use model that never recovers is a formatter, and
+      the recovery rate is the number that predicts production behaviour.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c70-s6">6 &middot; Connects to <a class="hook" href="#c70-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="67-data-synthesis.html">L67 &middot; Environment synthesis</a>,
+    <a class="tag-c" href="63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a>,
+    <a class="tag-a" href="../track-a/19-full-transformer.html">L19</a>.</p>
+    <p><strong>Unlocks:</strong> agentic RL and any deployable tool-using agent.</p>
+
+    <ul>
+      <li><a class="tag-c" href="71-agentic-rl.html">L71 &middot; Agentic RL</a> &mdash; multi-step credit across a tool loop.</li>
+      <li><a class="tag-c" href="69-reasoning-effort.html">L69 &middot; Reasoning effort</a> &mdash; budgeting tokens across turns.</li>
+      <li><a class="tag-d" href="../track-d/77-tool-calling.html">L77 &middot; Tool calling &amp; MCP</a> &mdash; the schema layer this page validates against.</li>
+      <li><a class="tag-d" href="../track-d/92-reliability.html">L92 &middot; Reliability</a> &mdash; retries and idempotency for the failures trained here.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c70-s7">7 &middot; Self-check <a class="hook" href="#c70-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does rewarding the number of successful tool calls train looping?</p>
+        <details><summary>Reveal answer</summary><p>Because the reward is unbounded in the action count: if each successful call pays, the optimal policy is to make as manycalls as the cap allows. This is lesson 75's pattern in miniature. Reward the final state, guard the format, and price thesteps &mdash; then the only way to score is to reach the goal in few calls.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: 1,000 episodes, 3,200 calls, 210 schema violations, 140 tool errors, 96 recoveries, mean steps 3.2. What is the recovery rate and what does it tell you?</p>
+        <details><summary>Reveal answer</summary><p>Recovery rate = 96/140 = 0.686. Two thirds of tool errors are eventually recovered from, one third leave the episode failedor looping. If that number is near zero, the environment never taught recovery; if it is near one, the errors injected were tooeasy to detect.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> A schema validator rejects 8% of the model's calls at serving time while training had 1%. Give two hypotheses and one check each.</p>
+        <details><summary>Reveal answer</summary><p>(a) Schema drift: the serving tool schema differs from the one used in training &mdash; check by diffing the two schemas. (b) Prompt orcontext difference: the model sees a different tool description at serving &mdash; check by dumping the exact tool list in each path. Bothare configuration, not model, defects, which is why the first 10 minutes of any tool-use incident is schema diffing.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is 'recovers from a 500 by retrying once, then switching strategy' worth more as a training signal than 'makes a valid call on the first try' in production terms?</p>
+        <details><summary>Reveal answer</summary><p>Because first-try validity is already near-saturated in training, while recovery is the behaviour that determines whether theagent completes tasks when the world misbehaves. The marginal value in production is entirely in the tail: retries with backoff,fallback tools, and graceful partial answers. The training environment must inject these faults deliberately, because thehappy-path data dominates by default.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Design the smallest environment that can teach recovery, and list its three required properties.</p>
+        <details><summary>Reveal answer</summary><p>A stub tool with a seeded fault injector, a task verifier on final state, and a step budget. Required properties: (1) seededdeterminism so faults are reproducible; (2) a distinct error message per fault type, so recovery can be conditioned on it; (3) thefault schedule is not inferable from the prompt, so the model must use the observed error rather than the task text.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="69-reasoning-effort.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L69 &middot; Thinking mode, reasoning effort, and thinking-in-tool-use</span></a>
+    <a class="next" href="71-agentic-rl.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L71 &middot; Agentic RL for long-horizon tasks</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

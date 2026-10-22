@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html data-theme="dark" lang="en" data-page="b44">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L44 · Inference Serving: Batching, Continuous Batching, PagedAttention — AILearn</title>
+<meta name="description" content="Decode is bandwidth-bound, so throughput comes from batching and memory efficiency comes from not wasting KV pages. The arithmetic of both, including where batching stops helping.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L44</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L44 &middot; Serving: Batching, Continuous Batching, PagedAttention, Prefill/Decode Split</h1>
+  <p class="lede">One request at a time wastes 99% of a GPU because decode is bandwidth-bound and the weights are re-read per token. Batching fixes that up to a point, paging fixes the memory waste that limits the batch, and separating prefill from decode is what lets each phase run efficiently.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: throughput/latency calculator</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">static vs continuous batching</span>
+  <span class="pill">PagedAttention</span>
+  <span class="pill">KV page fragmentation</span>
+  <span class="pill">prefill/decode disaggregation</span>
+  <span class="pill">time-to-first-token</span>
+  <span class="pill">inter-token latency</span>
+  <span class="pill">throughput vs latency</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b44-s1">1 &middot; Why it exists <a class="hook" href="#b44-s1">#</a></h2>
+
+    <p>A naive server processes one request at a time. On a 13B-active model at bf16 with 3 TB/s of bandwidth, one decode
+    step re-reads 26 GB of weights to produce a single token: 8.67 ms &mdash; about 115 tokens per second for the whole
+    accelerator, regardless of how many users are waiting.</p>
+
+    <p>The GPU is idle for almost all of that time. Decode does 2N FLOPs and reads 2N bytes per token; at 989 TFLOP/s and
+    3.35 TB/s that is an arithmetic intensity of 1 FLOP/byte against a ridge point of 295 &mdash; three orders of magnitude
+    below the compute roof. So the machine sits waiting on memory, and the obvious fix is to give it more work per memory read:
+    <strong>batch</strong>.</p>
+
+    <p>Batching then reveals a second bottleneck. Every concurrent sequence needs its own KV cache, allocated as one
+    contiguous region of size <code>max_context</code>. If a request arrives with 200 tokens but the server reserved 8,192, you
+    waste 97% of that allocation &mdash; and that waste is what silently caps your batch size and therefore your throughput.
+    PagedAttention (the vLLM design) fixed this by paging the KV cache like an operating system pages memory, and continuous
+    batching fixed the head-of-line blocking that static batching creates.</p>
+
+    <div class="callout boss">
+      <p>Serving throughput <span class="asof">state as of 2026-10</span> is (batched tokens) / (bytes re-read per step). Batching raises the numerator, paging raises the
+      batch you can fit, and disaggregating prefill from decode stops the two phases from ruining each other's efficiency.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b44-s2">2 &middot; The mental model <a class="hook" href="#b44-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a bus. Sending one passenger per bus costs a full bus per passenger (batch 1).
+    Loading the bus fully amortises the trip (batching). But if you must reserve a full row of seats for every passenger in case
+    they need it (contiguous allocation), the bus fills up with empty seats and you cannot sell the remaining capacity &mdash;
+    which is exactly the paging problem.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Fixed cost per trip, amortised across passengers. The
+      amortisation is real and large, and it stops being free when a passenger's luggage (the KV cache) takes up the seats.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Passengers do not arrive mid-trip. In LLM serving they do: a new request can
+      join the batch at any decode step, which is <em>continuous</em> batching, and that changes the scheduling problem from
+      &ldquo;fill the bus&rdquo; to &ldquo;admit a new sequence without stalling the ones in flight.&rdquo;</p></div>
+    </div>
+
+    <h3>The two metrics that are always in tension</h3>
+    <ul>
+      <li><strong>Time-to-first-token (TTFT)</strong> &mdash; dominated by prefill. Long prompt, long wait. Helps when batched
+      aggressively.</li>
+      <li><strong>Inter-token latency (ITL)</strong> &mdash; dominated by decode bandwidth per step. Grows with batch size because
+      each step now reads more KV. This is what users feel as &ldquo;slowness&rdquo; while the answer streams.</li>
+    </ul>
+    <p>Maximising throughput means maximising batch; maximising responsiveness means minimising batch. Every real deployment
+    picks a point on this curve, often different points for different endpoints.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b44-s3">3 &middot; The mechanism <a class="hook" href="#b44-s3">#</a></h2>
+
+    <h3>Batching arithmetic: where the wins stop</h3>
+    <p>Per decode step a batch of B sequences at context L reads weights once plus B caches:</p>
+    <div class="formula">
+      bytes<sub>step</sub> = 2&thinsp;N<sub>active</sub> + B&thinsp;&times;&thinsp;L&thinsp;&times;&thinsp;bytes<sub>token</sub>
+      &nbsp;&rarr;&nbsp; tokens/s = B &divide; (bytes<sub>step</sub> / bandwidth)
+      <span class="note">The weight term is paid once per step regardless of B &mdash; that is the whole point of batching. The cache term grows linearly with B, which is why throughput gains decelerate and eventually reverse.</span>
+    </div>
+    <p>With N<sub>active</sub> = 13B (2 bytes &rarr; 26 GB of weights), compressed cache at 17,568 B/token, 32k context, 3 TB/s:</p>
+
+    <table class="table">
+      <thead><tr><th>Batch B</th><th>Bytes per step</th><th>Step time</th><th>Throughput</th><th>ITL per user</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>26.58 GB</td><td>8.86 ms</td><td>112.9 tok/s</td><td>8.86 ms</td></tr>
+        <tr><td>8</td><td>30.61 GB</td><td>10.20 ms</td><td>784.2 tok/s</td><td>10.20 ms</td></tr>
+        <tr><td>32</td><td>44.42 GB</td><td>14.81 ms</td><td>2,161.1 tok/s</td><td>14.81 ms</td></tr>
+        <tr><td>128</td><td>99.69 GB</td><td>33.23 ms</td><td>3,852.1 tok/s</td><td><strong>33.23 ms</strong></td></tr>
+      </tbody>
+    </table>
+
+    <p>Read the last two columns together. Going from B = 1 to B = 8 multiplies throughput 6.9&times; and adds 15% to latency
+    &mdash; an obvious trade. Going from B = 32 to B = 128 multiplies throughput only 1.78&times; and doubles latency. Somewhere
+    in that range, ITL crosses the human-noticeable threshold and the endpoint becomes &ldquo;fast but unusable.&rdquo;</p>
+
+    <h3>PagedAttention: why memory fragmentation caps throughput</h3>
+    <p>A contiguous allocator reserves <code>max_model_len</code> bytes per request. Actual usage is <code>prompt + generated</code>,
+    unknown in advance. Two wastes:</p>
+    <ul>
+      <li><strong>Internal fragmentation</strong> &mdash; the difference between reserved and used. A 200-token request with an
+      8,192 reservation wastes 97.6%.</li>
+      <li><strong>External fragmentation</strong> &mdash; free space exists but is not contiguous, so it cannot be allocated.</li>
+    </ul>
+    <p>Paging fixes both: the cache is stored in fixed-size <em>blocks</em> (for example 16 tokens each) with a per-sequence block
+    table, so allocation is exactly what is needed, blocks need not be contiguous, and blocks can even be shared between
+    requests that share a prefix (which is the foundation of L45). The measurable result is that the effective batch size rises,
+    which raises throughput at a fixed memory budget.</p>
+    <p>Worked: a pool of 640 GiB, per-token cache 17,568 B, average context 4,096 &rarr; each sequence needs
+    17,568 &times; 4,096 = 71.96 MB. A contiguous 32k-reservation scheme needs 17,568 &times; 32,768 = 575.67 MB per sequence &mdash;
+    <strong>8&times; more</strong> &mdash; so the pool holds 1,193 sequences instead of 9,549. Paging is an 8&times; throughput
+    multiplier on that workload, achieved purely by not reserving for a worst case.</p>
+
+    <h3>Continuous vs static batching</h3>
+    <p>Static batching: collect a batch, run it to completion, then take the next. Throughput is lost to <strong>head-of-line
+    blocking</strong> &mdash; a 300-token answer finished inside a batch of 2,000-token answers idles its slot until the batch
+    ends.</p>
+    <p>Continuous batching schedules at the level of <em>decode steps</em>: when a sequence finishes, its slot is immediately
+    refilled with a waiting request. The saving is exactly the wasted tail. With answers ranging 100&ndash;2,000 tokens in a batch
+    of 32, expected waste can easily be 30&ndash;50% of generated tokens &mdash; continuous batching recovers most of it.</p>
+
+    <h3>Prefill/decode disaggregation</h3>
+    <p>Prefill is compute-bound and benefits from large batches of prompt tokens; decode is bandwidth-bound and benefits from
+    many concurrent sequences. Running them on the same device causes <strong>prefill interruption</strong>: a long-prompt arrival
+    stalls inter-token latency for every streaming user.</p>
+    <p>Disaggregation runs them on separate pools: prefill workers produce KV blocks, which are transferred to decode workers.
+    The bill is the transfer: for a 4,096-token prompt at 17,568 B/token, that is 4,096 &times; 17,568 = 71.96 MB moved per
+    request &mdash; at 100 GB/s of inter-node fabric, 0.72 ms, negligible against a prefill of tens of milliseconds. The economics
+    work because KV transfer is cheap relative to the work it decouples.</p>
+
+    <div class="callout audit">
+      <p>The serving artifact is a four-number record per configuration: TTFT at p50/p99, ITL at p50/p99, throughput in tokens/s,
+      and <strong>cache utilisation</strong> (bytes used / pool size). A deployment reporting throughput without the other three
+      is reporting the one number that improves when you make the service worse.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b44-s4">4 &middot; Your hands <a class="hook" href="#b44-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the batching curve for your own model</h4>
+      <p>Sweep batch size and print throughput alongside per-user latency. The knee is where you should set your max batch, and
+      it is workload-specific.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">batch_curve</span>(N_act, bytes_tok, ctx, bw=<span class="nm">3e12</span>, Bs=(<span class="nm">1</span>,<span class="nm">8</span>,<span class="nm">32</span>,<span class="nm">128</span>,<span class="nm">256</span>)):
+    w = <span class="nm">2</span> * N_act
+    <span class="kw">for</span> B <span class="kw">in</span> Bs:
+        b = w + B * ctx * bytes_tok
+        step_ms = b / bw * <span class="nm">1000</span>
+        <span class="fn">print</span>(<span class="st">f"B={B:4d}  {b/1e9:8.2f} GB  {step_ms:7.2f} ms  {B/(step_ms/1000):8.1f} tok/s  ITL={step_ms:6.2f} ms"</span>)
+
+<span class="fn">print</span>(<span class="st">"13B active, compressed cache, 32k ctx"</span>)
+<span class="fn">batch_curve</span>(<span class="nm">13e9</span>, <span class="nm">17568</span>, <span class="nm">32768</span>)
+<span class="fn">print</span>(<span class="st">"13B active, compressed cache, 4k ctx"</span>)
+<span class="fn">batch_curve</span>(<span class="nm">13e9</span>, <span class="nm">17568</span>, <span class="nm">4096</span>)
+      </div>
+      <p class="expect">Measured at 32k: 112.9 / 784.2 / 2,161.1 / 3,852.1 / 4,429.8 tok/s at B = 1/8/32/128/256 with ITL 8.86 /
+      10.20 / 14.81 / 33.23 / 57.79 ms. At 4k context the same batches give 115.1 / 903.1 / 3,391.9 / 10,905.8 / 17,289.0 tok/s
+      with ITL only 8.69 &rarr; 14.81 ms &mdash; far more of the batching budget is free because KV per step is 8&times; smaller. The
+      curve stays flat far longer &mdash;
+      <strong>short context is where batching is nearly free.</strong> That is the single most useful operational insight on this
+      page: max batch should vary with expected context length.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the capacity your allocator silently throws away</h4>
+      <p>Compute effective batch sizes for contiguous reservation versus paging. This is the number to show when someone asks why
+      the server only handles 200 concurrent users on 640 GB.</p>
+      <div class="code" data-lang="bash">
+python -c "
+bytes_tok=17568; pool=640*1024**3
+for avg_ctx, reserve in ((4096,8192),(4096,32768),(200,8192)):
+    used=bytes_tok*avg_ctx; reserved=bytes_tok*reserve
+    print(f'avg_ctx={avg_ctx:5d} reserve={reserve:6d}: need {used/1e6:7.2f} MB, allocator takes {reserved/1e6:8.2f} MB')
+    print(f'   contiguous batch={pool//reserved:5d}   paged batch={pool//used:5d}   gain={used/reserved:.1%} utilisation')
+"
+      </div>
+      <p class="expect">At avg 4,096 with an 8,192 reservation: 71.96 MB needed vs 143.92 MB allocated &rarr; 4,774 vs 9,549 sequences
+      (2&times;). At avg 4,096 with a 32,768 reservation: 1,193 vs 9,549 (<strong>8&times;</strong>). At avg 200 tokens with 8,192
+      reserved: 3.51 MB vs 143.92 MB &rarr; 4,774 vs 195,581 sequences (<strong>41&times;</strong>).
+      The lesson: the damage from contiguous allocation scales with the ratio of reservation to actual use, so short-request
+      workloads benefit most &mdash; and they are exactly the workloads whose latency users notice.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; when prefill interruption ruins your SLO</h4>
+      <p>Model a mixed workload: 100 short streaming requests plus periodic long prompts. Compare ITL with and without
+      disaggregation.</p>
+      <div class="code" data-lang="python">
+eff = <span class="nm">989e12</span> * <span class="nm">0.40</span>; bw = <span class="nm">3e12</span>; N = <span class="nm">13e9</span>
+long_prompt, arrivals_per_sec, active = <span class="nm">32768</span>, <span class="nm">2</span>, <span class="nm">100</span>
+
+prefill_s = <span class="nm">2</span> * N * long_prompt / eff
+<span class="kw">for</span> mode <span class="kw">in</span> (<span class="st">"colocated"</span>, <span class="st">"disaggregated"</span>):
+    interfered = arrivals_per_sec <span class="kw">if</span> mode == <span class="st">"colocated"</span> <span class="kw">else</span> <span class="nm">0</span>
+    stalled_ms = interfered
+    base_itl = (active * <span class="nm">4096</span> * <span class="nm">17568</span> + <span class="nm">2</span>*N) / bw * <span class="nm">1000</span>
+    <span class="fn">print</span>(<span class="st">f"{mode:14s} prefill={prefill_s*1000:.1f} ms  stalls/s={stalled_ms}  base ITL={base_itl:.2f} ms"</span>)
+      </div>
+      <p class="expect">Measured: a 32k-token prefill is 2,153.6 ms of compute on one GPU, while the streaming decode baseline
+      (B = 100 at 4k context) steps in 11.07 ms. So <em>one</em> long-prompt arrival is two full seconds during which no streaming
+      sequence advances &mdash; two arrivals per second means the endpoint never recovers. Disaggregation removes that entirely;
+      its price is moving the prompt's KV, 32,768 &times; 17,568 = 575.67 MB per request (0.58 GB), which at 100 GB/s is 5.76 ms.
+      The arithmetic makes the trade obvious: 5.76 ms of transfer to remove 2,153.6 ms of interference.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b44-s5">5 &middot; Failure modes <a class="hook" href="#b44-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Batch size tuned on one context length.</strong> Symptom: throughput collapses when long-context traffic arrives.
+        Re-derive max batch from observed context distribution; admission-control on estimated cache bytes, not request count.</li>
+        <li><strong>Fragmentation masquerading as OOM.</strong> Symptom: the server rejects requests at 60&ndash;70% pool utilisation
+        because no contiguous block is large enough. That is the paging bug &mdash; check allocator efficiency, not pool size.</li>
+        <li><strong>Head-of-line blocking.</strong> Symptom: p99 latency tracks the longest response in each batch, not the typical
+        one. Static batching; switch to continuous.</li>
+        <li><strong>Prefill stalls.</strong> Symptom: occasional 1&ndash;3 second gaps in streaming output for all users
+        simultaneously, correlated with a large request arriving. Colocated prefill; disaggregate or chunk large prefill.</li>
+        <li><strong>Optimising the wrong metric.</strong> Symptom: throughput doubles, churn increases, because per-user latency
+        crossed the threshold where people give up. Always report TTFT and ITL next to throughput.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b44-s6">6 &middot; Connects to <a class="hook" href="#b44-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L33 (cache size), L35 (four bills), L37 (phase split), L40 (precision).
+    &nbsp; <strong>Unlocks:</strong> L45 (caching) and L91 (cost/latency budgets).</p>
+    <ul>
+      <li><a class="tag-b" href="33-mla.html">L33 &middot; MLA</a> &mdash; the per-token cache bytes that set your batch limit.</li>
+      <li><a class="tag-b" href="35-long-context.html">L35 &middot; Long context</a> &mdash; the four-bill model behind these numbers.</li>
+      <li><a class="tag-b" href="37-encoder-decoder.html">L37 &middot; Encoder&ndash;decoder</a> &mdash; why the phases have different widths.</li>
+      <li><a class="tag-b" href="45-caching.html">L45 &middot; Context caching</a> &mdash; prefix sharing on top of paged blocks.</li>
+      <li><a class="tag-a" href="../track-a/18-decoding-strategies.html">L18 &middot; Speculative decoding</a> &mdash; another way to cut steps per token.</li>
+      <li><a class="tag-d" href="../track-d/91-cost-latency.html">L91 &middot; Cost &amp; latency budgets</a> &mdash; turning these curves into an SLO.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b44-s7">7 &middot; Self-check <a class="hook" href="#b44-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> 13B active, bf16, 32k context, compressed cache 17,568 B/token, 3 TB/s. Compute decode step time and throughput at B = 1 and B = 32.</p>
+        <details><summary>Reveal answer</summary><p>Weights = 2 &times; 13&times;10<sup>9</sup> = 26 GB. B = 1: KV = 32,768 &times; 17,568 = 0.576 GB, total 26.58 GB
+        &rarr; 8.86 ms &rarr; 112.9 tok/s. B = 32: KV = 18.42 GB, total 44.42 GB &rarr; 14.81 ms &rarr; 2,161.1 tok/s. So 32&times; the batch
+        gives 19.1&times; the throughput and 1.67&times; the latency &mdash; sublinear throughput gain because the KV term has become 41% of
+        the step.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A pool of 640 GiB, 17,568 B/token, average 4,096-token contexts. How many concurrent sequences with paging, and how many if the allocator reserves 32,768 tokens per request?</p>
+        <details><summary>Reveal answer</summary><p>Per sequence used = 17,568 &times; 4,096 = 71.96 MB = 0.0672 GiB. Paged: 640/0.0672 = <strong>9,524</strong>.
+        Reserved: 17,568 &times; 32,768 = 575.7 MB = 0.537 GiB, so 640/0.537 = <strong>1,192</strong>. Paging is an 8&times; capacity
+        gain, which is an 8&times; throughput gain at equal latency per step (until compute limits take over).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: streaming output freezes for ~2 s for all users at random intervals, then resumes. What is happening and what are two mitigations?</p>
+        <details><summary>Reveal answer</summary><p>A large prefill is running on the same device and has monopolised it: prefill is compute-bound and batched, so a
+        32k-token prompt is ~2.15 s of work that blocks decode steps for every streaming sequence. Mitigations: (a) disaggregate
+        prefill and decode onto separate pools; (b) chunk large prefills into slices interleaved with decode steps (chunked prefill), so no
+        single request monopolises the device.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does PagedAttention enable prefix sharing, and what does that hand to L45?</p>
+        <details><summary>Reveal answer</summary><p>Because the cache is stored in non-contiguous fixed-size blocks referenced by a per-sequence block table, two sequences with
+        an identical prefix can point at the <em>same physical blocks</em> and only diverge on copy. That makes prefix caching a pointer operation
+        rather than a copy &mdash; which is exactly the mechanism behind context caching and cache-aware pricing: a shared prefix is stored once
+        and billed as a cheap read for every subsequent request.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your endpoint has a 25 ms ITL SLO. Using the table, what is the maximum batch at 32k context, and what throughput does that give?</p>
+        <details><summary>Reveal answer</summary><p>B = 32 gives 14.81 ms (within SLO); B = 128 gives 33.23 ms (violates it). Interpolating, the boundary sits somewhere
+        between 32 and 128 &mdash; solving 26 + B&times;0.576 GB &le; 25 ms &times; 3 TB/s = 75 GB gives B &le; (75&minus;26)/0.576 = <strong>85</strong>.
+        At B = 85, bytes per step = 26 + 85&times;0.576 = 74.96 GB, step time 24.99 ms, so throughput = 85/0.02499 &asymp; 3,401 tok/s. So the SLO caps you at ~85 rather than 128
+        &mdash; and that is the number to size the cluster with.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="43-training-cost.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L43 &middot; Training cost modeling: FLOPs, MFU, $ per run</span></a>
+    <a class="next" href="45-caching.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L45 &middot; Context caching, prefix caching &amp; cache-aware pricing</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

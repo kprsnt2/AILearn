@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d91">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L91 · Cost &amp; latency budgets: caching, routing, model cascades — AILearn</title>
+<meta name="description" content="A cascade cuts mean cost 72% but makes p95 latency worse than the direct path, because escalated requests pay both models serially. The break-even escalation rate and the SLO math.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L91</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L91 &middot; Cost &amp; latency budgets: caching, routing, model cascades</h1>
+  <p class="lede">A 12&times; price ratio makes a cascade look free: at a 20% escalation rate you save <strong>71.7%</strong>. But escalated requests pay the cheap model <em>and</em> the expensive one serially, so p95 latency goes <em>up</em> relative to the direct path &mdash; 1,800&nbsp;ms becomes more than 1,800&nbsp;ms. Cost and latency are separate budgets and you optimise them separately.</p>
+  <div class="chips">
+    <span class="chip">~35 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: cascade router with SLO gate</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">cascade routing</span>
+  <span class="pill">escalation rate break-even</span>
+  <span class="pill">escalation signal quality</span>
+  <span class="pill">p95 vs mean latency</span>
+  <span class="pill">prefix caching</span>
+  <span class="pill">SLO gate</span>
+  <span class="pill">cost per verified task</span>
+  <span class="pill">serial latency stacking</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d91-s1">1 &middot; Why it exists <a class="hook" href="#d91-s1">#</a></h2>
+
+    <p>The failure: <strong>the average user is happy and the p95 user is furious.</strong> You route every request to the strong
+    model. Mean latency 1,800 ms, cost $0.006/request, no surprises. You add a cascade &mdash; cheap model first, escalate when
+    unsure &mdash; and your dashboard's mean drops to 760 ms and cost falls 72%. Ship it. Then the support tickets arrive from
+    the 20% whose requests hit both models in sequence: <em>their</em> latency is now the cheap model's time plus the expensive
+    model's time, which is structurally worse than just calling the expensive model.</p>
+
+    <p>The second failure is a cascade without a usable confidence signal. If escalation fires at random, you pay both models
+    for the escalated share and gain accuracy only in proportion to the expensive model's advantage over a random sample &mdash;
+    measured below at 0.775 accuracy for a 30% random escalation rate, versus 0.8407 for a signal that escalates 50% when the
+    cheap model is wrong and only 5% when it is right. Same escalation rate, +6.6 accuracy points, pure signal quality.</p>
+
+    <p>The third failure is optimising the wrong metric entirely. Cost per <em>request</em> is not cost per <em>verified task</em>.
+    A cheap path that fails 20% of the time and requires a retry costs more than an expensive path that succeeds first time
+    &mdash; and the retry cost lives in a different allocation bucket, so nobody sees it.</p>
+
+    <div class="callout boss">
+      <p>Cost and latency are two separate budgets with different objectives: <strong>cost minimises expected dollars per
+      verified task; latency constrains a tail percentile (p95/p99), not the mean.</strong> A cascade is a cost instrument that
+      usually worsens the latency tail. Decide which budget binds before choosing the instrument, and gate each on its own
+      declared SLO.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d91-s2">2 &middot; The mental model <a class="hook" href="#d91-s2">#</a></h2>
+
+    <p>Three levers, in order of how much they change the economics and how little they change behaviour:</p>
+
+    <table class="table">
+      <thead><tr><th>Lever</th><th>Mechanism</th><th>Cost effect</th><th>Latency effect</th><th>Quality effect</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Caching</strong> (prefix, exact-match, semantic)</td><td>reuse a previous computation</td><td>large, multiplicative on hit rate</td><td>large, only on hits</td><td>none if the cache key is right; <strong>stale</strong> if it is wrong (L97)</td></tr>
+        <tr><td><strong>Cascade / routing</strong></td><td>cheap model first, escalate on signal</td><td><code>c_cheap + p&middot;c_exp</code></td><td><strong>mean improves, tail worsens</strong></td><td>depends entirely on escalation signal</td></tr>
+        <tr><td><strong>Cascade by task class</strong></td><td>route by task type rules</td><td>same as above but deterministic</td><td>deterministic per class; tail predictable</td><td>set by rule accuracy, debuggable</td></tr>
+      </tbody>
+    </table>
+
+    <p>The ordering matters: caching is first because it reduces work rather than redistributing it. A cascade that saves 72%
+    is impressive until you notice a 40% cache hit rate saves 40% with <em>zero</em> quality risk and improves latency on every
+    hit. Do the cheap, safe thing first.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a triage nurse and a specialist</h4><p>Cascade routing is triage. Nearly everyone sees the nurse; a signal sends some patients to the specialist. Cheap, and effective &mdash; but the patients who see both wait for both, so their total wait is longer than going straight to the specialist. Triage improves the average only because most patients never see the specialist.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A triage nurse's signal is based on patient presentation, and a missed case is caught later by a human. A model's confidence signal is <em>generated by the same model that may be wrong</em>, so the missed cases are exactly the ones the model is confidently wrong about &mdash; the escalation signal has a blind spot that correlates with the error. That is why an independent verifier (L76, L89) is a better escalation signal than self-reported confidence.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d91-s3">3 &middot; The mechanism <a class="hook" href="#d91-s3">#</a></h2>
+
+    <p>Expected cost of a two-tier cascade, and the escalation rate at which it stops paying:</p>
+
+    <div class="formula">
+      C<sub>cascade</sub> = c<sub>cheap</sub> + p<sub>esc</sub>&middot;c<sub>exp</sub> &nbsp;&nbsp;&nbsp;&nbsp;
+      p<sub>esc</sub>* = (c<sub>exp</sub> &minus; c<sub>cheap</sub>) / c<sub>exp</sub>
+      <span class="note">With <code>c_cheap/$0.0005</code> and <code>c_exp/$0.0060</code>, <code>p_esc* = 0.917</code>: the cascade is cheaper than going direct until <strong>91.7%</strong> of requests escalate. That is a very forgiving break-even &mdash; which is why cascades are popular &mdash; but it says nothing about latency or quality.</span>
+    </div>
+
+    <p>Latency, which is where the trap is:</p>
+
+    <div class="formula">
+      E[L] = t<sub>cheap</sub> + p<sub>esc</sub>&middot;t<sub>exp</sub> &nbsp;&nbsp;&nbsp;&nbsp; p95[L] = t<sub>cheap</sub> + t<sub>exp</sub> &nbsp; (if p<sub>esc</sub> &gt; 5%)
+      <span class="note">Escalated requests are serial, so their latency is the <em>sum</em>. With <code>t_cheap=400, t_exp=1800</code>: mean 760 ms at <code>p_esc=0.2</code> (a 58% mean improvement) but <strong>p95 = 2,200 ms, worse than the 1,800 ms direct path</strong>. A mean-based SLO passes; a p95 SLO fails.</span>
+    </div>
+
+    <p>Quality given an escalation signal with different rates on wrong vs right answers:</p>
+
+    <div class="formula">
+      p<sub>esc</sub> = p<sub>cheap</sub>&middot;q<sub>esc|right</sub> + (1&minus;p<sub>cheap</sub>)&middot;q<sub>esc|wrong</sub> &nbsp;&nbsp;&nbsp;&nbsp; A<sub>cascade</sub> = p<sub>cheap</sub>(1&minus;q<sub>esc|right</sub>) + p<sub>esc</sub>&middot;A<sub>exp</sub>
+      <span class="note"><code>q<sub>esc|wrong</sub> &minus; q<sub>esc|right</sub></code> is the <em>separation</em> of the signal, and it is the whole game. At <code>p_cheap=0.70, A_exp=0.95</code>: separation 0.75 (0.80 on wrong, 0.05 on right) gives <strong>0.9262</strong> accuracy at $0.00215; separation 0.30 gives 0.8407 at $0.00161; random escalation (separation 0) gives 0.7750 at $0.00230.</span>
+    </div>
+
+    <p>The router, with the SLO gates as code rather than as a dashboard.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">class</span> <span class="fn">Router</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, tiers, slo):
+        <span class="nm">self</span>.tiers = tiers          <span class="cm"># [(name, cost, latency_ms, accuracy), ...] cheapest first</span>
+        <span class="nm">self</span>.slo = slo              <span class="cm"># {"p95_ms": ..., "cost_per_task": ..., "min_accuracy": ...}</span>
+        <span class="nm">self</span>.stats = {<span class="st">"n"</span>: <span class="nm">0</span>, <span class="st">"cost"</span>: <span class="nm">0.0</span>, <span class="st">"lat"</span>: [], <span class="st">"correct"</span>: <span class="nm">0</span>}
+
+    <span class="kw">def</span> <span class="fn">route</span>(<span class="nm">self</span>, task, verifier):
+        <span class="cm"># Escalate on a VERIFIER result, not on model self-confidence.</span>
+        lat = <span class="nm">0.0</span>
+        <span class="kw">for</span> name, cost, ms, acc <span class="kw">in</span> <span class="nm">self</span>.tiers:
+            lat += ms
+            out = <span class="fn">call</span>(name, task)              <span class="cm"># cost is charged whether or not we escalate</span>
+            <span class="nm">self</span>.stats[<span class="st">"cost"</span>] += cost
+            ok = <span class="fn">verifier</span>(task, out)             <span class="cm"># independent oracle</span>
+            <span class="kw">if</span> ok:
+                <span class="kw">break</span>
+            <span class="kw">if</span> lat + <span class="nm">self</span>.tiers[<span class="nm">-1</span>][<span class="nm">2</span>] &gt; <span class="nm">self</span>.slo[<span class="st">"p95_ms"</span>]:
+                <span class="kw">break</span>                                    <span class="cm"># SLO gate: stop before blowing the tail</span>
+        <span class="nm">self</span>.stats[<span class="st">"n"</span>] += <span class="nm">1</span>
+        <span class="nm">self</span>.stats[<span class="st">"lat"</span>].<span class="fn">append</span>(lat)
+        <span class="nm">self</span>.stats[<span class="st">"correct"</span>] += ok
+        <span class="kw">return</span> out, ok
+
+    <span class="kw">def</span> <span class="fn">report</span>(<span class="nm">self</span>):
+        lat = <span class="fn">sorted</span>(<span class="nm">self</span>.stats[<span class="st">"lat"</span>])
+        n = <span class="fn">max</span>(<span class="nm">1</span>, <span class="nm">self</span>.stats[<span class="st">"n"</span>])
+        p95 = lat[<span class="fn">min</span>(<span class="fn">len</span>(lat)-<span class="nm">1</span>, <span class="fn">int</span>(<span class="nm">0.95</span>*<span class="fn">len</span>(lat)))] <span class="kw">if</span> lat <span class="kw">else</span> <span class="nm">0</span>
+        <span class="kw">return</span> {
+            <span class="st">"mean_cost"</span>: <span class="nm">self</span>.stats[<span class="st">"cost"</span>]/n,
+            <span class="st">"p95_latency"</span>: p95,
+            <span class="st">"accuracy"</span>: <span class="nm">self</span>.stats[<span class="st">"correct"</span>]/n,
+            <span class="st">"slo_ok"</span>: (p95 &lt;= <span class="nm">self</span>.slo[<span class="st">"p95_ms"</span>]
+                        <span class="kw">and</span> <span class="nm">self</span>.stats[<span class="st">"cost"</span>]/n &lt;= <span class="nm">self</span>.slo[<span class="st">"cost_per_task"</span>]
+                        <span class="kw">and</span> <span class="nm">self</span>.stats[<span class="st">"correct"</span>]/n &gt;= <span class="nm">self</span>.slo[<span class="st">"min_accuracy"</span>]),
+        }
+
+<span class="cm"># ---- the correct unit: cost per VERIFIED task, including retries ----</span>
+<span class="kw">def</span> <span class="fn">cost_per_verified</span>(p_success_first_try, cost_per_attempt, max_retries=<span class="nm">3</span>):
+    <span class="cm"># geometric: expected attempts before success</span>
+    expected_attempts = <span class="fn">min</span>(<span class="nm">1</span> / p_success_first_try, max_retries)
+    <span class="kw">return</span> expected_attempts * cost_per_attempt / <span class="nm">1</span>
+    </div>
+
+    <p>Three decisions in that code are the page. <strong>(1) Escalation is driven by a verifier, not by self-confidence</strong>
+    &mdash; the model that is wrong is the model that says it is right, so its confidence has poor separation on exactly the
+    items that matter. <strong>(2) The SLO gate can stop the cascade early</strong>: if escalating would blow the p95 budget, answer
+    with the cheap result and flag it, which is a degradation decision made explicitly rather than by timeout.
+    <strong>(3) <code>cost_per_verified</code> divides by success</strong>, which is the only cost metric that is comparable across
+    architectures.</p>
+
+    <div class="callout audit">
+      <p>The reviewer's question for any routing change: <strong>what is the p95 latency and the cost per <em>verified</em> task for
+      each route, and which SLO binds?</strong> A change that improves mean cost while worsening p95 is not an optimisation; it is
+      a trade, and it needs to be recorded as one with both numbers attached.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d91-s4">4 &middot; Your hands <a class="hook" href="#d91-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; The cascade's cost win and its latency tail</h4>
+      <p>12&times; price ratio, 4.5&times; latency ratio. Sweep the escalation rate and watch mean and p95 diverge.</p>
+      <div class="code" data-lang="python">
+C_CHEAP, C_EXP = <span class="nm">0.0005</span>, <span class="nm">0.0060</span>     <span class="cm"># 12x price ratio</span>
+T_CHEAP, T_EXP = <span class="nm">400</span>, <span class="nm">1800</span>           <span class="cm"># ms</span>
+
+<span class="kw">def</span> <span class="fn">cascade</span>(p_esc):
+    <span class="kw">return</span> C_CHEAP + p_esc*C_EXP, T_CHEAP + p_esc*T_EXP
+
+print(<span class="st">"p_esc  cost      saving   mean_ms  p95_ms"</span>)
+<span class="kw">for</span> p <span class="kw">in</span> (<span class="nm">0.1</span>, <span class="nm">0.2</span>, <span class="nm">0.3</span>, <span class="nm">0.5</span>, <span class="nm">0.9</span>, <span class="nm">1.0</span>):
+    c, l = <span class="fn">cascade</span>(p)
+    p95 = T_CHEAP + T_EXP <span class="kw">if</span> p &gt; <span class="nm">0.05</span> <span class="kw">else</span> T_CHEAP
+    print(<span class="st">f"{p:4.1f}  ${c:.5f}  {1-c/C_EXP:6.1%}   {l:7.0f}  {p95:6.0f}"</span>)
+print(<span class="st">f"\ndirect: ${C_EXP:.5f}  mean={T_EXP}ms  p95={T_EXP}ms"</span>)
+print(<span class="st">f"break-even p_esc = {(C_EXP-C_CHEAP)/C_EXP:.3f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>p_esc=0.1 cost=$0.00110 saving 81.7% mean=580ms p95=2200ms</code> &middot;
+      <code>0.2 $0.00170 71.7% 760ms 2200ms</code> &middot; <code>0.3 $0.00230 61.7% 940ms 2200ms</code> &middot;
+      <code>0.5 $0.00350 41.7% 1300ms 2200ms</code> &middot; <code>0.9 $0.00590 1.7% 2020ms 2200ms</code> &middot;
+      <code>1.0 $0.00650 &minus;8.3% 2200ms 2200ms</code>. Direct: <code>$0.00600 mean=1800ms p95=1800ms</code>,
+      break-even <code>p_esc = 0.917</code>.
+      The headline: at every escalation rate above 5%, <strong>p95 is 2,200 ms &mdash; strictly worse than the 1,800 ms direct
+      path</strong>, while mean cost is 62&ndash;82% lower. If your SLO is on the mean you will ship this; if it is on p95 you must
+      not, or you must bound escalation differently (e.g. escalate asynchronously, or route high-complexity classes directly to
+      the expensive tier).
+      <strong>Falsifier:</strong> if your measured p95 did not worsen, your escalated requests are running concurrently or the
+      cheap tier is nearly free in latency &mdash; measure the two durations separately before concluding the model is wrong.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Signal quality is worth more than the routing policy</h4>
+      <p>Same cheap/expensive models, same cost structure; only the escalation <em>signal</em> changes. The last row is random
+      escalation.</p>
+      <div class="code" data-lang="python">
+C_CHEAP, C_EXP = <span class="nm">0.0005</span>, <span class="nm">0.0060</span>
+
+<span class="kw">def</span> <span class="fn">cascade_quality</span>(p_cheap, p_exp, q_esc_wrong, q_esc_right):
+    p_esc = p_cheap*q_esc_right + (<span class="nm">1</span>-p_cheap)*q_esc_wrong
+    acc = p_cheap*(<span class="nm">1</span>-q_esc_right) + p_esc*p_exp
+    <span class="kw">return</span> C_CHEAP + p_esc*C_EXP, p_esc, acc
+
+print(<span class="st">"cheap acc=0.70, exp acc=0.95"</span>)
+print(<span class="st">"q_wrong q_right  cost      p_esc  accuracy"</span>)
+<span class="kw">for</span> qw, qr <span class="kw">in</span> ((<span class="nm">0.2</span>,<span class="nm">0.05</span>), (<span class="nm">0.5</span>,<span class="nm">0.05</span>), (<span class="nm">0.8</span>,<span class="nm">0.05</span>),
+                 (<span class="nm">1.0</span>,<span class="nm">0.05</span>), (<span class="nm">0.8</span>,<span class="nm">0.30</span>), (<span class="nm">0.3</span>,<span class="nm">0.30</span>)):
+    c, pe, a = <span class="fn">cascade_quality</span>(<span class="nm">0.70</span>, <span class="nm">0.95</span>, qw, qr)
+    print(<span class="st">f"  {qw:.2f}   {qr:.2f}   ${c:.5f}  {pe:.2f}   {a:.4f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>0.20 0.05 $0.00107 p_esc 0.20 acc 0.7552</code> &middot;
+      <code>0.50 0.05 $0.00161 0.20 0.8407</code> &middot; <code>0.80 0.05 $0.00215 0.36 0.9262</code> &middot;
+      <code>1.00 0.05 $0.00251 0.44 0.9832</code> &middot; <code>0.80 0.30 $0.00320 0.44 0.9175</code> &middot;
+      <code>0.30 0.30 $0.00230 0.30 0.7750</code> (random signal).
+      Compare the last two: same 30% escalation rate, but the signal-quality version (0.8/0.05) costs
+      <code>$0.00320</code> and gets <strong>0.9262</strong>, while random costs <code>$0.00230</code> and gets <strong>0.7750</strong>.
+      Random escalation buys 7.5 accuracy points for a 12&times; cheaper model &mdash; because escalating at random means you re-roll
+      a model that was already right 70% of the time. A perfect signal (1.00/0.05) reaches 0.9832, above the expensive model
+      alone.
+      <strong>Falsifier:</strong> if your cascade's accuracy equals the random-escalation column, your "confidence" output is not
+      informative &mdash; measure separation directly (accuracy on escalated vs non-escalated items) before tuning thresholds.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Cache before you cascade (copy-paste)</h4>
+      <p>The same query mix, three architectures. Caching is applied first because it removes work rather than redistributing it.</p>
+      <div class="code" data-lang="python">
+C_EXP, T_EXP = <span class="nm">0.0060</span>, <span class="nm">1800</span>
+
+<span class="kw">def</span> <span class="fn">with_cache</span>(hit):
+    <span class="cm"># hits cost ~0 and return in ~0 ms; misses go straight to the expensive model</span>
+    <span class="kw">return</span> (<span class="nm">1</span>-hit)*C_EXP, (<span class="nm">1</span>-hit)*T_EXP
+
+<span class="kw">def</span> <span class="fn">cascade_with_cache</span>(hit, p_esc):
+    mc = <span class="nm">1</span>-hit
+    cost = mc*(<span class="nm">0.0005</span> + p_esc*C_EXP)
+    mean = mc*(<span class="nm">400</span> + p_esc*T_EXP)
+    p95 = mc*(<span class="nm">400</span> + T_EXP) <span class="kw">if</span> p_esc &gt; <span class="nm">0.05</span> <span class="kw">else</span> mc*<span class="nm">400</span>
+    <span class="kw">return</span> cost, mean, p95
+
+print(<span class="st">"arch                     cost     mean_ms  p95_ms"</span>)
+c, m, p = <span class="fn">with_cache</span>(<span class="nm">0.0</span>)
+print(<span class="st">f"direct, no cache        ${c:.5f}  {m:7.0f}  {p:6.0f}"</span>)
+c, m, p = <span class="fn">with_cache</span>(<span class="nm">0.4</span>)
+print(<span class="st">f"direct, 40% cache       ${c:.5f}  {m:7.0f}  {p:6.0f}"</span>)
+c, m, p = <span class="fn">cascade_with_cache</span>(<span class="nm">0.0</span>, <span class="nm">0.2</span>)
+print(<span class="st">f"cascade(0.2), no cache  ${c:.5f}  {m:7.0f}  {p:6.0f}"</span>)
+c, m, p = <span class="fn">cascade_with_cache</span>(<span class="nm">0.4</span>, <span class="nm">0.2</span>)
+print(<span class="st">f"cascade(0.2) + 40% cache${c:.5f}  {m:7.0f}  {p:6.0f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>direct, no cache        $0.00600   1800  1800</code> &middot;
+      <code>direct, 40% cache       $0.00360   1080  1080</code> &middot;
+      <code>cascade(0.2), no cache  $0.00170    760  2200</code> &middot;
+      <code>cascade(0.2) + 40% cache $0.00102   456  1320</code>.
+      The reading is a decision: <strong>40% cache alone</strong> gives cost at 60% of direct and mean latency at 60% of direct with
+      <em>zero</em> quality change, because a hit returns the identical answer. The <strong>cascade alone</strong> gives the largest cost
+      cut but a p95 of 2,200 ms that exceeds the direct path's 1,800 ms. <strong>Cascade + cache</strong> wins on every column, and its
+      p95 (1,320 ms) is <em>lower than direct</em> &mdash; because 40% of traffic never enters the cascade. The ordering rule: cache
+      first (free, safe), then route (a cost-for-quality trade), then optimise the tail.
+      <strong>Falsifier:</strong> if your cache hit rate is near zero, none of this applies &mdash; investigate why before architecting
+      around a lever you do not have.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d91-s5">5 &middot; Failure modes <a class="hook" href="#d91-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Mean-SLO cascade.</strong> p95 regresses while the dashboard improves. Symptom: average latency down, support tickets up; the p95 series was never on the dashboard.</li>
+        <li><strong>Self-confidence escalation.</strong> The model's own confidence gates escalation. Symptom: accuracy on escalated items ≈ accuracy on non-escalated &mdash; the signal has no separation, so the cascade is random escalation with extra cost.</li>
+        <li><strong>Cascade on a cheap-first-strategy with low base accuracy.</strong> Cheap model at 0.60 accuracy escalates constantly. Symptom: <code>p_esc</code> near 1.0, cascade cost approaches or exceeds direct (the 0.917 break-even).</li>
+        <li><strong>Cost per request.</strong> Optimising the wrong denominator. Symptom: per-request cost falls while cost per successful task rises because retries increased.</li>
+        <li><strong>Cache poisoning / staleness.</strong> Semantic cache returns a near-match for a different question. Symptom: confidently wrong answers on a small subset; traceable to a cache hit with a similarity just below threshold (L97).</li>
+        <li><strong>Cache key instability.</strong> Timestamps or unordered tool lists in the cached prefix. Symptom: hit rate near zero despite repeated identical queries.</li>
+        <li><strong>Timeout as the implicit SLO.</strong> No explicit latency gate, so slow paths truncate. Symptom: a spike in <code>timeout</code> status spans precisely at the provider's limit; partial outputs downstream.</li>
+        <li><strong>Router drift.</strong> Task-class rules tuned on old data. Symptom: escalation rate creeps up over weeks with no deploy; cost rises silently.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d91-s6">6 &middot; Connects to <a class="hook" href="#d91-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="90-observability.html">L90 &middot; Traces</a>,
+    <a class="tag-c" href="../track-c/69-reasoning-effort.html">L69 &middot; Effort budgets</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="92-reliability.html">L92 &middot; Reliability</a>,
+    <a class="tag-d" href="98-finetune-vs-rag.html">L98 &middot; Decision matrix</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="90-observability.html">L90 &middot; Observability</a> &mdash; per-span cost and latency are the inputs; without them the router is tuned by intuition.</li>
+      <li><a class="tag-b" href="../track-b/45-caching.html">L45 &middot; Caching</a> &mdash; the multiplier this page ranks first.</li>
+      <li><a class="tag-b" href="../track-b/44-inference-serving.html">L44 &middot; Serving</a> &mdash; continuous batching and PagedAttention set the floor on <code>t_exp</code>.</li>
+      <li><a class="tag-b" href="../track-b/35-long-context.html">L35 &middot; Long context</a> &mdash; the quadratic term that makes the p95 tail expensive in <em>tokens</em>, not just time.</li>
+      <li><a class="tag-c" href="../track-c/69-reasoning-effort.html">L69 &middot; Reasoning effort</a> &mdash; <code>reasoning_effort</code> is a per-request cost dial; routing by effort is a cascade with a finer granularity.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; a routing policy is a change that needs a paired eval on accuracy, not just a cost dashboard.</li>
+      <li><a class="tag-d" href="96-production-checklist.html">L96 &middot; Checklist</a> &mdash; the p95 and cost-per-verified SLOs are go/no-go items.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d91-s7">7 &middot; Self-check <a class="hook" href="#d91-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Cheap tier $0.0004 / 300 ms, expensive $0.0080 / 2000 ms, escalation rate 25%. Give cost, saving, mean and p95 latency, and say whether to ship if the SLO is p95 &lt; 2,000 ms.</p>
+        <details><summary>Reveal answer</summary><p>Cost <code>= 0.0004 + 0.25&times;0.0080 = $0.00240</code>, saving <code>1 &minus; 0.0024/0.0080 = 70%</code>. Mean latency <code>= 300 + 0.25&times;2000 = 800 ms</code> (a 60% improvement over 2,000). p95 <code>= 300 + 2000 = 2,300 ms</code> &mdash; <strong>exceeds the 2,000 ms SLO</strong>. Do not ship as configured. Options: route predictably-hard classes straight to the expensive tier (they skip the cheap model, so their latency is 2,000 not 2,300); escalate asynchronously and return the cheap answer immediately; or reduce the escalation rate below 5% so p95 stays on the cheap path.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Derive the break-even escalation rate and explain why it is so high.</p>
+        <details><summary>Reveal answer</summary><p>Set <code>c_cheap + p&middot;c_exp = c_exp</code>, giving <code>p* = (c_exp &minus; c_cheap)/c_exp = 1 &minus; c_cheap/c_exp</code>. It is high because the cheap model's cost is a small fraction of the expensive one: at a 12&times; ratio, <code>p* = 1 &minus; 1/12 = 0.917</code>. Intuition: even if you almost always escalate, you only pay an extra 1/12 of a request, because most of the money was going to the expensive model anyway. This is also why the break-even is a trap &mdash; it guarantees the cascade is <em>cheaper</em> at almost any escalation rate, so cost analysis alone will always endorse a cascade, and the real constraint is p95 latency and accuracy per unit cost.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Your cascade escalates 40% of requests. Accuracy on escalated items is 0.91 and on non-escalated items is 0.88. What does that mean?</p>
+        <details><summary>Reveal answer</summary><p>The escalation signal has almost no separation &mdash; escalated items are only 3 points harder than non-escalated ones, so escalation is nearly random. Expected random-escalation accuracy at 40% would be roughly 0.40&times;0.95 + 0.60&times;(cheap accuracy) &mdash; check by computing it. Implication: the confidence signal is not working. Replace it: use a verifier result, a schema check, or a small classification model trained on labelled hard/easy items, and re-measure the gap. A useful signal typically shows a large gap (e.g. 0.55 on escalated vs 0.97 on retained) because it is <em>supposed</em> to concentrate failures.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: per-request cost fell 60%, but monthly spend is flat. What happened?</p>
+        <details><summary>Reveal answer</summary><p>Volume rose, or retries rose. The most common cause in a cascade deployment is that the cheap tier's answers fail verification more often, so the system retries &mdash; and retries are separate requests that each look cheap, so per-request cost improves while total spend does not. Measure <strong>cost per verified task</strong> (<code>expected_attempts &times; cost_per_attempt</code>) rather than cost per request, and break the trace down by whether the request was a retry. Flat monthly spend with falling per-request cost is an architecture that is failing and refunding.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does caching come before cascading in the optimisation order?</p>
+        <details><summary>Reveal answer</summary><p>Because caching <em>removes work</em> while cascading <em>redistributes</em> it. A cache hit costs approximately nothing, returns fast, and produces the identical answer &mdash; so it improves cost and latency with zero accuracy risk (provided the key is correct). A cascade trades accuracy and latency for cost, which is a decision that needs evaluation. Optimising in the wrong order wastes effort: a 40% cache hit rate delivers 40% savings before you touch the router, and it <em>also</em> shrinks the cascade's p95 problem, because 40% of traffic never enters the cascade at all.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="90-observability.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L90 &middot; Observability &amp; tracing</span></a>
+    <a class="next" href="92-reliability.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L92 &middot; Reliability</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

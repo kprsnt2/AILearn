@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d77">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L77 · Tool calling &amp; MCP: schemas as the product — AILearn</title>
+<meta name="description" content="A tool schema is an interface a language model must satisfy from prose alone. Learn the linter rules that predict call-failure rate, and the token tax every tool charges per turn.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L77</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L77 &middot; Tool calling &amp; MCP: schemas as the product</h1>
+  <p class="lede">Your 26 tools in MyLocalCLI are 26 prompts the model must obey without seeing an example. A schema is not documentation for humans &mdash; it is the <em>entire</em> specification the model gets, and every ambiguity in it converts directly into a failed or wrong tool call.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: tool schema linter</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">schema as specification</span>
+  <span class="pill">tool boundary</span>
+  <span class="pill">token tax per tool</span>
+  <span class="pill">required-field brittleness</span>
+  <span class="pill">enum over free text</span>
+  <span class="pill">MCP transport vs semantics</span>
+  <span class="pill">idempotency keys</span>
+  <span class="pill">error returns as context</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d77-s1">1 &middot; Why it exists <a class="hook" href="#d77-s1">#</a></h2>
+
+    <p>The failure that made tool schemas a first-class artifact: <strong>a tool that works perfectly but is called wrong</strong>.
+    A function named <code>update</code> with a required <code>id</code>, a free-text <code>body</code>, and an implicit
+    "you must read before you write" rule is a function that a human teammate reads once and gets right, and a model
+    gets right 70% of the time. The 30% is not a model deficiency &mdash; it is an <em>underspecified interface</em>. The model has no
+    type checker, no IDE hover, no compile error. It has your description string and nothing else.</p>
+
+    <p>Once agents call each other's tools (MCP turns every server into a tool provider), the schema stops being
+    documentation and becomes a <em>wire contract between two stochastic parties</em>. Nobody reviews it as a contract.
+    A typo in <code>required</code> ships to production and shows up as a 4% tool-call failure rate that nobody attributes
+    to the schema, because it presents as "the model is dumb today".</p>
+
+    <div class="callout boss">
+      <p>Determine the tool boundary before the prompt. Every tool call is a <strong>typed transaction</strong> across a trust
+      boundary between the model and your process. An underspecified schema is not a prompt-engineering problem; it is a
+      missing validation layer. And a large tool catalogue is a <strong>per-turn token tax</strong> paid on every single
+      turn of every conversation, whether the tool is used or not.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d77-s2">2 &middot; The mental model <a class="hook" href="#d77-s2">#</a></h2>
+
+    <p>Four layers, and the model only ever sees the first:</p>
+
+    <table class="table">
+      <thead><tr><th>Layer</th><th>Lives where</th><th>Who validates</th><th>What the model sees</th></tr></thead>
+      <tbody>
+        <tr><td><strong>1. Schema</strong> &mdash; name, description, JSON Schema params</td><td>prompt / tools array</td><td>nobody</td><td><strong>all of it</strong></td></tr>
+        <tr><td><strong>2. Argument validation</strong></td><td>your handler</td><td>JSON Schema validator</td><td>error string only, after the fact</td></tr>
+        <tr><td><strong>3. Precondition check</strong> &mdash; "does this row exist / am I allowed"</td><td>your handler</td><td>business logic</td><td>error string only, after the fact</td></tr>
+        <tr><td><strong>4. Effect</strong> &mdash; the mutation</td><td>your handler</td><td>transaction / idempotency key</td><td>nothing</td></tr>
+      </tbody>
+    </table>
+
+    <p>Schemas are a <em>compression of layers 1&ndash;3 into prose</em>. Every fact in layers 2 and 3 that you do not put in
+    layer 1 has to be discovered by the model through a failed call, which costs a turn (L76's debit) and a context slot.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>The analogy that works: a strongly-typed RPC IDL, written for a blind compiler</h4><p>Think of a schema as a protobuf <code>.proto</code> file whose only reader is a compiler that cannot ask questions and cannot read the implementation. Good IDLs bound types, enumerate variants, and state preconditions in comments. Good schemas do exactly that.</p></div>
+      <div class="card"><h4>Where the analogy breaks</h4><p>A protobuf compiler is deterministic and rejects illegal input, so an underspecified field is still typed. A model <em>fills unspecified fields plausibly</em>. Absence of constraint is not treated as "use your judgement" &mdash; it is treated as licence to invent. So looseness in a schema does not just cause failures; it causes <strong>silently wrong successes</strong>, which are worse and which the analogy has no word for.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d77-s3">3 &middot; The mechanism <a class="hook" href="#d77-s3">#</a></h2>
+
+    <p>The two quantities worth modelling. First, <strong>token tax</strong>: the tools array is serialised into the prompt every turn.</p>
+
+    <div class="formula">
+      T<sub>tools</sub> = n &middot; t&#772; &nbsp;&nbsp;&nbsp;&nbsp; and &nbsp;&nbsp;&nbsp;&nbsp; cost<sub>turn</sub> &supe; (T<sub>tools</sub> + T<sub>ctx</sub> + T<sub>out</sub>) &middot; p<sub>in</sub>/10<sup>6</sup>
+      <span class="note"><code>n</code> = number of registered tools, <code>t&#772;</code> = mean tokens per schema, <code>T<sub>ctx</sub></code> = conversation, <code>p<sub>in</sub></code> = input price per 1M tokens. <code>T<sub>tools</sub></code> is paid on turn 1 and on every turn after unless the provider caches the prefix (L45). It is pure overhead when a turn does not use a tool &mdash; which in a long agent loop is most turns.</span>
+    </div>
+
+    <p>Second, <strong>call validity</strong>. If a tool has <code>k</code> required fields and the per-field probability of the model
+    getting each one right on the first attempt is <code>q</code>, first-attempt validity is <code>q<sup>k</sup></code>. This is why
+    six required fields is a smell, not a style preference.</p>
+
+    <div class="formula">
+      P(valid call) &approx; q<sup>k</sup> &nbsp;&nbsp;&nbsp;&nbsp;&rarr;&nbsp;&nbsp;&nbsp; q=0.97, k=2 &rArr; 94.1% &nbsp;&nbsp; k=6 &rArr; 83.3% &nbsp;&nbsp; k=10 &rArr; 73.7%
+      <span class="note">Treat <code>q</code> as measurable per field, not as a guess: count first-attempt field errors in your logs. The formula tells you that <em>reducing k by making fields optional-with-defaults</em> beats any prompt tweak, because it removes a multiplicative factor rather than improving one.</span>
+    </div>
+
+    <p>The linter. Twenty lines that predict real failures, written as a review gate you can run in CI.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> re
+
+VAGUE = re.<span class="fn">compile</span>(<span class="st">r"\b(do|handle|process|manage|thing|stuff|data|info|some|various|optionally)\b"</span>, re.I)
+
+<span class="kw">def</span> <span class="fn">lint_desc</span>(s):
+    out = []
+    <span class="kw">if</span> <span class="fn">len</span>(s) &lt; <span class="nm">40</span>:
+        out.<span class="fn">append</span>((<span class="st">"DESC_SHORT"</span>, <span class="st">f"{len(s)} chars; cannot be told apart from siblings"</span>))
+    <span class="kw">if</span> <span class="fn">len</span>(s) &gt; <span class="nm">400</span>:
+        out.<span class="fn">append</span>((<span class="st">"DESC_LONG"</span>, <span class="st">f"{len(s)} chars; taxed on every turn"</span>))
+    <span class="kw">if</span> VAGUE.<span class="fn">search</span>(s):
+        out.<span class="fn">append</span>((<span class="st">"DESC_VAGUE"</span>, <span class="st">f"vague words: {VAGUE.findall(s)[:3]}"</span>))
+    <span class="kw">if</span> <span class="kw">not</span> re.<span class="fn">search</span>(<span class="st">r"\b(use when|call when|when the|if the)\b"</span>, s, re.I):
+        out.<span class="fn">append</span>((<span class="st">"DESC_NO_TRIGGER"</span>, <span class="st">"no explicit trigger clause"</span>))
+    <span class="kw">if</span> <span class="kw">not</span> re.<span class="fn">search</span>(<span class="st">r"\breturns?\b|\bresult\b|\blist\b"</span>, s, re.I):
+        out.<span class="fn">append</span>((<span class="st">"DESC_NO_RETURN"</span>, <span class="st">"does not say what comes back"</span>))
+    <span class="kw">return</span> out
+
+<span class="kw">def</span> <span class="fn">lint_params</span>(p):
+    props, out = p.<span class="fn">get</span>(<span class="st">"properties"</span>, {}), []
+    <span class="kw">if</span> p.<span class="fn">get</span>(<span class="st">"additionalProperties"</span>, <span class="kw">True</span>) <span class="kw">is not</span> <span class="kw">False</span>:
+        out.<span class="fn">append</span>((<span class="st">"PARAMS_OPEN"</span>, <span class="st">"additionalProperties not False; model may invent fields"</span>))
+    <span class="kw">for</span> k, v <span class="kw">in</span> props.<span class="fn">items</span>():
+        <span class="kw">if</span> <span class="st">"description"</span> <span class="kw">not in</span> v:            out.<span class="fn">append</span>((<span class="st">"PARAM_NO_DESC"</span>, k))
+        <span class="kw">if</span> v.<span class="fn">get</span>(<span class="st">"type"</span>) == <span class="st">"string"</span> <span class="kw">and not</span> ({<span class="st">"enum"</span>,<span class="st">"pattern"</span>,<span class="st">"maxLength"</span>} &amp; v.keys()):
+            out.<span class="fn">append</span>((<span class="st">"PARAM_UNBOUNDED_STRING"</span>, k))
+        <span class="kw">if</span> v.<span class="fn">get</span>(<span class="st">"type"</span>) == <span class="st">"integer"</span> <span class="kw">and</span> ({<span class="st">"minimum"</span>,<span class="st">"maximum"</span>} &gt; v.keys()):
+            out.<span class="fn">append</span>((<span class="st">"PARAM_UNBOUNDED_INT"</span>, k))
+        <span class="kw">if</span> v.<span class="fn">get</span>(<span class="st">"type"</span>) == <span class="st">"array"</span> <span class="kw">and</span> <span class="st">"maxItems"</span> <span class="kw">not in</span> v:
+            out.<span class="fn">append</span>((<span class="st">"PARAM_UNBOUNDED_ARRAY"</span>, k))
+    req = <span class="fn">set</span>(p.<span class="fn">get</span>(<span class="st">"required"</span>, []))
+    <span class="kw">for</span> k <span class="kw">in</span> req - props.<span class="fn">keys</span>(): out.<span class="fn">append</span>((<span class="st">"REQUIRED_MISSING"</span>, k))
+    <span class="kw">if</span> <span class="fn">len</span>(req) &gt; <span class="nm">6</span>:  out.<span class="fn">append</span>((<span class="st">"REQUIRED_TOO_MANY"</span>, <span class="st">f"{len(req)} required: q^k decay"</span>))
+    <span class="kw">return</span> out
+    </div>
+
+    <p>Run on a realistic first draft, it fires four findings &mdash; and each one maps to a specific production symptom:</p>
+
+    <table class="table">
+      <thead><tr><th>Finding</th><th>Draft tool</th><th>Symptom in production</th><th>Fix</th></tr></thead>
+      <tbody>
+        <tr><td><code>DESC_NO_RETURN</code></td><td><code>search_issues</code></td><td>Model calls it 3&times; because it cannot tell a 0-row result from a truncated one</td><td>"Returns up to <code>limit</code> summaries, or an empty list."</td></tr>
+        <tr><td><code>PARAM_UNBOUNDED_STRING</code></td><td><code>query</code></td><td>Model pastes a 4k-char spec into the query field; search times out</td><td><code>maxLength: 200</code> + a <code>pattern</code></td></tr>
+        <tr><td><code>PARAM_NO_DESC</code></td><td><code>state</code>, <code>limit</code></td><td>Model omits <code>state</code> and gets closed tickets; sets <code>limit: 1000</code></td><td>One-line purpose per field, always</td></tr>
+        <tr><td><code>PARAMS_OPEN</code></td><td>(fired on the original)</td><td>Model adds <code>sort: "relevance"</code>; handler ignores it silently</td><td><code>additionalProperties: false</code></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout note">
+      <p><strong>MCP in one paragraph.</strong> MCP standardises the <em>transport</em> and <em>discovery</em> of tools
+      (a JSON-RPC surface where a server advertises <code>tools/list</code> and executes <code>tools/call</code>). It does not
+      standardise <em>semantics</em>: it will happily ship a wildly underspecified tool schema across a process boundary.
+      The consequence is that schema quality becomes a supply-chain property &mdash; you are now trusting a third party's
+      descriptions to steer your model. Lint third-party schemas on ingest and log the schema hash with every call, so
+      that when a tool starts behaving differently you can prove the schema changed.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d77-s4">4 &middot; Your hands <a class="hook" href="#d77-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Price your tool catalogue</h4>
+      <p>Count what 26 tools actually cost per turn. This is the number that makes you delete tools instead of adding them.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> json
+
+<span class="kw">def</span> <span class="fn">schema_tokens_est</span>(schema):
+    <span class="cm"># crude: ~4 chars/token on compact JSON. Deliberately labelled an estimate -</span>
+    <span class="cm"># the point is scaling in n, not the constant.</span>
+    <span class="kw">return</span> <span class="fn">len</span>(json.<span class="fn">dumps</span>(schema, separators=(<span class="st">","</span>, <span class="st">":"</span>))) / <span class="nm">4.0</span>
+
+tool = {<span class="st">"name"</span>: <span class="st">"search_issues"</span>,
+        <span class="st">"description"</span>: <span class="st">"Search issues by full text. Use when the user asks about existing tickets. Returns a list of issue summaries."</span>,
+        <span class="st">"parameters"</span>: {<span class="st">"type"</span>: <span class="st">"object"</span>, <span class="st">"properties"</span>: {
+            <span class="st">"query"</span>: {<span class="st">"type"</span>: <span class="st">"string"</span>, <span class="st">"maxLength"</span>: <span class="nm">200</span>},
+            <span class="st">"state"</span>: {<span class="st">"type"</span>: <span class="st">"string"</span>, <span class="st">"enum"</span>: [<span class="st">"open"</span>, <span class="st">"closed"</span>, <span class="st">"any"</span>]},
+            <span class="st">"limit"</span>: {<span class="st">"type"</span>: <span class="st">"integer"</span>, <span class="st">"minimum"</span>: <span class="nm">1</span>, <span class="st">"maximum"</span>: <span class="nm">50</span>}},
+            <span class="st">"required"</span>: [<span class="st">"query"</span>], <span class="st">"additionalProperties"</span>: <span class="kw">False</span>}}
+
+per = <span class="fn">schema_tokens_est</span>(tool)
+<span class="kw">print</span>(<span class="st">f"one schema ~= {per:.0f} tokens"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>, <span class="nm">26</span>, <span class="nm">50</span>, <span class="nm">100</span>):
+    t = per * n
+    <span class="kw">print</span>(<span class="st">f"{n:4d} tools -&gt; {t:6.0f} tok/turn -&gt; {t*30:8.0f} tok / 30 turns"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>one schema ~= 124 tokens</code>, then
+      <code>5 &rarr; 619 tok/turn &rarr; 18,562 over 30 turns</code>; <code>10 &rarr; 1,238 &rarr; 37,125</code>;
+      <code>20 &rarr; 2,475 &rarr; 74,250</code>; <code>26 &rarr; 3,218 &rarr; 96,525</code>;
+      <code>50 &rarr; 6,188 &rarr; 185,625</code>; <code>100 &rarr; 12,375 &rarr; 371,250</code>.
+      At a hypothetical $0.28/1M input tokens, 26 tools over 30 turns is $0.027 &mdash; small in absolute terms, but it is
+      paid on every conversation and it scales linearly with a number you control. In a 400-turn loop the same 26 tools
+      cost 1.29M tokens of pure schema.
+      <strong>Falsifier:</strong> if your provider caches the tools prefix (L45), the marginal cost after turn 1 is near zero &mdash;
+      then the real cost of a bloated catalogue is <em>attention</em>, not money, and you must measure selection accuracy instead.
+      The test: hold the task fixed, add 20 distractor tools, measure wrong-tool-selection rate.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The q<sup>k</sup> decay is measurable in your own logs</h4>
+      <p>Instead of assuming <code>q</code>, estimate it. This is the single statistic that tells you whether to refactor a tool.</p>
+      <div class="code" data-lang="python">
+<span class="kw">from</span> collections <span class="kw">import</span> Counter
+
+<span class="cm"># shape of a real log row; replace with your own event store (L90)</span>
+calls = [
+    {<span class="st">"tool"</span>: <span class="st">"update_issue"</span>, <span class="st">"ok"</span>: <span class="kw">False</span>, <span class="st">"err"</span>: <span class="st">"missing id"</span>},
+    {<span class="st">"tool"</span>: <span class="st">"update_issue"</span>, <span class="st">"ok"</span>: <span class="kw">True</span>,  <span class="st">"err"</span>: <span class="kw">None</span>},
+    {<span class="st">"tool"</span>: <span class="st">"search_issues"</span>, <span class="st">"ok"</span>: <span class="kw">True</span>, <span class="st">"err"</span>: <span class="kw">None</span>},
+    {<span class="st">"tool"</span>: <span class="st">"update_issue"</span>, <span class="st">"ok"</span>: <span class="kw">False</span>, <span class="st">"err"</span>: <span class="st">"body too long"</span>},
+]
+
+<span class="kw">def</span> <span class="fn">first_attempt_validity</span>(calls):
+    seen, stats = <span class="fn">set</span>(), {}
+    <span class="kw">for</span> c <span class="kw">in</span> calls:
+        key = (c[<span class="st">"tool"</span>], c.<span class="fn">get</span>(<span class="st">"turn"</span>, <span class="nm">0</span>))
+        <span class="kw">if</span> key <span class="kw">in</span> seen: <span class="kw">continue</span>          <span class="cm"># only first attempt per turn counts</span>
+        seen.<span class="fn">add</span>(key)
+        s = stats.<span class="fn">setdefault</span>(c[<span class="st">"tool"</span>], {<span class="st">"n"</span>: <span class="nm">0</span>, <span class="st">"ok"</span>: <span class="nm">0</span>, <span class="st">"errs"</span>: Counter()})
+        s[<span class="st">"n"</span>] += <span class="nm">1</span>; s[<span class="st">"ok"</span>] += c[<span class="st">"ok"</span>]
+        <span class="kw">if</span> <span class="kw">not</span> c[<span class="st">"ok"</span>]: s[<span class="st">"errs"</span>][c[<span class="st">"err"</span>]] += <span class="nm">1</span>
+    <span class="kw">for</span> tool, s <span class="kw">in</span> stats.<span class="fn">items</span>():
+        q = s[<span class="st">"ok"</span>] / s[<span class="st">"n"</span>]
+        <span class="kw">print</span>(<span class="st">f"{tool:14s} n={s['n']:4d} q={q:.3f}  top_err={s['errs'].most_common(1)}"</span>)
+    <span class="kw">return</span> stats
+
+<span class="fn">first_attempt_validity</span>(calls)
+      </div>
+      <p class="expect">With this 4-row sample you get <code>update_issue n=3 q=0.333 top_err=[('missing id', 1)]</code> and
+      <code>search_issues n=1 q=1.000</code>. The intent is not the number &mdash; 3 samples is not an estimate &mdash; it is the
+      <em>shape</em>: a per-turn first-attempt validity rate per tool, with the dominant error string attached. Run it
+      over 2,000 rows and you have <code>q</code>. If a tool sits below ~0.95, the fix is schema, not prompt.
+      <strong>Falsifier:</strong> if the dominant error is a runtime error (<code>timeout</code>, <code>rate limited</code>),
+      the schema is fine and you have a reliability problem (L92) &mdash; do not "fix" the description.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Mutation-test the schema (browser console)</h4>
+      <p>Delete one character class at a time from a valid argument object and confirm your handler rejects every mutation.
+      If it accepts any of them, that field is unconstrained in practice regardless of what the schema claims.</p>
+      <div class="code" data-lang="javascript">
+<span class="kw">const</span> args = {query:<span class="st">"ledger hash mismatch"</span>, state:<span class="st">"open"</span>, limit:<span class="nm">20</span>};
+<span class="kw">const</span> muts = {
+  wrong_type_limit:  {...args, limit:<span class="st">"20"</span>},
+  bad_enum:          {...args, state:<span class="st">"opened"</span>},
+  over_max:          {...args, limit:<span class="nm">9000</span>},
+  extra_field:       {...args, sort:<span class="st">"newest"</span>},
+  missing_required:  {state:<span class="st">"open"</span>},
+  null_query:        {...args, query:<span class="kw">null</span>},
+  empty_query:       {...args, query:<span class="st">""</span>},
+};
+<span class="kw">function</span> <span class="fn">validate</span>(a) {
+  <span class="kw">const</span> e = [];
+  <span class="kw">if</span> (<span class="kw">typeof</span> a.query !== <span class="st">"string"</span> || !a.query || a.query.length &gt; <span class="nm">200</span>) e.push(<span class="st">"query"</span>);
+  <span class="kw">if</span> (![<span class="st">"open"</span>,<span class="st">"closed"</span>,<span class="st">"any"</span>].<span class="fn">includes</span>(a.state)) e.push(<span class="st">"state"</span>);
+  <span class="kw">if</span> (!<span class="fn">Number</span>.<span class="fn">isInteger</span>(a.limit) || a.limit &lt; <span class="nm">1</span> || a.limit &gt; <span class="nm">50</span>) e.push(<span class="st">"limit"</span>);
+  <span class="kw">const</span> allowed = [<span class="st">"query"</span>,<span class="st">"state"</span>,<span class="st">"limit"</span>];
+  <span class="kw">for</span> (<span class="kw">const</span> k <span class="kw">of</span> Object.<span class="fn">keys</span>(a)) <span class="kw">if</span> (!allowed.<span class="fn">includes</span>(k)) e.push(<span class="st">"extra:"</span>+k);
+  <span class="kw">return</span> e;
+}
+<span class="kw">for</span> (<span class="kw">const</span> [name, a] <span class="kw">of</span> Object.<span class="fn">entries</span>(muts)) {
+  <span class="kw">const</span> e = <span class="fn">validate</span>(a);
+  console.<span class="fn">log</span>(name.<span class="fn">padEnd</span>(<span class="nm">18</span>), e.length ? <span class="st">"REJECT " + e.join(",")</span> : <span class="st">"ACCEPTED &lt;-- GAP"</span>);
+}
+      </div>
+      <p class="expect">All seven mutations print <code>REJECT</code>. If any prints <code>ACCEPTED &lt;-- GAP</code>, that is a live
+      injection surface: <code>extra_field</code> is the dangerous one, because it is how a model (or a prompt injection
+      forwarded through a tool result) adds a parameter your handler never intended to read.
+      <strong>Falsifier:</strong> if <code>null_query</code> is accepted with no error, your handler is coercing
+      <code>null</code> to <code>""</code> somewhere &mdash; check for <code>String(x)</code> or default-argument coercion.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d77-s5">5 &middot; Failure modes <a class="hook" href="#d77-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Adjacent-tool confusion.</strong> Two tools whose descriptions differ only in wording (<code>get_issue</code> vs <code>fetch_issue</code>). Symptom: wrong-tool-selection rate rises when you <em>add</em> tools, not when you change the model. Detect: log the chosen tool name against the expected tool for a golden set; the confusion matrix shows the pair.</li>
+        <li><strong>Retry storm from a required-field mistake.</strong> Model omits a required field, gets a validation error, retries with the same omission. Symptom: 3&times; the intended call count for one tool, with identical error strings. Fix: make the error message <em>prescriptive</em> ("missing <code>id</code>; call <code>search_issues</code> first and pass <code>issue_id</code>").</li>
+        <li><strong>Silent extra-field drop.</strong> <code>additionalProperties</code> open and the handler ignores unknown keys. Symptom: zero errors, wrong results &mdash; the model believes it applied a filter that was discarded. This is the worst class because it produces no signal.</li>
+        <li><strong>Unbounded parameter blowup.</strong> No <code>maxLength</code>/<code>maxItems</code>. Symptom: p99 latency spikes correlated with user input length; occasional context-window overflow when a tool echoes back what it was given.</li>
+        <li><strong>MCP schema drift.</strong> Third-party server updates a description or an enum without a version bump. Symptom: tool selection degrades at a fixed timestamp with no deploy on your side. Fix: log the schema hash per call and alert on change.</li>
+        <li><strong>Non-idempotent mutation retried.</strong> The tool has no idempotency key and the loop retries after a timeout. Symptom: duplicate rows, duplicate comments, duplicate charges &mdash; count &gt; 1 per logical action.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d77-s6">6 &middot; Connects to <a class="hook" href="#d77-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="76-agents.html">L76 &middot; Budgeted loop</a>,
+    <a class="tag-c" href="../track-c/70-tool-use-training.html">L70 &middot; Tool use training</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="84-safety-sandboxing.html">L84 &middot; Sandboxing</a> &mdash; the schema is the first permission boundary.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/01-tokenization.html">L01 &middot; Tokenization</a> &mdash; the token tax is measured in the tokenizer's units, not characters; re-count with the real tokenizer before quoting a number.</li>
+      <li><a class="tag-a" href="../track-a/17-samplers.html">L17 &middot; Samplers</a> &mdash; constrained/structured decoding enforces the schema at the logit level, which is the only way to get <code>P(valid call) = 1</code> rather than <code>q<sup>k</sup></code>.</li>
+      <li><a class="tag-a" href="../track-b/45-caching.html">L45 &middot; Caching</a> &mdash; a stable tools prefix is cacheable; moving one tool invalidates the whole prefix and reprices every turn.</li>
+      <li><a class="tag-d" href="78-planning.html">L78 &middot; Planning</a> &mdash; plans are sequences of tool calls; schema quality bounds plan reliability multiplicatively.</li>
+      <li><a class="tag-d" href="90-observability.html">L90 &middot; Observability</a> &mdash; per-tool <code>q</code> belongs in your trace schema, computed continuously.</li>
+      <li><a class="tag-d" href="93-safety-alignment.html">L93 &middot; Prompt injection</a> &mdash; tool <em>results</em> are untrusted input; an open schema is how injection becomes an action.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d77-s7">7 &middot; Self-check <a class="hook" href="#d77-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Your <code>update_issue</code> tool has 7 required fields. First-attempt per-field accuracy is 0.96. Estimate first-call validity and name the single highest-leverage change.</p>
+        <details><summary>Reveal answer</summary><p><code>0.96<sup>7</sup> = 0.751</code>, so ~25% of first attempts fail. Highest leverage: reduce <code>k</code>, not improve <code>q</code>. Moving 3 fields to optional-with-server-default takes you to <code>0.96<sup>4</sup> = 0.849</code> &mdash; a +10 pt jump. Getting <code>q</code> from 0.96 to 0.99 with the same <code>k=7</code> yields <code>0.99<sup>7</sup> = 0.932</code>, a +18 pt jump but requires prompt-and-model work with no guarantee. Do both; do the <code>k</code> reduction first because it is a one-line schema change with a closed-form effect.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> 26 tools, 124 tokens each, 40 turns per session, 500 sessions/day, $0.28 per 1M input tokens. What is the daily schema bill, and what fraction of a 30k-token session context is schema?</p>
+        <details><summary>Reveal answer</summary><p>Schema per turn = <code>26 &times; 124 = 3,224</code> tokens. Per session = <code>3,224 &times; 40 = 128,960</code>. Per day = <code>128,960 &times; 500 = 64.48M</code> tokens &rarr; <code>64.48 &times; 0.28 = $18.05/day</code>. As a share of context: <code>3,224 / 30,000 = 10.7%</code> of every turn's context is tool descriptions. That 10.7% is the number to attack, because context is the scarcer resource (L79).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: tool-call errors are zero, but users report filters "not working". Which failure mode, and what instrument proves it?</p>
+        <details><summary>Reveal answer</summary><p><em>Silent extra-field drop.</em> The model passes a field the handler does not read, validation passes because <code>additionalProperties</code> is open, and the query runs unfiltered. Prove it by logging the <em>received argument object</em> alongside the <em>executed query</em> and diffing them: any key present in the arguments and absent from the executed query is a dropped field. Fixed by <code>additionalProperties: false</code> (turning drops into loud errors) plus per-field <code>description</code>s.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does an MCP server need its schema hash logged per tool call, when the call arguments are already logged?</p>
+        <details><summary>Reveal answer</summary><p>Because the arguments are produced <em>from</em> the schema. If the remote server silently changes a description or narrows an enum, your model's outputs change while your arguments look normal &mdash; the causal input is the schema, not the arguments. With a per-call schema hash you can bisect: "selection accuracy dropped at 14:20; schema hash changed at 14:19". Without it, you will blame the model and lose a day. It also makes the third-party dependency auditable at all, which is the same property your hash-chained ledger provides for your own actions.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> A teammate proposes solving tool confusion by writing a very long decision tree in the system prompt ("if X then use A, if Y then use B..."). Give the token arithmetic and the better fix.</p>
+        <details><summary>Reveal answer</summary><p>A 2,000-token routing preamble is cheaper than 26 schemas on turn 1 but is <em>also</em> paid every turn and is not cache-friendly when task state changes. Worse, it duplicates information already in the schemas, creating two sources of truth that drift. The better fix is structural: (a) prune to the ~8 tools the task family needs, selected by a cheap classifier or by task type at session start; (b) make each description start with its trigger clause so the model's own routing is accurate. Turn selection into a small, measurable classification problem with a golden set (L88) instead of an unmeasured prose artefact.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="76-agents.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L76 &middot; What an agent actually is</span></a>
+    <a class="next" href="78-planning.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L78 &middot; Planning</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

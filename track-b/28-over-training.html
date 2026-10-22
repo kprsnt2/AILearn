@@ -1,0 +1,353 @@
+﻿<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b28">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L28 · Over-training &amp; Inference-Aware Scaling â€” AILearn</title>
+<meta name="description" content="Once the data wall clips Chinchilla, the right move is to over-train a smaller model and pay once at training to pay less per token forever. The break-even arithmetic.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L28</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L28 &middot; Over-training, Inference-Aware Scaling, and the &ldquo;Small but Long&rdquo; Era</h1>
+  <p class="lede">Chinchilla is only optimal if inference is free and data is infinite. Neither holds. Once a token costs money to serve, the cheapest model to <em>run</em> is deliberately over-trained &mdash; and that is the whole reason 2026 frontier models are small, hungry and fast instead of huge.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: cost-per-query optimizer</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">over-training</span>
+  <span class="pill">tokens-per-param &gt; 20</span>
+  <span class="pill">inference-aware scaling</span>
+  <span class="pill">amortisation break-even</span>
+  <span class="pill">data-constrained regime</span>
+  <span class="pill">cost per query</span>
+  <span class="pill">capped loss data efficiency</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b28-s1">1 &middot; Why it exists <a class="hook" href="#b28-s1">#</a></h2>
+
+    <p>Lesson 27 left us with a contradiction. Chinchilla says: for compute C, the optimal parameters are
+    N &asymp; C<sup>0.45</sup>. Apply it honestly to a modern budget and you get requirements no corpus can meet &mdash;
+    10<sup>23</sup> FLOPs wants 833B parameters and 16.7 trillion tokens; 10<sup>25</sup> FLOPs wants 83 trillion parameters.
+    There is no 16.7T-token high-quality corpus for most domains, and never has been.</p>
+
+    <p>The second contradiction is the one that actually reorganised the industry. Chinchilla optimises <em>training</em>
+    loss per FLOP of training. A deployed model serves billions of tokens afterwards. Training spend is paid once; serving
+    spend is paid per query, forever. A model that is 2&times; cheaper to serve and 0.05 nats worse can be dramatically
+    better business.</p>
+
+    <p>So the failure that killed naive Chinchilla-following was: labs built compute-optimal-sized models, could not find the
+    data to train them, and simultaneously watched serving bills dominate the total cost of ownership. The response &mdash;
+    now standard &mdash; is to pick a model size far <em>below</em> the compute-optimal point and train it on far more tokens
+    than 20&times;: 100&times;, 500&times;, 2000&times;. That is over-training.</p>
+
+    <div class="callout boss">
+      <p>Spend extra training FLOPs once to make every future token cheaper. The right size is whatever minimises
+      <em>training cost + inference cost over the model's lifetime</em>, and for anything with real traffic that number is
+      far smaller and far hungrier than Chinchilla's.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b28-s2">2 &middot; The mental model <a class="hook" href="#b28-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> how many delivery vans to buy. A big van carries more per trip but costs more to run
+    &mdash; per kilometre, forever. A small van costs less to buy, more per trip in fuel if you overfill it. If your total
+    distance driven is huge, you buy the small van and drive it very hard.</p>
+
+    <p>Precisely: training cost scales with <strong>N&middot;D</strong> (both parameters and tokens); inference cost per token
+    scales with <strong>N<sub>active</sub></strong> only. So for a lifetime token count Q,</p>
+
+    <div class="formula">
+      Total FLOPs &asymp; 6&thinsp;N&thinsp;D &nbsp;+&nbsp; 2&thinsp;N&thinspace;Q
+      <span class="note">6ND is the training bill, paid once. 2NQ is inference: 2 FLOPs per parameter per generated (and processed) token, paid Q times. There is no D in the second term &mdash; that is the entire asymmetry. The model you trained harder costs nothing extra to serve.</span>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Fixed capital cost vs marginal running cost, and the decision
+      depends on volume. Over-training is buying a cheaper-to-run vehicle.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Vans have a maximum load. Models do not keep improving indefinitely with more
+      tokens: past some ratio the loss curve flattens hard and you are burning FLOPs for milli-nats. Also, over-training is
+      <em>only</em> affordable when the data exists &mdash; if it does not, you are repeating, and repetition is not free.</p></div>
+    </div>
+
+    <h3>The break-even thought</h3>
+    <p>Every training FLOP you spend on D must be repaid by inference savings over Q tokens. The break-even Q, comparing a
+    model trained with ratio r to one trained with ratio 20, is a divide. Below, the number that matters in every serving
+    decision.</p>
+
+    <div class="formula">
+      Q<sub>break-even</sub> = 6&thinsp;N&thinsp;D&thinsp;/&thinsp;(2&thinsp;N) = 3&thinsp;D = 3&thinsp;r&thinsp;N
+      <span class="note">For a 30B model trained at r = 200 (D = 6T): Q = 3 &times; 6&times;10<sup>12</sup> = 1.8&times;10<sup>13</sup> tokens. If that model will serve fewer than 18 trillion tokens in its life, the extra training was not repaid by inference savings on its own account &mdash; you did it for quality or latency, not cost.</span>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b28-s3">3 &middot; The mechanism <a class="hook" href="#b28-s3">#</a></h2>
+
+    <p>Two independent constraints bind at once, and the modern design point is the intersection.</p>
+
+    <h3>Constraint 1 &mdash; the data wall</h3>
+    <p>You have U unique tokens. The cheapest valid plan sets D &le; U (one epoch). The compute-optimal N needs
+    D<sub>opt</sub> = C/6 once C is fixed, so once D<sub>opt</sub> &gt; U you cannot be compute-optimal. You either spend less
+    compute (train a smaller model) or repeat data (which delivers less than a new token). Effectively, over-training means
+    <em>re-allocating</em> a fixed token budget across fewer parameters.</p>
+
+    <h3>Constraint 2 &mdash; the serving bill</h3>
+    <p>Prefill cost per token is 2N<sub>active</sub> FLOPs, decode is 2N<sub>active</sub> per token too. So cost per query for
+    a prompt of p tokens and a response of o tokens is 2N<sub>active</sub>(p + o). That is linear in active parameters and
+    completely independent of how many tokens you trained on. A model trained at r = 2000 costs the same to serve as one
+    trained at r = 20 with the same N. The extra training is pure sunk cost that bought quality.</p>
+
+    <table class="table">
+      <thead><tr><th>Model</th><th>N</th><th>r</th><th>D</th><th>Training FLOPs</th><th>Break-even Q</th></tr></thead>
+      <tbody>
+        <tr><td>Small, Chinchilla-fed</td><td>7B</td><td>20</td><td>1.4&times;10<sup>11</sup></td><td>5.88&times;10<sup>21</sup></td><td>4.2&times;10<sup>11</sup></td></tr>
+        <tr><td>Small, over-trained</td><td>7B</td><td>200</td><td>1.4&times;10<sup>12</sup></td><td>5.88&times;10<sup>22</sup></td><td>4.2&times;10<sup>12</sup></td></tr>
+        <tr><td>Small, heavily over-trained</td><td>7B</td><td>2000</td><td>1.4&times;10<sup>13</sup></td><td>5.88&times;10<sup>23</sup></td><td>4.2&times;10<sup>13</sup></td></tr>
+        <tr><td>Medium, over-trained</td><td>30B</td><td>200</td><td>6.0&times;10<sup>12</sup></td><td>1.08&times;10<sup>24</sup></td><td>1.8&times;10<sup>13</sup></td></tr>
+      </tbody>
+    </table>
+
+    <p>Read the last two rows together. The 30B at r = 200 has <strong>1.8&times;</strong> the training cost of the 7B at
+    r = 2000 (1.08&times;10<sup>24</sup> vs 5.88&times;10<sup>23</sup>) but its break-even Q is <em>less than half</em>
+    (1.8&times;10<sup>13</sup> vs 4.2&times;10<sup>13</sup>) &mdash; because each served token costs 4.3&times; more
+    (30B/7B). At high volume the big model never repays itself; at low volume the big model is the better buy because quality
+    per FLOP is better and you will not serve enough tokens to care.</p>
+
+    <h3>Worked dollar example</h3>
+    <p>Price H800-class compute at $2/GPU-hour and assume 40% MFU on 989 TFLOP/s dense bf16, i.e.
+    989&times;10<sup>12</sup> &times; 0.40 = 3.956&times;10<sup>14</sup> FLOP/s per GPU. Then:</p>
+    <ul>
+      <li>7B at r = 200: C = 5.88&times;10<sup>22</sup> FLOPs &rarr; 5.88&times;10<sup>22</sup>/3.956&times;10<sup>14</sup> = 1.486&times;10<sup>8</sup> GPU-s = 41,287 GPU-h &rarr; <strong>$82,575</strong>.</li>
+      <li>70B at r = 20 (Chinchilla-optimal size): C = 5.88&times;10<sup>23</sup> &rarr; 412,875 GPU-h &rarr; <strong>$825,750</strong>.</li>
+      <li>Serving 1M queries of 1,000 prompt + 300 output tokens on a 13B-active model: 2&times;13&times;10<sup>9</sup>&times;1,300&times;10<sup>6</sup> = 3.38&times;10<sup>19</sup> FLOPs &rarr; 24 GPU-h. <em>Every million queries.</em></li>
+    </ul>
+
+    <p>That last line is the whole argument. The $825k training run is a one-time event. Twenty-four GPU-hours per million
+    queries, at $2/h, is $48/M queries &mdash; and at a billion queries a year that is $48,000/year that scales linearly
+    forever, while the training bill does not.</p>
+
+    <div class="callout note">
+      <p><span class="asof">state as of 2026-10</span> This is exactly the shape of the 2026 DeepSeek line. DeepSeek-V4-Flash
+      is <strong>284B total / 13B active</strong> and V4-Pro is <strong>1.6T total / 49B active</strong> &mdash; a 3.8&times;
+      gap in serving cost per token between the two tiers of the same family. V4.1-Flash goes further: <strong>552B MoE with 8B
+      active for input and 16B for output</strong>, and its KV cache needs <strong>1/4 the HBM and 1/8 the SSD</strong> of the
+      previous generation. All three design choices &mdash; sparse activation, asymmetric input/output width, compressed cache
+      &mdash; are inference-cost decisions, not training-cost decisions.</p>
+    </div>
+
+    <div class="callout audit">
+      <p>The auditable artifact for this lesson is a single table per candidate model: (N<sub>active</sub>, D, C, training $,
+      tokens/query, expected Q per year, break-even Q, months-to-repay). If months-to-repay is longer than the model's replacement
+      window, over-training it was a vanity metric. That is a go/no-go gate, not an opinion.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b28-s4">4 &middot; Your hands <a class="hook" href="#b28-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; break-even tokens for any (N, r) pair</h4>
+      <p>The one number that tells you whether over-training pays at your traffic level. Copy, change the numbers to your
+      own deployment.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">breakeven</span>(N, r):
+    D = N * r
+    train_flops = <span class="nm">6</span> * N * D
+    infer_per_tok = <span class="nm">2</span> * N
+    <span class="kw">return</span> train_flops / infer_per_tok      <span class="cm"># = 3rN tokens</span>
+
+<span class="kw">for</span> N, r <span class="kw">in</span> [(<span class="nm">7e9</span>, <span class="nm">200</span>), (<span class="nm">7e9</span>, <span class="nm">2000</span>), (<span class="nm">30e9</span>, <span class="nm">200</span>), (<span class="nm">552e9</span>, <span class="nm">16</span>)]:
+    q = <span class="fn">breakeven</span>(N, r)
+    <span class="fn">print</span>(<span class="st">f"N={N/1e9:6.1f}B r={r:5d}  D={N*r/1e12:6.2f}T  break-even Q={q:.2e} tokens"</span>)
+    </div>
+      <p class="expect">7B/200 &rarr; 4.2&times;10<sup>12</sup>; 7B/2000 &rarr; 4.2&times;10<sup>13</sup>; 30B/200 &rarr;
+      1.8&times;10<sup>13</sup>; 552B/16 &rarr; 2.65&times;10<sup>13</sup>. Note the last one: even a 552B model with a very
+      modest 16 tokens/param needs 26.5 trillion served tokens to repay just its <em>training</em> &mdash; which is why the MoE
+      trick (analysing 16B active, not 552B) is what makes it servable at all.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; total cost of ownership as a function of model size</h4>
+      <p>The optimisation Chinchilla does not do: sweep N, hold total compute-as-quality proxy roughly fixed, and add the
+      serving term. Watch the optimum move left as Q grows.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+E, A, B, al, be = <span class="nm">1.69</span>, <span class="nm">406.4</span>, <span class="nm">410.7</span>, <span class="nm">0.34</span>, <span class="nm">0.28</span>
+<span class="kw">def</span> <span class="fn">loss</span>(N, D): <span class="kw">return</span> E + A/N**al + B/D**be
+PRICE_H = <span class="nm">2.0</span>; FLOPS = <span class="nm">989e12</span> * <span class="nm">0.40</span>     <span class="cm"># $/GPU-h, FLOP/s per GPU</span>
+<span class="kw">def</span> <span class="fn">dollars</span>(N, D, Q): <span class="kw">return</span> (<span class="nm">6</span>*N*D + <span class="nm">2</span>*N*Q) / FLOPS / <span class="nm">3600</span> * PRICE_H
+
+<span class="kw">for</span> Q <span class="kw">in</span> (<span class="nm">1e11</span>, <span class="nm">1e13</span>, <span class="nm">1e15</span>):
+    best = <span class="kw">None</span>
+    <span class="kw">for</span> N <span class="kw">in</span> np.logspace(<span class="nm">9</span>, <span class="nm">11.5</span>, <span class="nm">120</span>):
+        <span class="kw">for</span> r <span class="kw">in</span> (<span class="nm">20</span>, <span class="nm">50</span>, <span class="nm">100</span>, <span class="nm">200</span>, <span class="nm">400</span>):
+            D = N * r
+            cost = <span class="fn">dollars</span>(N, D, Q); l = <span class="fn">loss</span>(N, D)
+            <span class="kw">if</span> l &gt; <span class="nm">1.90</span>: <span class="kw">continue</span>                  <span class="cm"># quality gate: must reach L &lt;= 1.90</span>
+            <span class="kw">if</span> best <span class="kw">is</span> <span class="kw">None</span> <span class="kw">or</span> cost &lt; best[<span class="nm">0</span>]: best = (cost, N, r, D, l)
+    <span class="fn">print</span>(<span class="st">f"Q={Q:.0e}  cheapest plan: N={best[1]/1e9:5.1f}B r={best[2]:4d} D={best[3]/1e12:5.2f}T "
+          f"L={best[4]:.4f}  total=${best[0]:,.0f}"</span>)
+      </div>
+      <p class="expect">As Q grows by four orders of magnitude, the cheapest plan that reaches the quality gate should
+      shrink in N and jump in r. That is the over-training effect reproduced from first principles. Falsification: if the
+      optimum does not move with Q, your inference term is missing from <code>dollars()</code>.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; what a 1.6T-total model costs to serve if it were dense</h4>
+      <p>Quantifies the MoE argument before lesson 30 makes it formally.</p>
+      <div class="code" data-lang="bash">
+python -c "
+for N,tag in ((1.6e12,'dense 1.6T'),(49e9,'V4-Pro active'),(13e9,'V4-Flash active'),(16e9,'V4.1-Flash out-active')):
+    for q in (1_000_000,):
+        f=2*N*1300*q
+        print(f'{tag:22s} N={N:.3g}  1M queries(1k in/300 out) = {f:.2e} FLOPs = {f/(989e12*0.4)/3600:,.0f} GPU-h = \${f/(989e12*0.4)/3600*2:,.0f}')
+"
+      </div>
+      <p class="expect">A dense 1.6T model would need 2,921 GPU-hours per million queries; the 49B-active MoE version needs 89.5, and the
+      13B-active Flash version 23.7. Same order of total parameter count on the box, 33&ndash;123&times; different serving bill. That is the economic reason sparse architecture won.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b28-s5">5 &middot; Failure modes <a class="hook" href="#b28-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Over-training into repetition.</strong> You wanted r = 2000 but only have 1/5 the unique tokens. Symptom: loss
+        falls faster than the scaling law predicts through epoch 1, then almost not at all, and <em>validation loss on fresh
+        text</em> plateaus while training loss keeps dropping. The measurable tell is a growing train/val gap with no perplexity
+        gain on held-out data.</li>
+        <li><strong>Over-training a model nobody will call.</strong> Symptom: months-to-repay longer than the model's replacement
+        cycle. You over-trained for a service that gets a few thousand queries a day, so the training premium is never recovered and
+        the quality was available cheaper from a bigger, lazier model.</li>
+        <li><strong>Under-training a hot endpoint.</strong> Symptom: serving cost dominates the P&amp;L while the training budget
+        sat unused. This is the pre-2022 mistake repeating in reverse: you shipped a huge model at r = 20 because the paper said
+        so, to an endpoint with 10<sup>15</sup> lifetime tokens.</li>
+        <li><strong>Comparing across tokenizers.</strong> Symptom: &ldquo;our over-trained model is worse&rdquo; when per-token loss
+        says so but per-byte loss (lesson 16) says better &mdash; the tokenizer changed how many tokens a document costs, and the
+        serving math is per <em>token</em>.</li>
+        <li><strong>Forgetting that over-training changes the LR schedule.</strong> Symptom: the run that was scaled from 200B to
+        2T tokens underperforms quietly because the schedule (lesson 14) was not stretched, so the model spent most of its life
+        decaying a too-high LR. Loss is 0.02&ndash;0.05 nats off with no other symptom, and only a re-run settles it.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b28-s6">6 &middot; Connects to <a class="hook" href="#b28-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L27 (where the optimum is) and L09 (the prefill/decode split that makes serving linear in N).
+    &nbsp; <strong>Unlocks:</strong> L30 and L44 &mdash; sparse activation and serving are the same economics.</p>
+    <ul>
+      <li><a class="tag-b" href="27-chinchilla.html">L27 &middot; Chinchilla</a> &mdash; the training-only optimum this lesson overrides.</li>
+      <li><a class="tag-a" href="../track-a/09-kv-cache.html">L09 &middot; KV cache: the true cost of memory</a> &mdash; the memory half of the serving bill.</li>
+      <li><a class="tag-b" href="30-moe.html">L30 &middot; Mixture of Experts</a> &mdash; decoupling N<sub>total</sub> from N<sub>active</sub>.</li>
+      <li><a class="tag-b" href="44-inference-serving.html">L44 &middot; Inference serving</a> &mdash; batching and paging that turn these FLOPs into latency.</li>
+      <li><a class="tag-b" href="43-training-cost.html">L43 &middot; Training cost modeling</a> &mdash; the $2/GPU-h assumption, made explicit.</li>
+      <li><a class="tag-d" href="../track-d/91-cost-latency.html">L91 &middot; Cost &amp; latency budgets</a> &mdash; where break-even Q becomes an SLO decision.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b28-s7">7 &middot; Self-check <a class="hook" href="#b28-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does the inference term in total cost have no D, and what does that make over-training conceptually?</p>
+        <details><summary>Reveal answer</summary><p>Inference cost is 2 FLOPs per active parameter per token, and only the parameters are touched &mdash; the
+        training corpus is gone by serving time. So a model trained on 200&times; its parameter count in tokens costs exactly the same to
+        serve as one trained on Chinchilla's 20&times;. Over-training is therefore a <em>one-time capital payment to buy quality</em> with
+        no recurring cost, which is precisely why it dominates when lifetime volume is large.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A 30B model trained at r = 500. Compute D, training FLOPs, GPU-hours at 40% MFU on 989 TFLOP/s, and the break-even serving volume.</p>
+        <details><summary>Reveal answer</summary><p>D = 30&times;10<sup>9</sup> &times; 500 = 1.5&times;10<sup>13</sup> tokens. C = 6ND =
+        6&times;3&times;10<sup>10</sup>&times;1.5&times;10<sup>13</sup> = 2.7&times;10<sup>24</sup> FLOPs. GPU-hours =
+        2.7&times;10<sup>24</sup>/(3.956&times;10<sup>14</sup> &times; 3600) = 1.895&times;10<sup>8</sup>/&hellip; let us be careful:
+        GPU-seconds = 2.7e24/3.956e14 = 6.8268e9 s, GPU-hours = 6.8268e9/3600 = 1,896,330 GPU-h, about $3.79M at $2/h.
+        Break-even Q = 3rN = 3&times;500&times;3&times;10<sup>10</sup> = 4.5&times;10<sup>13</sup> tokens. Below that lifetime volume the extra
+        training is not repaid by inference savings.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your heavily over-trained 8B model matches the quality of a 70B model, but the finance team says serving cost went <em>up</em>. What is the likely explanation?</p>
+        <details><summary>Reveal answer</summary><p>Serving cost went up means more FLOPs per token somewhere, which cannot come from training data. Candidates: (a) the
+        8B model has a much larger KV cache per token (more layers/heads/heads-of-KV), so concurrency dropped and you are batching
+        far worse; (b) you are running it at 8k context with long prompts, so prefill dominates and the smaller model's cheaper weights
+        do not help; (c) the quality match only holds with long chain-of-thought, so output tokens per query tripled (lesson 60).
+        The check: per-query FLOPs broken into prefill and decode, before and after.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is &ldquo;over-training&rdquo; affordable in 2026 but was not in 2020, apart from the compute itself?</p>
+        <details><summary>Reveal answer</summary><p>Mostly because of what made D economically obtainable and what made N<sub>active</sub> affordable: MoE decouples
+        parameter count from activation, so the serving term stays small enough that the training premium is easy to repay; and <em>data</em>
+        became the bottleneck, which forces the reallocation. Also, without MoE, a compute-optimal very large dense model has
+        an astronomical serving bill, which pushes the optimum to small-and-long even at typical volumes.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> V4.1-Flash has 8B active for input and 16B for output. Give the one-line cost consequence of that asymmetry.</p>
+        <details><summary>Reveal answer</summary><p>Prefill (input) and decode (output) are charged differently and with different
+        arithmetic intensities, so the model spends half the compute per prompt token that it spends per generated token. For a workload
+        dominated by long prompts and short answers &mdash; RAG, classification, long-document QA &mdash; that is a 2&times; cut on the dominant
+        term. It is deliberately asymmetric because the two phases have different cost curves (see L37).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="27-chinchilla.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L27 &middot; Chinchilla: compute-optimal data vs params</span></a>
+    <a class="next" href="29-emergence.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L29 &middot; Emergence, and why it is partly a metric artifact</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

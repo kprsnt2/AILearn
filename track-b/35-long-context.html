@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b35">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L35 · Long Context: What 1M Tokens Actually Costs — AILearn</title>
+<meta name="description" content="A 1M-token context is four separate bills: KV memory, prefill compute, attention quadratic term, and decode bandwidth. Price each one and you know exactly what a long-context feature costs to operate.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L35</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L35 &middot; Long Context: What 1M Tokens Actually Costs</h1>
+  <p class="lede">Marketing says &ldquo;1M context.&rdquo; Operations need four numbers: GiB of HBM per session, seconds of prefill, the quadratic attention term, and the decode bandwidth that caps concurrency. This page computes all four for concrete configurations.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: context cost model in $ and GB</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">cache GiB per session</span>
+  <span class="pill">prefill time</span>
+  <span class="pill">quadratic attention term</span>
+  <span class="pill">concurrency ceiling</span>
+  <span class="pill">1M context economics</span>
+  <span class="pill">offload to SSD</span>
+  <span class="pill">cost per prompt token</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b35-s1">1 &middot; Why it exists <a class="hook" href="#b35-s1">#</a></h2>
+
+    <p>Long context is sold as a capability and billed as a utility. When customers start using it, four separate resource
+    pools get consumed in ways that do not scale together, and teams discover the cost only after the feature is in
+    production. The failure is not that a 1M context is impossible &mdash; it is that a product built on &ldquo;we support 1M
+    context&rdquo; can be economically non-viable while still being technically correct.</p>
+
+    <p>The concrete traps:</p>
+    <ul>
+      <li>Memory per session grows <em>linearly</em> with context but concurrency is <em>inverse-linear</em> &mdash; so a 32&times;
+      context increase cuts concurrent capacity 32&times; for the same HBM pool.</li>
+      <li>Prefill compute is linear in prompt tokens, so a 1M-token prompt costs 1M &times; 2N<sub>active</sub> FLOPs before a
+      single output token is generated &mdash; and that is a one-shot cost paid again on every retry.</li>
+      <li>The attention term is <em>quadratic</em> and, computed honestly, dwarfs everything else from a few hundred tokens
+      onward &mdash; 631.6 seconds of GPU time for one 1M-token prefill at 13B active in the numbers below.</li>
+      <li>Decode re-reads the entire cache every token, so output latency on a long prompt is set by memory bandwidth, not
+      compute.</li>
+    </ul>
+    <p>DeepSeek-V4 <span class="asof">state as of 2026-10</span> ships 1M context as <em>standard</em> (V4-Pro 1.6T total / 49B
+    active, V4-Flash 284B / 13B active) with token-wise compression and DSA &mdash; i.e. the 1M number is only affordable because
+    two of the four bills were attacked structurally. This page prices the whole thing.</p>
+
+    <div class="callout boss">
+      <p>Long context costs four bills in four different units: GiB (memory), seconds (prefill), FLOPs (attention, quadratic),
+      and GB/s (decode). A budget that names only one of them is not a budget.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b35-s2">2 &middot; The mental model <a class="hook" href="#b35-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> renting a hall by the number of people seated, not standing. Seating capacity
+    (KV memory) is fixed per session and grows with context. Getting everyone in the door (prefill) takes time proportional
+    to crowd size. Having the crowd constantly shuffle (attention) gets quadratically worse as they grow. Serving drinks
+    (decode) is rate-limited by how fast you can walk the aisles &mdash; bandwidth.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Four independent bottlenecks coexist; the slowest one sets
+      throughput and the biggest one sets cost. You cannot fix a memory problem with more compute.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Unlike a hall, part of the crowd can be moved to a parking lot and brought back
+      (SSD offload), and unlike people, tokens can be summarised (token-wise compression). So the ceiling is not hard &mdash;
+      it is a latency-versus-cost trade you choose.</p></div>
+    </div>
+
+    <h3>The four bills</h3>
+    <table class="table">
+      <thead><tr><th>Bill</th><th>Formula</th><th>Scaling</th><th>Units</th></tr></thead>
+      <tbody>
+        <tr><td>Cache memory</td><td>L &times; bytes<sub>token</sub></td><td>linear in context</td><td>GiB / session</td></tr>
+        <tr><td>Prefill compute</td><td>2 &times; N<sub>active</sub> &times; L<sub>prompt</sub></td><td>linear in prompt</td><td>FLOPs &rarr; seconds</td></tr>
+        <tr><td>Attention pairs</td><td>layers &times; heads &times; L&sup2;/2 &times; d<sub>head</sub> &times; 2</td><td><strong>quadratic</strong></td><td>FLOPs</td></tr>
+        <tr><td>Decode reads</td><td>cache bytes per token &times; context</td><td>linear, <em>every</em> output token</td><td>GB/s &rarr; tok/s</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b35-s3">3 &middot; The mechanism <a class="hook" href="#b35-s3">#</a></h2>
+
+    <div class="formula">
+      C(L) = (HBM<sub>bytes</sub> / (L &times; bytes<sub>token</sub>)) &nbsp;&nbsp; sessions <br>
+      T<sub>prefill</sub>(L) = 2&thinsp;N<sub>active</sub>&thinsp;L / (&eta;&thinsp;S) &nbsp;&nbsp;&nbsp;
+      T<sub>attn</sub>(L) = 2&thinsp;lay&thinsp;H&thinsp;d&thinsp;L&sup2; / (&eta;&thinsp;S)
+      <span class="note">S = FLOP/s per accelerator, &eta; = MFU. The first line is the concurrency ceiling and it is the one long-context products die on. The second and third are per-prefill times; the third is quadratic in L and already exceeds the second at L &asymp; 114 tokens for a 13B-active model; the crossover scales as &radic;N, so a 49B-active model crosses at L &asymp; 221. Dense attention is never free, which is why questions about long context are really questions about <em>efficient</em> attention.</span>
+    </div>
+
+    <p>All numbers below use: H800-class accelerator at 989 TFLOP/s dense bf16, &eta; = 0.40, so
+    S<sub>eff</sub> = 3.956&times;10<sup>14</sup> FLOP/s per GPU; a 61-layer model; and the MLA cache at
+    <strong>70,272 bytes/token</strong> from L33, with a V4.1-style compressed variant at
+    <strong>17,568 bytes/token</strong> (the published 1/4 HBM figure).</p>
+
+    <h3>Bill 1 &mdash; cache memory and the concurrency ceiling</h3>
+    <table class="table">
+      <thead><tr><th>Context</th><th>MLA: GiB/session</th><th>Compressed: GiB/session</th><th>MLA sessions in 640 GB</th><th>Compressed sessions in 640 GiB</th></tr></thead>
+      <tbody>
+        <tr><td>32,768</td><td>2.14</td><td>0.54</td><td>298.4</td><td>1,193.7</td></tr>
+        <tr><td>131,072</td><td>8.58</td><td>2.14</td><td>74.6</td><td>298.4</td></tr>
+        <tr><td>1,000,000</td><td><strong>65.45</strong></td><td><strong>16.36</strong></td><td><strong>9.8</strong></td><td><strong>39.1</strong></td></tr>
+      </tbody>
+    </table>
+    <p>Read the bottom row as a business statement: with uncompressed MLA, a 640 GiB pool serves <em>nine</em> concurrent
+    1M-token sessions. With the 4&times; compression the same pool serves <em>thirty-nine</em>. Nothing about the model changed;
+    the product went from unusable to viable.</p>
+
+    <h3>Bill 2 &mdash; prefill seconds</h3>
+    <p>2N<sub>active</sub>L FLOPs. For a 1M-token prompt on a single GPU:</p>
+    <table class="table">
+      <thead><tr><th>N<sub>active</sub></th><th>1M-token prefill (1 GPU)</th><th>128k prefill</th><th>1M prefill on 8 GPUs</th></tr></thead>
+      <tbody>
+        <tr><td>8B (V4.1-Flash input side)</td><td>40.44 s</td><td>5.30 s</td><td>5.06 s</td></tr>
+        <tr><td>13B (V4-Flash)</td><td>65.72 s</td><td>8.61 s</td><td>8.22 s</td></tr>
+        <tr><td>16B (V4.1-Flash output side)</td><td>80.89 s</td><td>10.60 s</td><td>10.11 s</td></tr>
+        <tr><td>49B (V4-Pro)</td><td>247.72 s</td><td>32.47 s</td><td>30.97 s</td></tr>
+      </tbody>
+    </table>
+    <p>At $2/GPU-hour, an 8-GPU 1M-token prefill on the 8B-active path is 5.06 GPU-s &times; 8 = 40.5 GPU-seconds
+    = <strong>$0.0225</strong>. The 49B path is $0.1376. That is the per-call cost of reading one million tokens &mdash; and it is
+    paid again on every retry, every tool-loop turn that re-sends the transcript, and every user who refreshes.</p>
+
+    <div class="callout warn">
+      <p>The hidden multiplier is <strong>re-prefill</strong>. An agent loop that re-sends a 1M-token transcript on each of 5
+      turns pays prefill 5 times unless the provider caches the prefix. That is why prefix caching (L45) is not an optimisation
+      but a business model for long-horizon agents.</p>
+    </div>
+
+        <h3>Bill 3 &mdash; the quadratic attention term</h3>
+    <p>Attention costs 2 FLOPs per query&ndash;key pair per head dim, for both QK<sup>T</sup> and the AV product, so with
+    causal masking of half the pairs the total is 2&middot;layers&middot;heads&middot;d<sub>head</sub>&middot;L&sup2;. With
+    61 layers, 128 heads of dim 128:</p>
+    <table class="table">
+      <thead><tr><th>Context</th><th>Attention FLOPs</th><th>Seconds, 1 GPU @40% MFU</th><th>Seconds, 8 GPUs</th><th>vs 13B prefill term</th></tr></thead>
+      <tbody>
+        <tr><td>16,384</td><td>5.366&times;10<sup>14</sup></td><td>1.36</td><td>0.17</td><td>1.26&times;</td></tr>
+        <tr><td>131,072</td><td>3.434&times;10<sup>16</sup></td><td>86.8</td><td>10.85</td><td>10.08&times;</td></tr>
+        <tr><td>1,000,000</td><td>1.999&times;10<sup>18</sup></td><td><strong>5,052.7</strong></td><td><strong>631.6</strong></td><td><strong>76.9&times;</strong></td></tr>
+      </tbody>
+    </table>
+    <p>This is the single most important number on the page, and it is much worse than intuition suggests: <strong>dense
+    attention already exceeds the entire body-compute prefill term at roughly 114 tokens for a 13B-active model</strong>
+    (&radic;(2N/(2&middot;61&middot;128&middot;128))), and at 1M tokens it is <em>77&times;</em> larger. A dense-attention model
+    cannot prefill 1M tokens in any practical time: 631.6 GPU-seconds across 8 GPUs is over 10 minutes of pure attention.</p>
+    <p>So the arithmetic does not merely recommend MLA and DSA &mdash; it says dense attention makes 1M context impossible
+    regardless of memory. The entire &ldquo;long context&rdquo; story is an efficient-attention story:</p>
+    <ul>
+      <li><strong>FlashAttention</strong> (L38) does not reduce the FLOPs; it reduces memory traffic so the quadratic work
+      actually runs near peak instead of being bandwidth-starved. It makes the 10-minute figure achievable rather than
+      hopeless.</li>
+      <li><strong>DSA</strong> (L34) attacks the exponent itself: each query reads m = 2,048 positions instead of L/2, turning
+      the term from quadratic to linear-in-L with a constant factor m.</li>
+      <li><strong>Token-wise compression</strong> reduces the number of scored positions, shrinking both bills 1 and 4.</li>
+    </ul>
+    <p>Recompute with DSA's read budget: at 1M tokens each query reads 2,048 instead of 500,000 causal positions, so the
+    attention term falls by 244&times; from 1.999&times;10<sup>18</sup> to <strong>8.19&times;10<sup>15</sup> FLOPs</strong>
+    &mdash; about 20.7 seconds on 8 GPUs instead of 631.6, and comparable to the 8.22 s prefill term rather than 77&times; it.</p>
+
+<h3>Bill 4 &mdash; decode bandwidth</h3>
+    <p>Every generated token re-reads its whole cache. With the MLA cache at 70,272 B/token and 1M context, a decode step reads
+    70.272 GB from HBM &mdash; on a device with ~3 TB/s of bandwidth that is a 23 ms floor per token, giving a theoretical
+    ceiling of ~43 tokens/sec for that single session, before any weight reads. With 4&times; compression it is 17.6 GB and
+    ~171 tok/s. This is the number users feel, and it is why long-context decode is bandwidth work, not compute work.</p>
+
+    <h3>The synthesis: what to quote</h3>
+    <p>One table, all four bills, for a representative configuration. Use this shape for any model you evaluate.</p>
+    <div class="callout audit">
+      <p><strong>Cost sheet for 1M-context serving on a 13B-active, 61-layer MLA model, 640 GiB pool, 8-GPU prefill at
+      $2/GPU-h:</strong> memory 65.45 GiB/session &rarr; 9.8 sessions (16.36 GiB / 39.1 sessions at 4&times; compression);
+      body prefill 8.22 s; dense attention <strong>631.6 s</strong> (or &asymp;20.7 s with a DSA-style 2,048-position read
+      budget); decode 23.42 ms/token from cache reads alone. Compute cost at $2/GPU-h for the 8-GPU prefill: $0.0365 &mdash;
+      cheap. The expensive line is not dollars, it is the <em>631 seconds</em> of attention that sets your queue depth and your
+      p99.</p></div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b35-s4">4 &middot; Your hands <a class="hook" href="#b35-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the full four-bill calculator</h4>
+      <p>One function, all four bills, any context length. This is the artifact to hand to whoever owns the serving budget.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">ctx_cost</span>(L, layers=<span class="nm">61</span>, heads=<span class="nm">128</span>, d=<span class="nm">128</span>, N_act=<span class="nm">13e9</span>,
+             bytes_tok=<span class="nm">70272</span>, pool_gib=<span class="nm">640</span>, gpus=<span class="nm">8</span>,
+             eff=<span class="nm">989e12</span>*<span class="nm">0.4</span>, usd_per_gpu_h=<span class="nm">2</span>, bw=<span class="nm">3e12</span>):
+    cache_gib = bytes_tok * L / <span class="nm">1024</span>**<span class="nm">3</span>
+    prefill_flops = <span class="nm">2</span> * N_act * L
+    attn_flops = <span class="nm">2</span> * layers * heads * d * L * L       <span class="cm"># QK^T + AV, causal avg</span>
+    t_prefill = prefill_flops / (eff * gpus)
+    t_attn = attn_flops / (eff * gpus)
+    decode_ms = bytes_tok * L / bw * <span class="nm">1000</span>
+    usd = t_prefill / <span class="nm">3600</span> * gpus * usd_per_gpu_h
+    <span class="kw">return</span> cache_gib, t_prefill, t_attn, decode_ms, usd, pool_gib / cache_gib
+
+<span class="kw">for</span> L <span class="kw">in</span> (<span class="nm">131_072</span>, <span class="nm">1_000_000</span>):
+    <span class="kw">for</span> bt <span class="kw">in</span> (<span class="nm">70272</span>, <span class="nm">17568</span>):
+        c, tp, ta, dm, u, sess = <span class="fn">ctx_cost</span>(L, bytes_tok=bt)
+        <span class="fn">print</span>(<span class="st">f"L={L:>9,} b/tok={bt:6d} cache={c:7.2f}GiB prefill={tp:6.2f}s attn={ta:6.2f}s "
+              f"decode={dm:6.2f}ms \${u:.4f} sessions={sess:6.1f}"</span>)
+          </div>
+      <p class="expect">Measured: L = 131,072 with 70,272 B/token &rarr; cache 8.58 GiB, prefill 1.08 s, attention 10.85 s, decode 3.07 ms,
+      $0.0048, 74.6 sessions. With 17,568 B/token &rarr; cache 2.14 GiB, same prefill and attention, decode 0.77 ms,
+      298.4 sessions. L = 1,000,000 with 70,272 &rarr; cache 65.45 GiB, prefill 8.22 s, attention <strong>631.6 s</strong>,
+      decode 23.42 ms, $0.0365, 9.8 sessions. With 17,568 &rarr; cache 16.36 GiB, decode 5.86 ms, 39.1 sessions.
+      Note the shape of the result: <em>compression fixes bills 1 and 4, prefill fixes bill 2, and nothing except sparsity fixes
+      bill 3</em> &mdash; which at 1M dominates everything by two orders of magnitude.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; where does the prefill money go? (the crossover nobody expects)</h4>
+      <p>Rank the body-compute and attention terms as context grows. The result is the most counter-intuitive line in the
+      course: attention is <em>already</em> the bigger term at a few hundred tokens, and the crossover length scales with
+      &radic;N<sub>active</sub>.</p>
+      <div class="code" data-lang="bash">
+python -c "
+for N in (8e9,13e9,16e9,49e9):
+    print(f'N={N/1e9:4.0f}B active: attention == prefill at L = { (2*N/(2*61*128*128))**0.5:.0f} tokens')
+for L in (16384,131072,1048576):
+    pf=2*13e9*L; at=2*61*128*128*L*L
+    print(f'L={L:>9,}: prefill={pf:.3e}  attn={at:.3e}  attn/prefill={at/pf:8.2f}')
+"
+      </div>
+      <p class="expect">Measured: attention equals the body term at 89 / 114 / 127 / 221 tokens for 8 / 13 / 16 / 49B active.
+      And attn/prefill is 1.26 at 16k, 10.08 at 128k, 76.88 at 1M. So the linear prefill term is <em>never</em> the dominant
+      cost beyond short prompts &mdash; which means the hard question at 1M context is not memory at all, it is whether your
+      attention implementation is sparse. <strong>Falsification:</strong> if your model reports attn/prefill &lt; 1 at 128k, it
+      is not using dense attention &mdash; check whether a sparse or chunked path is silently active.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the retry multiplier on a real agent loop</h4>
+      <p>Long context is usually consumed by loops that re-send the transcript. Model the actual monthly cost and see why
+      prefix caching dominates.</p>
+      <div class="code" data-lang="python">
+L, turns, calls_per_day, days = <span class="nm">200_000</span>, <span class="nm">6</span>, <span class="nm">2_000</span>, <span class="nm">30</span>
+usd_prefill_1m = <span class="nm">0.0365</span>                       <span class="cm"># measured above for 8B-active, 8 GPUs</span>
+per_call = usd_prefill_1m * (L / <span class="nm">1_000_000</span>)
+no_cache = per_call * turns * calls_per_day * days
+cached = per_call * <span class="nm">1</span> * calls_per_day * days            <span class="cm"># only the first turn pays</span>
+<span class="fn">print</span>(<span class="st">f"per prefill of {L:,} tokens: \${per_call:.5f}"</span>)
+<span class="fn">print</span>(<span class="st">f"monthly, no prefix cache: \${no_cache:,.0f}"</span>)
+<span class="fn">print</span>(<span class="st">f"monthly, prefix cached:  \${cached:,.0f}"</span>)
+<span class="fn">print</span>(<span class="st">f"ratio: {no_cache/cached:.0f}x"</span>)
+      </div>
+      <p class="expect">At 200k tokens, 6 turns, 2,000 calls/day: $0.0073 per prefill, $2,628/month uncached versus $438
+      cached &mdash; a 6&times; difference that is purely a caching decision. (This counts compute only; the provider's cache
+      read price is a separate line, usually far below the prefill price, which is why cache-aware pricing exists at all
+      &mdash; see L45.)</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b35-s5">5 &middot; Failure modes <a class="hook" href="#b35-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Billing the context, forgetting the output.</strong> Symptom: cost estimates are low by 2&ndash;10&times; on
+        reasoning models, because long context multiplies the decode path too &mdash; output tokens at 23 ms each on a 1M cache
+        add up faster than the prefill.</li>
+        <li><strong>Concurrency collapse as context grows.</strong> Symptom: p99 latency spikes exactly when long-context traffic
+        arrives; the queue depth explodes because each session now holds 65 GiB. Fix: admission control by estimated cache size,
+        not by request count.</li>
+        <li><strong>Prefill retries.</strong> Symptom: one client sends a 1M-token prompt that times out at 30 s, retries twice,
+        and consumes 3&times; the compute of a successful call. Retry budgets must be expressed in prefill-seconds, not
+        attempts.</li>
+        <li><strong>Ignoring the quadratic term in capacity planning.</strong> Symptom: throughput targets modelled linearly hold
+        at 128k and miss by 30&ndash;50% at 1M. The attention term is 30% of prefill at 1M and 0.34% at 131k.</li>
+        <li><strong>Assuming a documented 1M limit means 1M is served at that latency.</strong> Symptom: a provider documents 1M
+        context but routes long requests to a slower path or offloads cache to SSD, so time-to-first-token is seconds and
+        throughput is a fraction. Demand per-call timing at the length you intend to use.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b35-s6">6 &middot; Connects to <a class="hook" href="#b35-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L33 (cache bytes) and L34 (sparsity). &nbsp; <strong>Unlocks:</strong> serving design (L44),
+    caching economics (L45) and context engineering (L79).</p>
+    <ul>
+      <li><a class="tag-b" href="33-mla.html">L33 &middot; MLA</a> &mdash; where 70,272 bytes/token comes from.</li>
+      <li><a class="tag-b" href="34-dsa.html">L34 &middot; DSA</a> &mdash; the fix for bill 3.</li>
+      <li><a class="tag-a" href="../track-a/09-kv-cache.html">L09 &middot; KV cache</a> &mdash; the original model.</li>
+      <li><a class="tag-b" href="44-inference-serving.html">L44 &middot; Serving</a> &mdash; how these four bills become an SLO.</li>
+      <li><a class="tag-b" href="45-caching.html">L45 &middot; Context caching</a> &mdash; the cache-hit cost model that kills re-prefill.</li>
+      <li><a class="tag-d" href="../track-d/79-context-engineering.html">L79 &middot; Context engineering</a> &mdash; deciding not to send 1M tokens at all.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b35-s7">7 &middot; Self-check <a class="hook" href="#b35-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A 640 GiB pool, MLA cache at 70,272 B/token. How many concurrent 1M-token sessions, and how many if the cache is compressed 4&times;? Express the change as a multiplier.</p>
+        <details><summary>Reveal answer</summary><p>70,272 &times; 10<sup>6</sup> = 7.0272&times;10<sup>10</sup> B = 65.45 GiB per session.
+        640/65.45 = 9.8 sessions. Compressed: 17,568 &times; 10<sup>6</sup> = 1.757&times;10<sup>10</sup> B = 16.36 GiB, so 640/16.36 = 39.1
+        sessions. Multiplier: exactly 4&times;, because the cache size scales linearly and the pool is fixed.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Prefill a 1M-token prompt on a 13B-active model with 8 GPUs at 40% MFU on 989 TFLOP/s, $2/GPU-hour. Give seconds and dollars.</p>
+        <details><summary>Reveal answer</summary><p>FLOPs = 2 &times; 13&times;10<sup>9</sup> &times; 10<sup>6</sup> = 2.6&times;10<sup>16</sup>. Aggregate throughput =
+        8 &times; 3.956&times;10<sup>14</sup> = 3.1648&times;10<sup>15</sup> FLOP/s. Time = 2.6&times;10<sup>16</sup>/3.1648&times;10<sup>15</sup>
+        = 8.22 s. Cost = 8.22 s &times; 8 GPUs / 3600 &times; $2 = $0.0365. Add <strong>631.6 s</strong> of dense attention spread over the same 8 GPUs &mdash; 77&times; the body term.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: at 32k context everything is fine; at 256k the provider's p99 time-to-first-token is 20&times; worse than your model, which assumed linear prefill. Name two candidate explanations and the measurement that distinguishes them.</p>
+        <details><summary>Reveal answer</summary><p>(a) The quadratic attention term, which <em>any</em> dense-attention path pays: going 32k &rarr; 256k multiplies attention by 64&times;
+        while prefill only grows 8&times;, so time-to-first-token grows super-linearly exactly as observed &mdash; this is the expected
+        behaviour of the formula, not an anomaly. (b) Cache offload to SSD, if the per-session cache exceeds the replica's HBM. Distinguish them by
+        measuring service time against a dense-attention FLOP model: if the measurement matches the quadratic prediction, (a); if it is 5&ndash;50&times;
+        <em>worse</em> than the quadratic prediction, offload or scheduling.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> At 1M tokens, the MLA cache read for one decode step is 70.272 GB. On a 3 TB/s device, what is the floor latency per token, and what does 4&times; compression do to it?</p>
+        <details><summary>Reveal answer</summary><p>70.272 GB / 3&times;10<sup>12</sup> B/s = 23.4 ms per token, i.e. a ceiling near 43 tok/s for that
+        session before weight reads. With 4&times; compression the read is 17.568 GB, giving 5.86 ms and a ceiling near 171 tok/s. This is why
+        long-context decode is measured in bandwidth, not FLOPs.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> You must choose between (A) 1M context with uncompressed MLA, or (B) 256k context with 4&times; compression, on the same hardware. Which serves more users and by how much?</p>
+        <details><summary>Reveal answer</summary><p>(A) 65.45 GiB/user &rarr; 9.8 sessions per 640 GiB. (B) 70,272/4 &times; 262,144 B = 4.09 GiB/user
+        &rarr; 156.3 sessions. So B serves 16&times; more users at 1/4 the context. The decision is not technical &mdash; it is
+        whether the workload actually needs 1M tokens or merely has long documents. If the answers live in the first 100k tokens, B is
+        strictly better; if the task needs full-document cross-reference, A is the only option and you budget for 9 concurrent users.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="34-dsa.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L34 &middot; DeepSeek Sparse Attention (DSA)</span></a>
+    <a class="next" href="36-mtp.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L36 &middot; Multi-token prediction</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

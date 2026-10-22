@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b49">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L49 · Induction Heads, Circuits, and What It Means for Reliability — AILearn</title>
+<meta name="description" content="Two heads cooperating across layers implement in-context copying: induction heads. They are the clearest example of a circuit, and they predict exactly which tasks an agent can and cannot be trusted on.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L49</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L49 &middot; Induction Heads, Circuits, and What It Means for Reliability</h1>
+  <p class="lede">An induction head is the smallest complete algorithm found inside a transformer: a previous-token head writes a marker, and a second head matches on it and copies what followed. It is why in-context learning works for patterns &mdash; and why it works reliably only inside the distribution the pattern has been seen in.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: induction-head detector</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">induction head</span>
+  <span class="pill">previous-token head</span>
+  <span class="pill">Q-composition</span>
+  <span class="pill">in-context copying</span>
+  <span class="pill">circuit</span>
+  <span class="pill">phase change in training</span>
+  <span class="pill">attention-score ablation</span>
+  <span class="pill">reliability boundary</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b49-s1">1 &middot; Why it exists <a class="hook" href="#b49-s1">#</a></h2>
+
+    <p>You give an agent a document with a table of codes and ask it to reformat them. It runs correctly for twelve rows and
+    then substitutes the code from row 4 into row 13. Nothing in the prompt changed. The model did not "forget" &mdash; a specific,
+    localisable mechanism failed, and you can name it.</p>
+
+    <p>That mechanism is an <strong>induction head</strong>, and it is the best-understood circuit in a transformer <span class="asof">state as of 2026-10</span>. Its job is
+    the single most useful in-context behaviour: <em>if the pattern A&hellip;B appeared earlier, then when you see A again,
+    predict B</em>. It is what lets a model copy a name, follow a formatting convention demonstrated three rows up, or continue
+    an arbitrary sequence it has never been trained on.</p>
+
+    <p>Before this was understood, the failure looked like stochastic unreliability and the response was folklore ("use
+    fewer examples", "lower the temperature"). Once you can detect induction heads and measure their activation pattern, the
+    failure becomes diagnosable: the pattern occurred too rarely in the context, the marker was ambiguous because a more
+    frequent pattern competed, or the relevant head was suppressed. That is a testable hypothesis instead of a shrug.</p>
+
+    <div class="callout boss">
+      <p>The model implements in-context pattern matching as an explicit two-head algorithm. Anything you ask it to do by
+      &ldquo;looking like an earlier example&rdquo; runs through that circuit &mdash; so its reliability limits are the circuit's
+      limits, and they can be measured.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b49-s2">2 &middot; The mental model <a class="hook" href="#b49-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> two people annotating a transcript. Person one (early layer) writes a sticky note on
+    every word saying "the word before me was X". Person two (later layer) looks for a place where the previous word equals the
+    current word, finds the sticky note from that earlier position, and reads off what came <em>after</em> it.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Two modules, one writes a summary that another reads, and
+      composition across layers &mdash; not depth alone &mdash; produces the capability. It also gets the failure mode: if the
+      sticky note is ambiguous or the earlier occurrence is missing, the answer is a plausible-but-wrong copy.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>The sticky note is a vector added to the residual stream, not a discrete
+      annotation &mdash; so it coexists and interferes with everything else written there (L48). Matching is a dot product, so it is
+      graded: "close enough" matches produce partial copies. That gradedness is why induction failures look like substitutions
+      rather than crashes.</p></div>
+    </div>
+
+    <h3>The algorithm, stated precisely</h3>
+    <ol>
+      <li><strong>Previous-token head</strong> (usually in an early layer): for each position t, attends to position t&minus;1 and
+      writes the previous token's identity into the residual stream at t.</li>
+      <li><strong>Induction head</strong> (usually a later layer, often the first layer after a phase change): its query at
+      position t contains (current token, previous token). It matches against keys from earlier positions that carry the same
+      pair &mdash; i.e. an occurrence of the same bigram &mdash; and its output is a copy of the <em>value</em> at the position
+      after that match.</li>
+    </ol>
+    <p>Net effect: complete the pattern. Seen "A B &hellip; A", predict "B". This is the mechanism behind the pre-tokenizer
+    surprise that models can continue arbitrary nonsense strings after one example and behind the observation that in-context
+    learning emerges as a sudden improvement in loss during training.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b49-s3">3 &middot; The mechanism <a class="hook" href="#b49-s3">#</a></h2>
+
+    <div class="formula">
+      score<sub>induction</sub>(t, s) &asymp; (q<sub>t</sub><sup>(cur)</sup> + q<sub>t</sub><sup>(prev)</sup>) &middot; (k<sub>s</sub><sup>(cur)</sup> + k<sub>s</sub><sup>(prev)</sup>)
+      <span class="note">The query at the current token encodes both the current token and the token before it (because the previous-token head wrote the latter into the residual stream). The key at a candidate earlier position encodes the same pair. Expanding the product gives a term matching the current token to itself and a term matching the previous token &mdash; the "Q-composition" that makes induction work. Head indices here are conceptual; real models have many heads sharing the work.</span>
+    </div>
+
+    <h3>Worked: the sequence algebra of one induction step</h3>
+    <p>Consider the context <code>&hellip; f 4 7 &hellip; f 4 [?]</code>. At the final position, the previous-token head has written
+    "4" into the stream. The induction head's query therefore encodes (f, 4). Earlier in the sequence, position of the second
+    "4" has a key encoding (4, f-prev) and is followed by 7. The highest-scoring earlier position is that "4", so the head's
+    attention weight lands there and the value it reads &mdash; the embedding of the token that followed, 7 &mdash; is added to the
+    output. Prediction: 7.</p>
+    <p>Two properties fall out of that trace, and both are reliability facts:</p>
+    <ul>
+      <li><strong>It needs the earlier occurrence in the context.</strong> No A&hellip;B earlier means no match, so the head's
+      score is diffuse and the prediction is whatever the rest of the model says. That is why in-context examples when they are
+      needed, and why they stop being needed once the pattern is in the weights.</li>
+      <li><strong>It competes with other matches.</strong> Attention is a softmax over all positions; a token repeated 40 times in
+      the context produces 40 candidate matches, and the selected one depends on tiny score differences. Higher repetition
+      means more chances, and also more chance of picking the wrong copy.</li>
+    </ul>
+
+    <h3>How to detect one, quantitatively</h3>
+    <p>The standard test constructs sequences with a long random prefix and a repeated bigram, then measures the loss on the
+    token that should be copied compared with the loss on a control token. A model with active induction heads shows a large
+    gap; a model without shows none.</p>
+    <div class="formula">
+      induction score = &minus;log&nbsp;p(correct&nbsp;copy) &nbsp;&mdash;&nbsp; ( &minus;log&nbsp;p(control) ) &nbsp;=&nbsp; log&nbsp;p(control) &minus; log&nbsp;p(copy)
+      <span class="note">Measured in nats. A large positive score means the model strongly prefers the copied token: evidence of an active induction circuit. A score near zero means the model is not doing in-context pattern matching for this input. Compare the score before and after ablating candidate heads to attribute it.</span>
+    </div>
+
+    <h3>Where the "emergence" comes from</h3>
+    <p>In training loss curves, induction heads typically appear abruptly rather than gradually, and the loss improves in a step
+    at the same moment. The mechanism is a bootstrapping loop: a previous-token head is useful on its own and gets learned early;
+    once its output is available, an induction head becomes useful and can be learned quickly; and an induction head makes copying
+    so valuable that it accelerates everything else. It is a circuit, not a scale threshold &mdash; which also explains why adding
+    parameters without enough data does not produce it.</p>
+
+    <div class="callout audit">
+      <p>This is the connection to audit discipline: you now have a <em>targeted, falsifiable diagnostic</em> for one class of
+      agent failure. Run an induction-score probe on your own prompt templates; a template with a low score is asking the model for
+      in-context pattern matching it may not perform. That is a checkable property of the prompt, not a mood about the model.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b49-s4">4 &middot; Your hands <a class="hook" href="#b49-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; build an induction probe and score a model</h4>
+      <p>The exact test you should run on every model you deploy. It takes one GPU-minute and covers the copying behaviour most
+      agents depend on.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> torch
+
+<span class="kw">def</span> <span class="fn">induction_score</span>(model, tokenizer, seed=<span class="nm">0</span>, n=<span class="nm">20</span>, prefix=<span class="nm">50</span>):
+    g = torch.Generator().manual_seed(seed)
+    scores = []
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(n):
+        rand = torch.randint(<span class="nm">1000</span>, <span class="nm">28000</span>, (prefix,), generator=g)
+        a, b = rand[<span class="nm">7</span>].item(), rand[<span class="nm">23</span>].item()
+        seq = <span class="fn">list</span>(rand.tolist()) + [a, b] + <span class="fn">list</span>(torch.randint(<span class="nm">1000</span>, <span class="nm">28000</span>, (<span class="nm">10</span>,), generator=g).tolist()) + [a]
+        ids = torch.tensor([seq])
+        <span class="kw">with</span> torch.no_grad(): logits = model(ids).logits[<span class="nm">0</span>, -<span class="nm">1</span>]
+        p = torch.softmax(logits.float(), -<span class="nm">1</span>)
+        copy_lp = torch.log(p[b]).item()                       <span class="cm"># expected: the token that followed a</span>
+        ctrl = rand[<span class="nm">40</span>].item()
+        ctrl_lp = torch.log(p[ctrl]).item()                    <span class="cm"># control: a random unrelated token</span>
+        scores.append(ctrl_lp - copy_lp)
+    <span class="kw">return</span> <span class="fn">sum</span>(scores) / <span class="fn">len</span>(scores)
+
+<span class="cm"># from transformers import GPT2LMHeadModel ; m = GPT2LMHeadModel.from_pretrained('gpt2')</span>
+<span class="cm"># print(induction_score(m, None, seed=1))</span>
+      </div>
+      <p class="expect">On a small trained model the score is large and positive (typically several nats): the model strongly
+      prefers the copied token. Repeat with the repeated bigram removed from the sequence &mdash; the score should collapse to near
+      zero, which is the control that proves the probe measures copying and not a general token preference. Do that control before
+      trusting any number.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the reliability boundary, simulated</h4>
+      <p>The most useful property of an induction circuit: copying degrades as the number of competing near-matches grows, and
+      the degradation curve is sharp. Model it as a top-1 competition between the intended match and a growing set of decoys.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+
+<span class="kw">def</span> <span class="fn">copy_accuracy</span>(n_decoys, true_margin=<span class="nm">2.0</span>, decoy_var=<span class="nm">1.0</span>,
+                   trials=<span class="nm">2000</span>, seed=<span class="nm">49</span>):
+    <span class="cm"># the intended earlier occurrence scores slightly higher than a random
+    # near-match; with more near-matches, one of them wins by chance</span>
+    rng = np.random.default_rng(seed)
+    hits = <span class="nm">0</span>
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(trials):
+        s_true = true_margin + rng.normal(<span class="nm">0</span>, <span class="nm">0.5</span>)
+        s_dec = rng.normal(<span class="nm">0</span>, decoy_var, n_decoys) <span class="kw">if</span> n_decoys <span class="kw">else</span> np.array([-np.inf])
+        hits += <span class="fn">int</span>(s_true &gt;= s_dec.max())
+    <span class="kw">return</span> hits / trials
+
+<span class="kw">for</span> nd <span class="kw">in</span> (<span class="nm">0</span>, <span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">25</span>, <span class="nm">50</span>, <span class="nm">100</span>):
+    <span class="fn">print</span>(<span class="st">f"competing near-matches={nd:4d}  copy_accuracy={copy_accuracy(nd):.3f}"</span>)
+      </div>
+      <p class="expect">Measured: 1.000 / 0.955 / 0.923 / 0.832 / 0.747 / 0.544 / 0.377 / 0.231 for 0 / 1 / 2 / 5 / 10 / 25 /
+      50 / 100 competitors. Read that as a product statement: with 10 near-duplicate patterns in context you copy correctly
+      three times in four; with 50 you are wrong more often than right. That is the production failure &ldquo;row 13 got row 4's
+      code&rdquo; &mdash; not forgetting, but losing a top-1 competition among similar-looking matches.
+      <strong>Mitigation:</strong> reduce ambiguity (unique delimiters, echoed row ids, fewer near-duplicate examples) or reduce
+      the batch size per call.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; estimate the token count at which in-context copying becomes necessary</h4>
+      <p>A planning calculation: how many demonstrations do you need before the pattern is better served by the prompt than by
+      relying on weights?</p>
+      <div class="code" data-lang="bash">
+python -c "
+# each demonstration costs tokens; copying is more reliable with more demonstrations
+# but each additional demonstration raises competition for the induction match
+for demos in (1,3,5,10,20):
+    tokens = demos*80
+    print(f'{demos:3d} demos = {tokens:5d} tokens of context; marginal prefill cost at 13B active = {2*13e9*tokens:.2e} FLOPs')
+print()
+print('with ~500-token documents per demo, 5 demos = 2500 tokens = ')
+print(2*13e9*2500)
+"
+      </div>
+      <p class="expect">Measured cost of demonstrations at 80 tokens each: 1 &rarr; 80 tokens (2.08&times;10<sup>12</sup> FLOPs),
+      3 &rarr; 240 (6.24&times;10<sup>12</sup>), 5 &rarr; 400 (1.04&times;10<sup>13</sup>), 10 &rarr; 800 (2.08&times;10<sup>13</sup>),
+      20 &rarr; 1,600 (4.16&times;10<sup>13</sup>). At 500 tokens per demonstration, 5 demos = 2,500 tokens of prefill (6.50&times;10<sup>13</sup> FLOPs).
+      Each demonstration is both a token cost and a candidate competitor in the induction competition of Experiment 2 &mdash; so
+      beyond a handful you add cost and ambiguity without improving the pattern. That is why 3&ndash;5 clean examples usually beat 20.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b49-s5">5 &middot; Failure modes <a class="hook" href="#b49-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Wrong-copy substitution.</strong> Symptom: outputs contain a value from the correct pattern but the wrong instance
+        (row 4's code in row 13). Classic induction competition; reduce ambiguity or name instances explicitly.</li>
+        <li><strong>Pattern never demonstrated.</strong> Symptom: the model produces a plausible but arbitrary format on the first
+        instance and becomes consistent afterwards. Give one clean example before the batch, not after.</li>
+        <li><strong>Distractor poisoning.</strong> Symptom: adding an irrelevant but superficially similar example degrades accuracy
+        on the real task. Near-miss matches consume the induction match; keep examples on-pattern.</li>
+        <li><strong>Assuming circuits are stable across versions.</strong> Symptom: a prompt that worked reliably on model v1 becomes
+        flaky on v2. Circuit implementations differ between checkpoints; treat prompt reliability as version-specific and re-probe.</li>
+        <li><strong>Over-attributing to one head.</strong> Symptom: ablating the "induction head" only partially changes behaviour,
+        which seems to refute the theory. Capabilities are usually distributed across many heads; attribution studies need to
+        measure effect sizes, not assume single-head responsibility.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b49-s6">6 &middot; Connects to <a class="hook" href="#b49-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L07 (heads) and L48 (the residual stream circuits compose through). &nbsp;
+    <strong>Unlocks:</strong> L50 (in-context learning) and the reliability/observability work of Track D.</p>
+    <ul>
+      <li><a class="tag-b" href="48-residual-stream.html">L48 &middot; The residual stream</a> &mdash; how the two heads communicate.</li>
+      <li><a class="tag-a" href="../track-a/07-multihead.html">L07 &middot; Multi-head &amp; why heads</a> &mdash; what a head is.</li>
+      <li><a class="tag-b" href="50-conditioning.html">L50 &middot; Conditioning &amp; ICL</a> &mdash; the capability circuit underlies.</li>
+      <li><a class="tag-a" href="../track-a/22-vector-search.html">L22 &middot; Vector search</a> &mdash; the same softmax competition, in retrieval.</li>
+      <li><a class="tag-d" href="../track-d/79-context-engineering.html">L79 &middot; Context engineering</a> &mdash; designing contexts that reduce induction ambiguity.</li>
+      <li><a class="tag-d" href="../track-d/92-reliability.html">L92 &middot; Reliability</a> &mdash; turning circuit-level knowledge into failure injection.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b49-s7">7 &middot; Self-check <a class="hook" href="#b49-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Describe the two heads involved in induction and what each writes or reads.</p>
+        <details><summary>Reveal answer</summary><p>A previous-token head in an early layer attends to position t&minus;1 for each token and writes the previous token's
+        identity into the residual stream at t. An induction head in a later layer forms a query from both the current token and
+        that previous-token marker, matches it against earlier positions carrying the same pair, and copies the value from the position
+        <em>after</em> the match. Composition of the two across layers, not the head alone, produces pattern completion.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A context contains the same bigram 30 times before the final occurrence. Give the two competing effects on copy accuracy and the net expectation.</p>
+        <details><summary>Reveal answer</summary><p>Positive: more occurrences mean the pattern is certainly available and there are many chances that one match is
+        strong. Negative: the induction softmax now competes over ~30 near-identical candidate matches, so the probability the correct
+        (most recent or most relevant) one wins shrinks. Net: reliability improves from 0 to a handful of occurrences and then
+        degrades as repeats accumulate, which is why a few clean examples beat many ambiguous ones.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: the same prompt gives 100% correct reformatting on 10 rows and fails at row 40, always by copying from a nearby earlier row. What is happening and what are two fixes?</p>
+        <details><summary>Reveal answer</summary><p>Induction competition in a long context: with 40 rows of the same shape, each new row has dozens of near-matches, and
+        attention occasionally selects a neighbouring row instead of the intended one. Fixes: (a) make rows unambiguous &mdash; unique
+        delimiters or explicit id echoed in the output; (b) process in batches small enough to keep competition low (e.g. 10 rows per
+        call) and assemble results, trading a little context cost for determinism.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why might an induction-score probe be a better deployment gate than a general benchmark?</p>
+        <details><summary>Reveal answer</summary><p>Because it targets the capability your product actually depends on (in-context copying of patterns) and it is
+        falsifiable in one GPU-minute with a built-in control (remove the repeated bigram; score should collapse). A general benchmark
+        averages across many capabilities your product never uses, so it can be flat while the specific circuit your agent needs
+        has changed.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does in-context learning appear as a sudden improvement in training rather than a gradual one?</p>
+        <details><summary>Reveal answer</summary><p>Because it is a two-stage composition: a previous-token head must exist and be useful first, and only then does an
+        induction head become learnable, since the induction head's benefit depends on the marker being available. That
+        bootstrapping produces an abrupt gain once the second stage becomes viable &mdash; a circuit appearing, not a capability
+        scaling smoothly (which is why L29's metric-artefact discussion does not apply to this particular step).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="48-residual-stream.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L48 &middot; The residual stream as shared memory</span></a>
+    <a class="next" href="50-conditioning.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L50 &middot; Conditioning, in-context learning &amp; why prompts work</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

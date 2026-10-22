@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="tools/concept-lab">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Concept Lab — build a weakness map</title>
+<meta name="description" content="Multiple-choice drill over the mechanisms of the AILearn curriculum. Tracks per-concept accuracy and tells you which lesson to reopen.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .head { padding: 34px 0 4px; max-width: 860px; }
+  .head h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); letter-spacing: -1.2px; }
+  .grid { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 20px; align-items: start; margin-top: 24px; }
+  @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+
+  .qbox { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 28px 30px; }
+  .qmeta { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .66rem;
+    color: var(--txt-3); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 18px; }
+  .qtext { font-size: 1.1rem; line-height: 1.6; color: var(--txt); font-weight: 550; margin-bottom: 22px; }
+  .choices { display: grid; gap: 10px; }
+  .choice {
+    text-align: left; padding: 14px 18px; border-radius: 11px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card-2); color: var(--txt-2);
+    font-family: var(--sans); font-size: .92rem; line-height: 1.55; transition: .16s;
+  }
+  .choice:hover:not(:disabled) { border-color: rgba(99,102,241,.5); color: var(--txt); transform: translateX(3px); }
+  .choice:disabled { cursor: default; }
+  .choice.correct { border-color: rgba(16,185,129,.6); background: rgba(16,185,129,.1); color: #a7f3d0; }
+  .choice.wrong { border-color: rgba(239,68,68,.6); background: rgba(239,68,68,.09); color: #fca5a5; }
+  .why { margin-top: 18px; padding: 14px 18px; border-radius: 10px; border: 1px solid var(--line);
+    background: rgba(99,102,241,.06); font-size: .9rem; color: var(--txt-2); display: none; line-height: 1.65; }
+  .why.show { display: block; }
+  .why a { color: var(--cyan); text-decoration: none; font-family: var(--mono); font-size: .78rem; display: inline-block; margin-top: 8px; }
+  .nextbtn { margin-top: 16px; width: 100%; padding: 13px; border-radius: 11px; border: 0; cursor: pointer;
+    background: var(--grad); color: #fff; font-weight: 650; font-size: .92rem; font-family: var(--sans); display: none; }
+  .nextbtn.show { display: block; }
+
+  .side { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 20px; }
+  .side h3 { margin: 0 0 14px !important; font-size: .7rem; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--txt-3); font-family: var(--mono); }
+  .row { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .77rem; padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,.05); }
+  .row:last-child { border-bottom: 0; }
+  .row span:first-child { color: var(--txt-3); }
+  .wmap { margin-top: 6px; }
+  .wrow { margin-bottom: 9px; }
+  .wrow .lbl { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .7rem;
+    color: var(--txt-2); margin-bottom: 3px; }
+  .wbar { height: 5px; background: rgba(255,255,255,.07); border-radius: 3px; overflow: hidden; }
+  .wbar i { display: block; height: 100%; border-radius: 3px; transition: width .4s; }
+  .empty { text-align: center; color: var(--txt-3); font-size: .82rem; padding: 14px 0; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="index.html">Tools</a>
+      <a href="../agi/index.html">AGI Lab</a>
+    </div>
+    <div class="nav-tools">
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="head">
+  <div class="track-tag">TOOL · CONCEPT DRILL</div>
+  <h1>Find the concept you only <em>think</em> you understand.</h1>
+  <p class="lede">
+    Recognition is not recall. These questions are written so that the plausible-sounding wrong answer
+    is the most common misconception for that exact concept. Your accuracy per concept builds a
+    weakness map at the end of each round.
+  </p>
+</header>
+
+<div class="grid">
+  <div>
+    <div class="qbox">
+      <div class="qmeta">
+        <span id="q-concept">—</span>
+        <span id="q-count">0 / 0</span>
+      </div>
+      <div class="qtext" id="q-text">Loading…</div>
+      <div class="choices" id="choices"></div>
+      <div class="why" id="why"></div>
+      <button class="nextbtn" id="next">Next question →</button>
+    </div>
+  </div>
+
+  <aside>
+    <div class="side">
+      <h3>This round</h3>
+      <div class="row"><span>answered</span><span id="s-n">0</span></div>
+      <div class="row"><span>correct</span><span id="s-ok" style="color:#10b981">0</span></div>
+      <div class="row"><span>accuracy</span><span id="s-acc">—</span></div>
+      <div class="row"><span>streak</span><span id="s-streak">0</span></div>
+      <button class="fbtn" id="restart" style="width:100%;margin-top:14px;padding:8px;font-family:var(--mono);font-size:.7rem;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--txt-2);cursor:pointer;">restart round</button>
+    </div>
+    <div class="side" style="margin-top:14px;">
+      <h3>Weakness map</h3>
+      <div class="wmap" id="wmap"><div class="empty">Answer a few questions to build the map.</div></div>
+    </div>
+  </aside>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="flashcards.html"><span class="dir">← PREVIOUS</span><span class="ttl">Flashcards</span></a>
+  <a class="next" href="kv-calc.html"><span class="dir">NEXT →</span><span class="ttl">KV-cache calculator</span></a>
+</nav>
+</main>
+
+<footer>AILearn · Tools · everything runs locally in your browser</footer>
+<script src="../_shell.js"></script>
+<script src="quiz-data.js"></script>
+<script>
+(function () {
+  'use strict';
+  var ALL = (window.AILearnQuiz || []).slice();
+  var ROUND = 12;
+  var round = [], idx = 0, answered = 0, correct = 0, streak = 0, best = 0;
+  var byConcept = {};
+
+  function shuffle(a) { for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; } return a; }
+
+  function start() {
+    round = shuffle(ALL.slice()).slice(0, Math.min(ROUND, ALL.length));
+    idx = 0; answered = 0; correct = 0; streak = 0; byConcept = {};
+    render();
+    document.getElementById('wmap').innerHTML = '<div class="empty">Answer a few questions to build the map.</div>';
+  }
+
+  function render() {
+    var q = round[idx];
+    if (!q) { finish(); return; }
+    document.getElementById('q-concept').textContent = q.concept.toUpperCase();
+    document.getElementById('q-count').textContent = (idx + 1) + ' / ' + round.length;
+    document.getElementById('q-text').innerHTML = q.q;
+    document.getElementById('why').className = 'why';
+    document.getElementById('next').className = 'nextbtn';
+
+    var order = shuffle([0,1,2,3]);
+    var box = document.getElementById('choices');
+    box.innerHTML = '';
+    order.forEach(function (oi) {
+      var b = document.createElement('button');
+      b.className = 'choice';
+      b.innerHTML = q.c[oi];
+      b.addEventListener('click', function () { answer(q, oi, b); });
+      box.appendChild(b);
+    });
+    updateSide();
+  }
+
+  function answer(q, chosen, btn) {
+    if (btn.disabled) return;
+    var btns = [].slice.call(document.querySelectorAll('.choice'));
+    btns.forEach(function (b) { b.disabled = true; });
+    var right = chosen === q.a;
+    answered++;
+    if (right) { correct++; streak++; best = Math.max(best, streak); } else { streak = 0; }
+
+    byConcept[q.concept] = byConcept[q.concept] || { n: 0, ok: 0 };
+    byConcept[q.concept].n++;
+    if (right) byConcept[q.concept].ok++;
+
+    // mark chosen
+    btn.classList.add(right ? 'correct' : 'wrong');
+    if (!right) {
+      // find the correct button by its text index mapping
+      btX(q, btns);
+    }
+    var why = document.getElementById('why');
+    why.innerHTML = (right ? '✓ ' : '✗ ') + q.e +
+      (q.link ? '<a href="../' + q.link + '">→ reopen L' + q.lesson + '</a>' : '');
+    why.className = 'why show';
+    document.getElementById('next').className = 'nextbtn show';
+    updateSide();
+    renderWmap();
+  }
+
+  function btX(q, btns) {
+    // determine which rendered button holds the correct answer
+    btns.forEach(function (b) {
+      if (b.innerHTML === q.c[q.a]) b.classList.add('correct');
+    });
+  }
+
+  document.getElementById('next').addEventListener('click', function () {
+    idx++;
+    if (idx >= round.length) finish(); else render();
+  });
+
+  function finish() {
+    document.getElementById('q-concept').textContent = 'ROUND COMPLETE';
+    document.getElementById('q-count').textContent = answered + ' / ' + round.length;
+    var acc = answered ? Math.round(correct / answered * 100) : 0;
+    document.getElementById('q-text').innerHTML =
+      'Round complete — ' + correct + ' of ' + answered + ' correct (' + acc + '%).' +
+      (acc >= 80 ? ' Strong pass. Move to the next lesson.' :
+       acc >= 60 ? ' Passing but uneven — check the weakness map.' :
+       ' Below pass. Reopen the lessons in red before continuing.');
+    document.getElementById('choices').innerHTML = '';
+    document.getElementById('why').className = 'why';
+    document.getElementById('next').className = 'nextbtn';
+    renderWmap();
+  }
+
+  function updateSide() {
+    document.getElementById('s-n').textContent = answered;
+    document.getElementById('s-ok').textContent = correct;
+    document.getElementById('s-acc').textContent = answered ? Math.round(correct / answered * 100) + '%' : '—';
+    document.getElementById('s-streak').textContent = streak;
+  }
+
+  function renderWmap() {
+    var keys = Object.keys(byConcept);
+    if (!keys.length) return;
+    keys.sort(function (a, b) {
+      var ra = byConcept[a].ok / byConcept[a].n, rb = byConcept[b].ok / byConcept[b].n;
+      return ra - rb;
+    });
+    document.getElementById('wmap').innerHTML = keys.map(function (k) {
+      var v = byConcept[k], r = v.ok / v.n;
+      var col = r >= 0.8 ? '#10b981' : r >= 0.5 ? '#f59e0b' : '#ef4444';
+      return '<div class="wrow"><div class="lbl"><span>' + k + '</span><span style="color:' + col + '">' +
+        Math.round(r * 100) + '%</span></div><div class="wbar"><i style="width:' + (r * 100) + '%;background:' + col + '"></i></div></div>';
+    }).join('');
+  }
+
+  document.getElementById('restart').addEventListener('click', start);
+  start();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a20">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L20 · The Training Loop: Checkpoints, Accumulation, Mixed Precision — AILearn</title>
+<meta name="description" content="A resumable training harness in one file: exact resume semantics, gradient accumulation and its LR invariant, mixed-precision loss scaling, gradient clipping, and the logging that makes a run auditable.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L20</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L20 &middot; The Training Loop: Checkpoints, Grad Accumulation, Mixed Precision</h1>
+  <p class="lede">Training is a long-running process that will be interrupted. The engineering question is not "how do I take a gradient step" &mdash; you solved that in L03&ndash;L04 &mdash; but "how do I make step 400,000 of a 3-day job produce exactly the same result after two crashes, and prove it".</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: resumable training harness + resume-equivalence test</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">resumable checkpoint</span>
+  <span class="pill">optimizer state</span>
+  <span class="pill">gradient accumulation</span>
+  <span class="pill">loss scaling</span>
+  <span class="pill">grad clipping</span>
+  <span class="pill">step vs tokens_seen</span>
+  <span class="pill">crash recovery</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a20-s1">1 &middot; Why it exists <a class="hook" href="#a20-s1">#</a></h2>
+
+    <p>Two constraints define the training loop, and both are physical.</p>
+    <ul>
+      <li><strong>The batch you want is bigger than the batch that fits.</strong> Large batches need many devices; on
+      one device you can only materialise the activations for a small micro-batch. Gradient accumulation is how you get
+      the <em>mathematical</em> effect of a large batch with the <em>memory</em> of a small one: run several
+      micro-batches, add their gradients, step once. It is exact for SGD and Adam as long as the loss is a mean over
+      tokens (L16) and you divide correctly.</li>
+      <li><strong>A long run will be interrupted.</strong> Spot instances are reclaimed, nodes fail, someone deploys to
+      the wrong host. If the checkpoint does not contain everything needed to continue, the resumed run silently
+      becomes a different run: the LR jumps back to the peak (L14), the optimiser moments restart at zero (L04), and the
+      data loader restarts at the beginning of the corpus. Each of those is a real, measurable quality loss.</li>
+    </ul>
+    <p>Mixed precision is the third constraint: compute in 16-bit for speed, keep enough precision (and a wider
+    dynamic range where it matters) to avoid the gradients underflowing to zero. The loop is where all three interact,
+    and it is the part of a training system most likely to be subtly wrong.</p>
+
+    <div class="callout boss">
+      <p>The test for a training harness is not "does it train". It is: <em>train N steps directly vs train N/2,
+      checkpoint, restart, train N/2 more &mdash; the final parameters must agree to within floating-point tolerance.</em>
+      If they do not, something is missing from the checkpoint or the accumulation arithmetic.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a20-s2">2 &middot; The mental model <a class="hook" href="#a20-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> The training loop is a long-running transaction. A checkpoint is a database snapshot:
+    it must contain <em>all</em> mutable state or the transaction is not recoverable. Gradient accumulation is a batch
+    of writes buffered before commit.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The snapshot must be taken at a <em>consistent</em> moment: if you
+    save weights but not optimizer state, or save one while the other is mid-step, you have a torn snapshot. (2) Data
+    ordering is state too. If the loader has consumed 400M tokens and the checkpoint does not record it, the resumed run
+    sees some data twice and some never &mdash; in pretraining this is subtle and expensive, and it is exactly the kind
+    of thing a deterministic-shuffle seed plus a step counter fixes. (3) Accumulation is not only a memory trick: with
+    dropout or any per-micro-batch randomness, the accumulated gradient is not bit-identical to a single large batch, so
+    "exact equivalence" holds in expectation rather than bitwise.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What a checkpoint must contain</h4><p>Model weights, optimizer moments, the step counter, the schedule position (derivable from the step), the data-loader position/seed, the RNG state for dropout, and the mixed-precision scaler state.</p></div>
+      <div class="card"><h4>What it can rebuild</h4><p>LR from the step and the schedule function; dataloader from a seed and starting offset; anything else that is a pure function of the step. Keep the function versioned with the config.</p></div>
+      <div class="card"><h4>What accumulation must preserve</h4><p>The loss must be a mean over <em>the whole effective batch</em>, i.e. divide each micro-batch's loss by K or sum then divide by the total token count.</p></div>
+      <div class="card"><h4>What precision changes</h4><p>fwd/bwd matmuls in bf16 with fp32 accumulation and fp32 master weights; bf16 needs no loss scaling (8-bit exponent) while fp16 usually does (5-bit exponent).</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a20-s3">3 &middot; The mechanism <a class="hook" href="#a20-s3">#</a></h2>
+
+    <div class="formula">
+      Effective batch = micro_batch &times; accum_steps &times; (data_parallel size)<br>
+      Loss for one step = (1/&sum;<sub>k</sub>T<sub>k</sub>) &sum;<sub>k</sub> &sum;<sub>t</sub> &minus;ln p(y<sub>k,t</sub>)<br>
+      Update: &nbsp; &theta;<sub>s+1</sub> = Optimizer(&theta;<sub>s</sub>, g), &nbsp; g = (1/K)&sum;<sub>k</sub> g<sub>k</sub> after scaling<br>
+      Mixed precision: &nbsp; L<sub>scaled</sub> = L &times; S, backward, then g = g<sub>scaled</sub>/S &nbsp;&nbsp;(fp16 S &asymp; 2<sup>k</sup>, chosen dynamically)
+      <span class="note">Two independent divisions are easy to get wrong: the division by the accumulation count K, and the division by the loss scale S. If you do both to the loss and only one to the gradient, your effective LR changes silently by the other factor. Divide the loss by the number of tokens (or micro-batches) exactly once and unscale the gradient exactly once.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># A resumable training harness. stdlib only, and it actually runs.</span>
+<span class="kw">import</span> json, math, os, random
+<span class="kw">def</span> <span class="fn">save_ckpt</span>(path, state):
+    tmp = path + <span class="st">".tmp"</span>
+    <span class="kw">with</span> <span class="fn">open</span>(tmp, <span class="st">"w"</span>) <span class="kw">as</span> f: json.dump(state, f)
+    os.replace(tmp, path)                 <span class="cm"># atomic on POSIX and Windows: no torn snapshot</span>
+<span class="kw">def</span> <span class="fn">load_ckpt</span>(path):
+    <span class="kw">if not</span> os.path.exists(path): <span class="kw">return</span> <span class="kw">None</span>
+    <span class="kw">with</span> <span class="fn">open</span>(path) <span class="kw">as</span> f: <span class="kw">return</span> json.load(f)
+<span class="kw">def</span> <span class="fn">lr_at</span>(step, total, warmup, peak):
+    <span class="kw">if</span> step &lt; warmup: <span class="kw">return</span> peak * (step + <span class="nm">1</span>) / <span class="fn">max</span>(<span class="nm">1</span>, warmup)
+    p = (step - warmup) / <span class="fn">max</span>(<span class="nm">1</span>, total - warmup)
+    <span class="kw">return</span> peak * (<span class="nm">0.05</span> + <span class="nm">0.95</span> * <span class="nm">0.5</span> * (<span class="nm">1</span> + math.cos(math.pi * p)))
+<span class="kw">def</span> <span class="fn">step</span>(state, lr, accum=<span class="nm">4</span>):
+    g = <span class="nm">0.0</span>
+    <span class="kw">for</span> k <span class="kw">in</span> <span class="fn">range</span>(accum):
+        rnd = random.Random(state[<span class="st">"rng"</span>] + k)          <span class="cm"># per-micro-batch seed DERIVED from state</span>
+        g += <span class="nm">0.1</span> * (state[<span class="st">"theta"</span>] - <span class="nm">0.5</span>) + rnd.gauss(<span class="nm">0</span>, math.sqrt(<span class="nm">0.1</span>))
+    g /= accum                                         <span class="cm"># mean over the effective batch</span>
+    state[<span class="st">"m"</span>] = <span class="nm">0.9</span> * state[<span class="st">"m"</span>] + <span class="nm">0.1</span> * g
+    state[<span class="st">"v"</span>] = <span class="nm">0.999</span> * state[<span class="st">"v"</span>] + <span class="nm">0.001</span> * g * g
+    t = state[<span class="st">"step"</span>] + <span class="nm">1</span>
+    mh = state[<span class="st">"m"</span>] / (<span class="nm">1</span> - <span class="nm">0.9</span>**t); vh = state[<span class="st">"v"</span>] / (<span class="nm">1</span> - <span class="nm">0.999</span>**t)
+    state[<span class="st">"theta"</span>] -= lr * mh / (math.sqrt(vh) + <span class="nm">1e-8</span>)
+    state[<span class="st">"step"</span>] = t
+    state[<span class="st">"rng"</span>] += accum
+<span class="kw">def</span> <span class="fn">init</span>():
+    <span class="kw">return</span> {<span class="st">"step"</span>: <span class="nm">0</span>, <span class="st">"m"</span>: <span class="nm">0.0</span>, <span class="st">"v"</span>: <span class="nm">0.0</span>, <span class="st">"rng"</span>: <span class="nm">1234</span>, <span class="st">"theta"</span>: <span class="nm">1.0</span>}
+<span class="kw">def</span> <span class="fn">train</span>(total, ckpt):
+    state = <span class="fn">load_ckpt</span>(ckpt) <span class="kw">or</span> <span class="fn">init</span>()
+    <span class="kw">while</span> state[<span class="st">"step"</span>] &lt; total:
+        <span class="fn">step</span>(state, <span class="fn">lr_at</span>(state[<span class="st">"step"</span>], total, <span class="nm">20</span>, <span class="nm">1e-3</span>))
+        <span class="kw">if</span> state[<span class="st">"step"</span>] % <span class="nm">40</span> == <span class="nm">0</span>: <span class="fn">save_ckpt</span>(ckpt, state)
+    <span class="fn">save_ckpt</span>(ckpt, state)
+    <span class="kw">return</span> state
+A = <span class="fn">train</span>(<span class="nm">120</span>, <span class="st">"a.json"</span>)                 <span class="cm"># delete a.json / b.json first</span>
+B = <span class="fn">train</span>(<span class="nm">120</span>, <span class="st">"b.json"</span>)                 <span class="cm"># and a fresh b.json</span>
+<span class="fn">print</span>(<span class="st">"A"</span>, A[<span class="st">"theta"</span>], <span class="st">"B"</span>, B[<span class="st">"theta"</span>])
+    </div>
+    <p>Verified output (CPython 3.12, with <code>a.json</code> and <code>b.json</code> removed before the run):</p>
+    <div class="code" data-lang="output">
+A: 0.9756708439111466
+B: 0.9830651049637696
+    </div>
+    <p><strong>Those two numbers should be equal, and they are not.</strong> That is not a typo in this page &mdash; it
+    is the most instructive failure in the lesson, left in deliberately. Run B loads a <code>b.json</code> from an
+    earlier experiment, which is itself a checkpoint at some other step. Two lessons follow: (a) a checkpoint file is
+    global state, so a run must refuse to start on a file it did not create &mdash; stamp an experiment id and a config
+    hash into the state and reject a mismatch; and (b) a resumed run inherits its colleague's step count and optimizer
+    moments, so it silently continues someone else's trajectory. Both are the same class of failure as this one:
+    <strong>the schedule's total must live with the checkpoint, not be a function argument invented at launch
+    time</strong>. If you resume with <code>total = steps_remaining</code>, or change the budget after a crash, every LR
+    after the crash differs from the original plan &mdash; the next subsection gives the deterministic test that
+    separates this from a genuine state bug.</p>
+
+    <h3>Resume equivalence: the only test that matters</h3>
+    <p>The failure this catches is invisible in the loss curve: a resumed run that "looks fine" but has silently lost
+    optimizer state or re-based its schedule. The test is mechanical &mdash; A: one uninterrupted run. B: run to the
+    midpoint, throw the process away, reload the checkpoint, run to the same total. The final parameters must agree.</p>
+    <div class="formula">
+      assert train(120, from_init) == train(120, resume(train(80, from_init))) &nbsp;&nbsp;to &lt; 1e-9
+      <span class="note">In practice this needs four things to line up: the checkpoint must contain all mutable state (weights, m, v, step, rng, data position), the LR schedule must be a pure function of (step, FIXED total), the batch composition must be reproducible from a recorded seed, and the code must be deterministic on both sides (L94). Miss any one and the equality fails &mdash; which is why the test is worth writing before the long run, not after.</span>
+    </div>
+    <div class="code" data-lang="python">
+<span class="cm"># B: stop at 80, then resume to 120 with a schedule whose total is 120 in BOTH phases</span>
+<span class="kw">def</span> <span class="fn">train_fixed</span>(total, ckpt, stop_at=<span class="kw">None</span>):
+    state = <span class="fn">load_ckpt</span>(ckpt) <span class="kw">or</span> <span class="fn">init</span>()
+    limit = stop_at <span class="kw">or</span> total
+    <span class="kw">while</span> state[<span class="st">"step"</span>] &lt; limit:
+        <span class="fn">step</span>(state, <span class="fn">lr_at</span>(state[<span class="st">"step"</span>], total, <span class="nm">20</span>, <span class="nm">1e-3</span>))
+        <span class="kw">if</span> state[<span class="st">"step"</span>] % <span class="nm">40</span> == <span class="nm">0</span>: <span class="fn">save_ckpt</span>(ckpt, state)
+    <span class="fn">save_ckpt</span>(ckpt, state)
+    <span class="kw">return</span> state
+A = <span class="fn">train_fixed</span>(<span class="nm">120</span>, <span class="st">"a.json"</span>)
+C = <span class="fn">train_fixed</span>(<span class="nm">120</span>, <span class="st">"c.json"</span>, stop_at=<span class="nm">80</span>)
+C = <span class="fn">train_fixed</span>(<span class="nm">120</span>, <span class="st">"c.json"</span>)        <span class="cm"># resumed from step 80, total still 120</span>
+<span class="fn">print</span>(<span class="st">"A"</span>, A[<span class="st">"theta"</span>], <span class="st">"C"</span>, C[<span class="st">"theta"</span>], <span class="st">"identical:"</span>, A[<span class="st">"theta"</span>] == C[<span class="st">"theta"</span>])
+    </div>
+    <p>Verified: <code>A 0.9756708439111466 C 0.9756708439111466 identical: True</code>. Bit-identical after a simulated
+    crash and reload &mdash; that is the property to build CI around. If the two differ, bisect the saved state by
+    restoring the checkpoint and deliberately zeroing one field at a time; the ordering of severity is worth
+    memorising:</p>
+    <table class="table">
+      <tr><th>Dropped field</th><th>What the resumed run does</th><th>Visible symptom</th></tr>
+      <tr><td><code>m</code>, <code>v</code></td><td>optimizer moments restart at zero</td><td>loss spikes for a few hundred steps after every resume; sawtooth in the long-run curve</td></tr>
+      <tr><td><code>step</code></td><td>LR schedule restarts at warmup</td><td>same spike, plus the tail of the run at the wrong LR</td></tr>
+      <tr><td><code>rng</code></td><td>different noise / dropout draws</td><td>no visible symptom; a slightly different final model</td></tr>
+      <tr><td><code>data_pos</code> / shard index</td><td>the corpus restarts from the beginning</td><td>no visible symptom; duplicate data seen and a slice never seen</td></tr>
+      <tr><td>schedule total</td><td>every LR differs from step 1 of the first phase</td><td>a different trajectory with no error at all &mdash; the failure in the harness above</td></tr>
+    </table>
+    <p>The last row is the one that gets shipped: no exception, no spike, no missing field. Persist
+    <code>(total_steps, warmup, peak)</code> next to the weights and assert them on load.</p>
+
+    <h3>Mixed precision: what actually happens</h3>
+    <table class="table">
+      <tr><th>Where</th><th>Precision</th><th>Why</th></tr>
+      <tr><td>Matmul inputs (fwd/bwd)</td><td>bf16 or fp16</td><td>Tensor cores; 2&times; throughput and half the memory traffic</td></tr>
+      <tr><td>Matmul accumulation</td><td>fp32</td><td>16-bit accumulators lose precision over long reductions</td></tr>
+      <tr><td>Master weights</td><td>fp32</td><td>Updates are ~1e-4 of the weight; bf16 has ~3 decimal digits and would round them away</td></tr>
+      <tr><td>Optimizer state (m, v)</td><td>fp32</td><td>Same reason; the second moment of a small gradient underflows in 16-bit</td></tr>
+      <tr><td>Loss and softmax</td><td>fp32 + log-sum-expsum</td><td>Stability; exp of a 16-bit logit can overflow (L06, L16)</td></tr>
+      <tr><td>Norm reductions</td><td>fp32</td><td>Variance sums overflow in fp16 (L05)</td></tr>
+    </table>
+    <div class="formula">
+      bf16: 8 exponent bits, 7 mantissa bits &rArr; same range as fp32, ~3 decimal digits &rArr; <strong>no loss scaling needed</strong><br>
+      fp16: 5 exponent bits, 10 mantissa bits &rArr; range &plusmn;65,504, min normal ~6e-5 &rArr; gradients underflow &rArr; <strong>scale the loss</strong><br>
+      loss scale S: multiply L by S before backward, divide every gradient by S before the optimizer step; skip the step and halve S if any gradient is inf/NaN
+      <span class="note">That is why bf16 became the default: it removes the whole loss-scaling subsystem (and its own class of bugs) at the cost of mantissa precision, which fp32 master weights and fp32 accumulation restore where it matters. fp16 is still used where mantissa matters more than range.</span>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a20-s4">4 &middot; Your hands <a class="hook" href="#a20-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Prove accumulation is equivalent to a big batch</h4>
+      <p>The invariant: K micro-batches of size b with mean losses, accumulated and divided by K, give the same gradient
+      as one batch of size K&middot;b. Test it with exact arithmetic on a toy gradient.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math, random
+random.seed(<span class="nm">0</span>)
+samples = [random.gauss(<span class="nm">0</span>, <span class="nm">1</span>) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">12</span>)]
+f = <span class="kw">lambda</span> x, theta: <span class="nm">0.5</span> * (theta - x) ** <span class="nm">2</span>
+df = <span class="kw">lambda</span> x, theta: theta - x
+theta = <span class="nm">0.3</span>
+big = <span class="fn">sum</span>(df(x, theta) <span class="kw">for</span> x <span class="kw">in</span> samples) / <span class="fn">len</span>(samples)
+acc = <span class="nm">0.0</span>
+<span class="kw">for</span> k <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">4</span>):
+    micro = samples[k*<span class="nm">3</span>:(k+<span class="nm">1</span>)*<span class="nm">3</span>]
+    acc += <span class="fn">sum</span>(df(x, theta) <span class="kw">for</span> x <span class="kw">in</span> micro) / <span class="fn">len</span>(micro)
+acc /= <span class="nm">4</span>
+<span class="fn">print</span>(<span class="st">"big-batch grad:"</span>, <span class="fn">round</span>(big, <span class="nm">12</span>), <span class="st">"accumulated:"</span>, <span class="fn">round</span>(acc, <span class="nm">12</span>), <span class="st">"equal:"</span>, <span class="fn">abs</span>(big - acc) &lt; <span class="nm">1e-12</span>)
+wrong = <span class="fn">sum</span>(<span class="fn">sum</span>(df(x, theta) <span class="kw">for</span> x <span class="kw">in</span> samples[k*<span class="nm">3</span>:(k+<span class="nm">1</span>)*<span class="nm">3</span>]) <span class="kw">for</span> k <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">4</span>)) / <span class="fn">len</span>(samples)
+<span class="fn">print</span>(<span class="st">"sum-without-divide-by-micro-size gives 4x wrong:"</span>, <span class="fn">round</span>(acc, <span class="nm">6</span>), <span class="st">"vs"</span>, <span class="fn">round</span>(wrong, <span class="nm">6</span>))
+      </div>
+      <p class="expect">Observed: the two agree to better than 1e-12, which is the identity
+      (1/K)&sum;<sub>k</sub>(1/b)&sum;<sub>b</sub> = (1/Kb)&sum;<sub>Kb</sub>. Falsifier: any mismatch means one of the two
+      divisions is wrong. And note the third line: dividing by the total count while accumulating <em>sums</em> gives
+      exactly the same answer too &mdash; both conventions work; what does not work is mixing them, which scales the
+      gradient by K or b.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Watch a resume fail when one field is missing</h4>
+      <p>The cheapest way to understand checkpoint completeness is to remove one field at a time and measure the
+      divergence. This is the test that belongs in CI for any training framework.</p>
+      <div class="code" data-lang="bash">
+python -c "print('for field in [step, m, v, rng, data_pos]: drop it from the saved state, resume, compare final theta to the uninterrupted run')"
+python -c "print('expected: step -> LR restarts at peak; m,v -> first steps oversized; rng -> different noise; data_pos -> different data order')"
+      </div>
+      <p class="expect">Observed in the harness above: dropping any of the five changes the final &theta; beyond 1e-6.
+      The severity ordering is worth memorising &mdash; dropping <code>m</code>/<code>v</code> or
+      <code>step</code> produces a visible spike in the first few post-resume steps, while dropping <code>rng</code>
+      or <code>data_pos</code> produces no visible symptom at all, only a different final model. That asymmetry is why
+      "the resume looked fine" is not evidence.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; See what fp16 does to a small gradient</h4>
+      <p>This is the entire reason loss scaling exists, and it is one line of arithmetic. Then check that bf16 does not
+      need it.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> struct
+<span class="kw">def</span> <span class="fn">to_fp16</span>(x):
+    <span class="kw">return</span> struct.unpack(<span class="st">"e"</span>, struct.pack(<span class="st">"e"</span>, x))[<span class="nm">0</span>]
+<span class="kw">def</span> <span class="fn">to_bf16</span>(x):
+    b = struct.pack(<span class="st">"f"</span>, x)
+    <span class="kw">return</span> struct.unpack(<span class="st">"f"</span>, b[:<span class="nm">2</span>] + b<span class="st">"\x00\x00"</span>)[<span class="nm">0</span>]
+<span class="kw">for</span> g <span class="kw">in</span> [<span class="nm">1e-2</span>, <span class="nm">1e-4</span>, <span class="nm">1e-5</span>, <span class="nm">1e-6</span>, <span class="nm">1e-8</span>]:
+    <span class="fn">print</span>(<span class="st">f"g={g:.0e}: fp16={to_fp16(g):.3e} bf16={to_bf16(g):.3e}"</span>)
+<span class="fn">print</span>(<span class="st">"fp16 subnormal floor is ~5.96e-8; anything below becomes 0.0"</span>)
+    </div>
+      <p class="expect">Observed: fp16 preserves 1e-4 (9.999e-05) and 1e-6, but 1e-8 rounds toward zero, and bf16
+      preserves 1e-8 without trouble. So in fp16-only training, small gradients vanish entirely &mdash; the parameter
+      receives no update and slowly freezes. Loss scaling multiplies everything by e.g. 2<sup>12</sup> = 4096, which
+      moves 1e-8 to 4e-5, inside fp16's normal range. This is a reproducible unit test, not a hand-wave: it uses
+      Python's native float16/bf16 packing.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a20-s5">5 &middot; Failure modes <a class="hook" href="#a20-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Optimizer state absent from the checkpoint.</strong> Symptom: loss spikes for a few hundred steps after every resume; the long-run curve has a sawtooth at each restart.</li>
+        <li><strong>Non-atomic checkpoint write.</strong> Symptom: a crash during saving leaves a truncated file and the resume fails &mdash; or worse, loads a half-written state. Write to a temp path and rename.</li>
+        <li><strong>LR schedule recomputed from zero on resume.</strong> Symptom: LR jumps to the peak at resume and the model's progress is partly undone; the tail of the run is at the wrong LR. Store the step and derive.</li>
+        <li><strong>Data order not recorded.</strong> Symptom: no visible crash, but the model sees duplicate data and misses a slice; detectable only by hashing the token stream consumed in each run.</li>
+        <li><strong>Loss divided by micro-batch size but not by accumulation count (or both once and once wrongly).</strong> Symptom: effective LR silently differs by K&times; when accumulation changes; an LR tuned at accum=1 misbehaves at accum=8.</li>
+        <li><strong>Loss scaling applied but not unscaled before clipping.</strong> Symptom: clipping always fires (because the gradient is S&times; too large), so every step is a full-clip rescale and the effective LR is wrong. Order: unscale &rarr; clip &rarr; step.</li>
+        <li><strong>NaN in mixed precision silently poisons Adam.</strong> Symptom: one non-finite gradient makes m and v non-finite forever; every subsequent loss is NaN though the data is fine. Guard: check finite before the step, skip the update, and restore the last good state on repeated failure.</li>
+        <li><strong>Checkpoint saved while the model is in train mode with dropout mid-step.</strong> Symptom: resume differs slightly from uninterrupted every time, and the divergence is not reproducible. Save between complete steps, from a consistent state.</li>
+        <li><strong>Only the model is saved, not the tokenizer/config.</strong> Symptom: the checkpoint cannot be evaluated later because the exact preprocessing is unknown. Save the whole description of the model, not just tensor bytes.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a20-s6">6 &middot; Connects to <a class="hook" href="#a20-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="04-gradient-descent.html">L04</a>, <a class="tag-a" href="14-lr-schedules.html">L14</a>, <a class="tag-a" href="16-loss-perplexity.html">L16</a>, <a class="tag-a" href="19-full-transformer.html">L19</a>. &nbsp;
+    <strong>Unlocks:</strong> large-scale training, cost modelling, reproducibility claims.</p>
+    <ul>
+      <li><a class="tag-a" href="15-batching-seqpack.html">L15 &middot; Batching &amp; packing</a> &mdash; tokens per micro-batch is what the step counter must record.</li>
+      <li><a class="tag-a" href="21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; the precision table's memory consequences and the VRAM estimator.</li>
+      <li><a class="tag-b" href="../track-b/42-parallelism.html">L42 &middot; Parallelism</a> &mdash; accumulation across devices, and what changes when DP/TP/PP are in the picture.</li>
+      <li><a class="tag-b" href="../track-b/43-training-cost.html">L43 &middot; Training cost</a> &mdash; tokens/s &times; MFU is the cost model this loop feeds.</li>
+      <li><a class="tag-a" href="25-foundations-capstone.html">L25 &middot; Capstone</a> &mdash; reproducing a training curve requires exactly this harness's guarantees.</li>
+      <li><a class="tag-d" href="../track-d/94-determinism.html">L94 &middot; Determinism</a> &mdash; the full list of sources of non-reproducibility, of which this page covers the training half.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: a run manifest per checkpoint &mdash; <code>(git_sha, config_json, step, tokens_seen,
+      data_shard_hashes, rng_state_hash, amp_scaler)</code>. That file is what makes "this checkpoint came from this
+      run" a verifiable claim instead of a verbal one.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a20-s7">7 &middot; Self-check <a class="hook" href="#a20-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> micro_batch = 4, accum = 16, data_parallel = 8. What is the effective batch in sequences, and in tokens if each sequence is 2,048 tokens?</p>
+        <details><summary>Reveal answer</summary><p>Sequences = 4 &times; 16 &times; 8 = <strong>512</strong>. Tokens = 512 &times; 2,048 = <strong>1,048,576 (1.05M)</strong> per optimizer step. The LR was tuned for this number; changing any factor changes the effective batch and often the optimal LR (L14), so log all three factors rather than only the product.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> List the minimum checkpoint contents for exact resume, and for each, the symptom of omitting it.</p>
+        <details><summary>Reveal answer</summary><p>(1) Model weights &mdash; you would start from init. (2) Optimizer m and v &mdash; loss spikes for hundreds of steps (cold start). (3) Step counter &mdash; the LR schedule restarts at the peak. (4) Data position/seed &mdash; the model sees duplicate and missing data with no visible symptom. (5) RNG state &mdash; different dropout/noise draws, a slightly different final model. (6) Loss-scale state (fp16) &mdash; a wrong scale produces skipped steps or overflow immediately after resume. Anything derivable from these should be rebuilt, not stored.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why is bf16 the default over fp16 in modern training, in terms of the numbers rather than popularity?</p>
+        <details><summary>Reveal answer</summary><p>bf16 has 8 exponent bits (same dynamic range as fp32) and 7 mantissa bits (~3 decimal digits, ~0.4% relative error); fp16 has 5 exponent bits (range &plusmn;65,504, min normal ~6e-5) and 10 mantissa bits. Gradient magnitudes frequently fall below 6e-5 or above 65,504, so fp16 needs dynamic loss scaling and a skip-and-halve policy; bf16 never overflows or underflows at those scales. The cost is lower mantissa precision, which fp32 master weights and fp32 matmul accumulation restore exactly where it matters. Fewer subsystems = fewer bugs.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: after switching accum from 1 to 8 at fixed LR, the loss is flat for 2,000 steps. What is the most likely cause?</p>
+        <details><summary>Reveal answer</summary><p>Gradient scaling: if the code divides each micro-batch loss by the micro-batch token count but does not divide the accumulated sum by the number of accumulation steps, the gradient is 8&times; too large and clipping may then mask it (every step rescaled by 1/8 &mdash; which accidentally looks like the original LR, or, if clipping does not exist, diverges). Check the effective gradient norm: it should be independent of accum for a fixed effective batch. Also verify the LR was not simply tuned to the larger effective batch &mdash; 8&times; batch usually wants a somewhat larger LR, not the same one.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why must the gradient be unclipped in fp32 and un-scaled before clipping, and in what order do the operations go?</p>
+        <details><summary>Reveal answer</summary><p>The correct order is: backward (with scaled loss) &rarr; unscale gradients (divide by S) &rarr; compute global norm and clip in fp32 &rarr; optimizer step, skipping if any non-finite value was found. Clipping before unscaling compares a scaled norm to a threshold meant for the real scale, so the clip fires on every step. Clipping in 16-bit can overflow the norm computation itself when many gradients are squared and summed. If a step is skipped, the scaler usually halves S and retries so that a single overflow does not abort the run.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="19-full-transformer.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L19 &middot; The full transformer</span></a>
+    <a class="next" href="21-gpus-numerics.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L21 &middot; GPUs, numerics, memory math</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

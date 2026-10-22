@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b37">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L37 · Encoder&ndash;Decoder and the V4.1 Asymmetric Split — AILearn</title>
+<meta name="description" content="Prefill and decode are different workloads with different bottlenecks. The V4.1 Causal Encoder&ndash;Decoder design gives them different active widths: 8B for input, 16B for output. The economics, computed.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L37</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L37 &middot; Encoder&ndash;Decoder and the V4.1 Asymmetric Split</h1>
+  <p class="lede">Reading a prompt and writing an answer are different workloads: prefill is a throughput problem, decode is a latency problem. Baking that asymmetry into the architecture &mdash; 8B active for input, 16B for output &mdash; cuts the dominant cost for prompt-heavy traffic by about half.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: prefill- vs decode-heavy economics</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">causal encoder</span>
+  <span class="pill">encoder&ndash;decoder split</span>
+  <span class="pill">asymmetric active params</span>
+  <span class="pill">prefill vs decode</span>
+  <span class="pill">prompt-heavy vs output-heavy</span>
+  <span class="pill">cost per query</span>
+  <span class="pill">workload asymmetry</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b37-s1">1 &middot; Why it exists <a class="hook" href="#b37-s1">#</a></h2>
+
+    <p>Every decoder-only model makes one implicit bet: that the cost of processing a prompt token and the cost of generating
+    an output token should be <em>equal</em>. They both use 2N<sub>active</sub> FLOPs per token. But the workloads are
+    radically different.</p>
+
+    <p>Prefill processes p tokens in parallel &mdash; it is a big matmul, throughput-bound, and can saturate the GPU. Decode
+    generates one token at a time, re-reading the entire weight stream and cache &mdash; it is latency- and bandwidth-bound,
+    and mostly wastes the compute units. Charging them the same price is like pricing a freight train per passenger the same as
+    a taxi per passenger.</p>
+
+    <p>The failure shows up as product economics. A RAG assistant that sends 20,000-token prompts and receives 200-token
+    answers is 99% prefill by token count. A reasoning model that thinks for 8,000 tokens from a 50-token question is 99%
+    decode. A single architecture tuned for both under-serves at least one, and per-token pricing forces customers with one
+    shape to subsidise the other.</p>
+
+    <p>DeepSeek-V4.1-Flash <span class="asof">state as of 2026-10</span> is described as using a new
+    <strong>Causal Encoder&ndash;Decoder</strong> architecture with <strong>8B active parameters for input and 16B for
+    output</strong>, in a 552B-total MoE. That is precisely a declaration that the two phases deserve different widths. The
+    encoder is a <em>causal</em> encoder &mdash; not the bidirectional encoder of the T5
+    <span class="asof">arXiv:1910.10683</span> or BERT <span class="asof">arXiv:1810.04805</span> lineage &mdash; which matters
+    for prefix caching (L45): a bidirectional encoder cannot be cached incrementally token by token.</p>
+
+    <div class="callout boss">
+      <p>Prefill and decode have different bottlenecks, so they should have different active widths. Splitting 8B/16B cuts the
+      bill on prompt-heavy traffic roughly in half and shifts compute to output tokens, where a unit of compute genuinely buys
+      more quality.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b37-s2">2 &middot; The mental model <a class="hook" href="#b37-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a translation agency with a reading team and a writing team. Reading a 200-page
+    brief is a bulk-scanning job; writing one perfect sentence is a craft job. Staffing them for the same headcount is obviously
+    wrong once you know the mix of jobs you take.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>The two phases have genuinely different unit economics and can be
+      staffed separately. The total bill is a weighted sum whose weights come from your traffic mix.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A reading team cannot hand over a half-read brief. Here the phases share
+      state &mdash; the encoder's cache feeds the decoder &mdash; so they cannot be optimised in isolation: shrinking the encoder
+      reduces cache quality available to the decoder. Also, unlike T5-style encoder&ndash;decoder, the encoder here is causal, so the
+      boundary is a width change rather than a masking change.</p></div>
+    </div>
+
+    <h3>The cost identity that decides everything</h3>
+    <p>For a prompt of p tokens and an output of o tokens, total FLOPs are proportional to</p>
+    <div class="formula">
+      cost &prop; N<sub>in</sub> &thinsp;p &nbsp;+&nbsp; N<sub>out</sub> &thinsp;o
+      <span class="note">N<sub>in</sub> = active parameters used to encode the prompt, N<sub>out</sub> = active parameters used per generated token. With a decoder-only model N<sub>in</sub> = N<sub>out</sub>; the asymmetry reduces to a ratio. Everything on this page follows from the two-line ratio o/p, the output-to-prompt token ratio.</span>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b37-s3">3 &middot; The mechanism <a class="hook" href="#b37-s3">#</a></h2>
+
+    <h3>The asymmetry compared against both symmetric alternatives</h3>
+    <p>Take the V4.1-Flash figures: N<sub>in</sub> = 8B, N<sub>out</sub> = 16B. Compare total work against a 16B symmetric
+    model and an 8B symmetric model on four realistic workload shapes:</p>
+
+    <table class="table">
+      <thead><tr><th>Workload (p &rarr; o)</th><th>Asymmetric 8B/16B</th><th>16B symmetric</th><th>8B symmetric</th><th>Asym / 16B-sym</th></tr></thead>
+      <tbody>
+        <tr><td>RAG answer (1,000 &rarr; 100)</td><td>9.60&times;10<sup>12</sup></td><td>1.76&times;10<sup>13</sup></td><td>8.80&times;10<sup>12</sup></td><td><strong>0.545</strong></td></tr>
+        <tr><td>Chat (1,000 &rarr; 1,000)</td><td>2.40&times;10<sup>13</sup></td><td>3.20&times;10<sup>13</sup></td><td>1.60&times;10<sup>13</sup></td><td><strong>0.750</strong></td></tr>
+        <tr><td>Reasoner (100 &rarr; 1,000)</td><td>1.68&times;10<sup>13</sup></td><td>1.76&times;10<sup>13</sup></td><td>8.80&times;10<sup>12</sup></td><td><strong>0.955</strong></td></tr>
+        <tr><td>Long-doc summarise (10,000 &rarr; 200)</td><td>8.32&times;10<sup>13</sup></td><td>1.632&times;10<sup>14</sup></td><td>8.16&times;10<sup>13</sup></td><td><strong>0.510</strong></td></tr>
+      </tbody>
+    </table>
+
+    <p>The reading: the asymmetric model is 45% cheaper than a 16B symmetric model on prompt-heavy traffic and only 4.5% cheaper
+    on output-heavy traffic. So it is a <em>strict improvement over 16B everywhere</em>, and a large one for the workloads that
+    dominate enterprise usage. It is not, however, better than an 8B symmetric model on prompt-heavy traffic (8.32 vs 8.16) &mdash;
+    because it spends 2&times; on the output side, and that is the price of the quality claim: the asymmetric model is supposed to
+    be better than 8B, not merely cheaper than 16B.</p>
+
+    <h3>The crossover: which workloads favour which design</h3>
+    <p>Set the asymmetric cost equal to a symmetric model at width N and solve for the output/prompt ratio r = o/p:</p>
+    <div class="formula">
+      8p + 16o = N(p + o) &nbsp;&rArr;&nbsp; r* = (N &minus; 8) / (16 &minus; N)
+      <span class="note">For N = 16: r* = (16&minus;8)/(16&minus;16) &rarr; &infin;, so the asymmetric model is cheaper at every finite ratio. For N = 8: r* = (8&minus;8)/(16&minus;8) = 0, also cheaper at every ratio &mdash; but here the asymmetric model is the <em>expensive</em> one whenever o &gt; 0. Read the two cases together: 8/16 sits strictly between the two symmetric designs in cost, at every workload shape. The design therefore cannot be justified by cost alone; only by quality per unit cost.</span>
+    </div>
+
+    <p>That algebra is worth internalising because it kills a common but wrong argument. An asymmetric design does not create a
+    new region of the cost space &mdash; it picks a point between the two symmetric designs. Its justification must be
+    <strong>quality</strong>: that 16B of width on output tokens buys capability that 16B on prompt tokens does not, so paying
+    for it is worth more than paying for the other. The cost table only tells you the price of the bet, not whether it wins.</p>
+
+    <h3>Why a <em>causal</em> encoder changes the accounting</h3>
+    <p>This is the architectural detail that makes the split viable in production, and it is often missed:</p>
+    <ul>
+      <li><strong>Bidirectional encoders are not incrementally cacheable.</strong> If prompt token 500 can attend to prompt token
+      900, then adding token 901 changes the representation of token 500. You cannot cache a prefix. Every request's prompt must be
+      re-encoded as a whole.</li>
+      <li><strong>A causal encoder is cacheable.</strong> Each prefix state is final once computed. So the encoder's cache can be
+      stored, reused across requests sharing a prefix, and priced as a cache read (L45).</li>
+      <li><strong>The 1/4 HBM and 1/8 SSD cache requirement</strong> <span class="asof">state as of 2026-10</span> is meaningful only
+      if the cache is reusable &mdash; and reusability is exactly what causality grants.</li>
+    </ul>
+    <p>So the causal-encoder choice is not cosmetic. It converts the encoder from a per-request cost into a
+    <em>per-unique-prefix</em> cost, which is the entire basis of context caching economics.</p>
+
+    <h3>Prefill-heavy vs decode-heavy, in seconds</h3>
+    <p>Cost in FLOPs is not the whole story because the two phases convert FLOPs to time at very different efficiencies. Using
+    S<sub>eff</sub> = 3.956&times;10<sup>14</sup> FLOP/s per GPU at 40% MFU for prefill, and a memory-bandwidth-bound model for decode
+    (roughly 2N<sub>out</sub>&times;2 bytes fetched per token at ~3&times;10<sup>12</sup> B/s):</p>
+    <table class="table">
+      <thead><tr><th>Phase</th><th>Work</th><th>Limiter</th><th>Efficiency</th></tr></thead>
+      <tbody>
+        <tr><td>Prefill, 10,000 tokens, N<sub>in</sub> = 8B</td><td>1.6&times;10<sup>14</sup> FLOPs</td><td>compute (large matmul)</td><td>high &mdash; 0.40 s on one GPU</td></tr>
+        <tr><td>Decode, 200 tokens, N<sub>out</sub> = 16B</td><td>6.4&times;10<sup>12</sup> FLOPs</td><td>bytes, not FLOPs</td><td>low &mdash; 32 GB streamed at 3 TB/s is ~10.7 ms/token, 2.13 s for 200</td></tr>
+      </tbody>
+    </table>
+    <p>Note what happens: the long prompt <em>costs more FLOPs</em> but runs efficiently; the short answer costs fewer FLOPs
+    but takes more than five times as long because it cannot use the machine. That is why N<sub>out</sub> is the number that
+    matters for latency and N<sub>in</sub> for throughput cost. Any architecture decision that conflates them will optimise the
+    wrong term.</p>
+
+    <div class="callout audit">
+      <p>The audit artifact for a serving-cost claim is a two-row cost sheet: <code>(N_in, prefill_FLOPs, prefill_seconds)</code>
+      and <code>(N_out, decode_bytes, decode_ms_per_token)</code>, each evaluated at your p90 prompt and answer lengths. A single
+      blended &ldquo;cost per token&rdquo; hides the asymmetry that the whole architecture is designed around.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b37-s4">4 &middot; Your hands <a class="hook" href="#b37-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; your own workload mix, priced</h4>
+      <p>Feed in your real prompt/length distribution and get the asymmetry ratio. This is the number that tells you whether an
+      asymmetric model is worth waiting for.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">cost</span>(p, o, n_in, n_out):
+    <span class="kw">return</span> n_in * p + n_out * o
+
+loads = [(<span class="st">"RAG answer"</span>, <span class="nm">1000</span>, <span class="nm">100</span>),
+         (<span class="st">"Chat"</span>, <span class="nm">1000</span>, <span class="nm">1000</span>),
+         (<span class="st">"Reasoner"</span>, <span class="nm">100</span>, <span class="nm">1000</span>),
+         (<span class="st">"Long-doc summary"</span>, <span class="nm">10000</span>, <span class="nm">200</span>)]
+<span class="kw">for</span> name, p, o <span class="kw">in</span> loads:
+    asym = <span class="fn">cost</span>(p, o, <span class="nm">8e9</span>, <span class="nm">16e9</span>)
+    sym16 = <span class="fn">cost</span>(p, o, <span class="nm">16e9</span>, <span class="nm">16e9</span>)
+    sym8  = <span class="fn">cost</span>(p, o, <span class="nm">8e9</span>, <span class="nm">8e9</span>)
+    <span class="fn">print</span>(<span class="st">f"{name:18s} asym={asym:.3e} vs16B={asym/sym16:.3f}x vs8B={asym/sym8:.3f}x  o/p={o/p:.3f}"</span>)
+      </div>
+      <p class="expect">Measured ratios to 16B: 0.545 / 0.750 / 0.955 / 0.510. Ratios to 8B: 1.091 / 1.500 / 1.909 / 1.020. Notice the
+      pattern: the more prompt-heavy the workload, the closer the asymmetric model comes to 8B pricing; the more output-heavy, the
+      closer it comes to 16B. Your mix tells you where you land.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the latency split that FLOPs hide</h4>
+      <p>Compute both the FLOPs and the wall-clock for the two phases. The inversion &mdash; long prompt is cheaper in time than a
+      short answer &mdash; is the most useful surprise on this page.</p>
+      <div class="code" data-lang="bash">
+python -c "
+eff=989e12*0.40; bw=3e12
+p,o,n_in,n_out=10000,200,8e9,16e9
+pf=2*n_in*p; dc=2*n_out*o
+print(f'prefill FLOPs {pf:.3e}  time {pf/eff:.3f}s')
+print(f'decode  FLOPs {dc:.3e}  bytes/token {2*n_out*2/1e9:.1f}GB  time/token {2*n_out*2/bw*1000:.2f}ms  total {2*n_out*2/bw*o:.3f}s')
+print(f'decode is { (2*n_out*2/bw*o)/(pf/eff) :.2f}x slower in wall-clock despite {pf/dc:.1f}x fewer FLOPs')
+"
+      </div>
+      <p class="expect">Precision: prefill is 0.40 s for 1.6&times;10<sup>14</sup> FLOPs; decode is 32 GB per token at 3 TB/s
+      = 10.67 ms/token, so 2.13 s for 200 tokens &mdash; 5.3&times; slower than the prefill despite 25&times; fewer FLOPs. That
+      is the asymmetry that justifies splitting the architecture, and the reason N<sub>out</sub> controls your p99.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; does caching make the encoder nearly free?</h4>
+      <p>The causal-encoder claim: because the encoder is causal, its output is cacheable per prefix, so a repeated prefix costs
+      a cache read instead of a full prefill. Quantify the saving for a realistic repeated-system-prompt scenario.</p>
+      <div class="code" data-lang="python">
+sys_prompt = <span class="nm">4_000</span>      <span class="cm"># shared prefix tokens</span>
+user_turns = <span class="nm">6</span>
+per_turn = <span class="nm">800</span>        <span class="cm"># new tokens each turn</span>
+n_in = <span class="nm">8e9</span>
+
+<span class="kw">def</span> <span class="fn">flops</span>(tokens): <span class="kw">return</span> <span class="nm">2</span> * n_in * tokens
+uncached = <span class="fn">flops</span>(sys_prompt + user_turns*per_turn) * user_turns
+cached   = <span class="fn">flops</span>(sys_prompt) + <span class="fn">flops</span>(user_turns*per_turn)
+<span class="fn">print</span>(<span class="st">f"uncached: {uncached:.3e} FLOPs"</span>)
+<span class="fn">print</span>(<span class="st">f"cached:   {cached:.3e} FLOPs  ({uncached/cached:.2f}x less)"</span>)
+      </div>
+      <p class="expect">For 6 turns sharing a 4,000-token system prompt plus 800 new tokens per turn: uncached is 6 &times;
+      8,800 = 52,800 tokens of encoder work; cached is 4,000 + 4,800 = 8,800 &mdash; 6&times; less. That ratio is exactly the turn
+      count when each turn only adds new tokens, which is why prefix caching is decisive for agent loops and why a causal
+      encoder is a prerequisite for it.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b37-s5">5 &middot; Failure modes <a class="hook" href="#b37-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Pricing assumed symmetric.</strong> Symptom: your cost model is wrong by 2&times; on prompt-heavy traffic in one
+        direction and correct on chat. Blended $/token pricing hides which phase you are paying for; always evaluate at your
+        p90 p and o separately.</li>
+        <li><strong>Non-causal encoder silently used.</strong> Symptom: prefix caching does not work despite a documented cache
+        feature; every request re-encodes the full prompt, and cache-hit rate is zero. Check that the encoder is causal before
+        promising cache economics.</li>
+        <li><strong>Cache invalidation across the encoder/decoder boundary.</strong> Symptom: a long-context task works with a
+        single turn and fails subtly across turns &mdash; the encoder's cached states were produced under different instructions.
+        Cache keys must include the full prefix bytes, not just a session id.</li>
+        <li><strong>Assuming asymmetric means faster end to end.</strong> Symptom: throughput improves but p99 latency does not,
+        because decode was the latency term all along. Split the SLO by phase: time-to-first-token is an encoder metric,
+        inter-token latency is a decoder metric.</li>
+        <li><strong>Confusing the causal encoder&ndash;decoder with T5.</strong> Symptom: architectural decisions justified with T5
+        literature (cross-attention from decoder to a bidirectional encoder) that do not apply. Here the encoder is causal and the
+        split is a width change per phase, not a masking change.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b37-s6">6 &middot; Connects to <a class="hook" href="#b37-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L09 (prefill vs decode) and L28 (inference-aware scaling). &nbsp;
+    <strong>Unlocks:</strong> serving (L44) and cache economics (L45).</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/09-kv-cache.html">L09 &middot; KV cache &amp; prefill/decode</a> &mdash; the phase split this lesson prices.</li>
+      <li><a class="tag-b" href="28-over-training.html">L28 &middot; Inference-aware scaling</a> &mdash; why inference cost drives architecture at all.</li>
+      <li><a class="tag-b" href="32-deepseek-moe.html">L32 &middot; DeepSeekMoE</a> &mdash; the 552B-total MoE this split lives inside.</li>
+      <li><a class="tag-b" href="44-inference-serving.html">L44 &middot; Serving</a> &mdash; prefill/decode disaggregation as an operations pattern.</li>
+      <li><a class="tag-b" href="45-caching.html">L45 &middot; Context caching</a> &mdash; what the causal encoder makes possible.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b37-s7">7 &middot; Self-check <a class="hook" href="#b37-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Compare total FLOPs for (p = 4,000, o = 200) on asymmetric 8B/16B versus a 16B symmetric model. What is the ratio?</p>
+        <details><summary>Reveal answer</summary><p>Asymmetric: 8B&times;4,000 + 16B&times;200 = 3.2&times;10<sup>13</sup> + 3.2&times;10<sup>12</sup> =
+        3.52&times;10<sup>13</sup>. Symmetric 16B: 16B&times;4,200 = 6.72&times;10<sup>13</sup>. Ratio = 0.524. Roughly half the work
+        &mdash; and almost all of the saving is in the prompt term, because p/o = 20.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> You have a 10,000-token prompt and generate 200 tokens on N<sub>in</sub> = 8B, N<sub>out</sub> = 16B. At 40% MFU on 989 TFLOP/s for prefill and 3 TB/s for decode weight streaming, which phase takes longer?</p>
+        <details><summary>Reveal answer</summary><p>Prefill: 2&times;8&times;10<sup>9</sup>&times;10<sup>4</sup> = 1.6&times;10<sup>14</sup> FLOPs / 3.956&times;10<sup>14</sup>
+        = 0.405 s. Decode: bytes per token = 2 (K and V not relevant here &mdash; it is the weight stream) &mdash; using 2 N<sub>out</sub> &times; 2 bytes
+        bf16 &asymp; 32 GB per token; 32 GB / 3&times;10<sup>12</sup> B/s = 10.67 ms; 200 tokens = 2.13 s. <strong>Decode is 5.3&times; slower</strong>
+        despite using 25&times; fewer FLOPs, because decode cannot use the compute units. This is why N<sub>out</sub> drives latency.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> The asymmetric model is cheaper than 16B at every output ratio and more expensive than 8B at every ratio. What does that imply about the justification for the design?</p>
+        <details><summary>Reveal answer</summary><p>That the justification cannot be cost &mdash; 8B symmetric is cheaper for prompt-heavy traffic and the asymmetric point is a
+        convex combination of the two. The justification must be <em>quality per unit cost</em>: extra width on output tokens buys more
+        capability than the same width on input tokens, so a model that spends 16B on generation can beat both an 8B model (which it is
+        dearer than) and a 16B model (which it is cheaper than) on output quality. Without a quality argument the split is pointless.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does the encoder have to be causal for prefix caching to work, and what would a bidirectional encoder cost you?</p>
+        <details><summary>Reveal answer</summary><p>In a causal encoder a token's representation depends only on earlier tokens, so a prefix's states are final and
+        reusable. In a bidirectional encoder, adding token 901 changes token 500's representation, so no prefix state is stable and every
+        request must re-encode from scratch. The cost of a bidirectional encoder is therefore the entire 6&times; re-prefill penalty in
+        Experiment 3 &mdash; you would lose incremental caching completely.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Diagnostic: throughput went up after switching to an asymmetric model, but users complain about latency. What did you measure, and what should you measure?</p>
+        <details><summary>Reveal answer</summary><p>You measured aggregate tokens/sec, which is dominated by the encoder's efficient parallel phase. Users feel
+        inter-token latency, which is governed by N<sub>out</sub> and by decode bandwidth. Measure time-to-first-token (encoder metric) and
+        inter-token latency (decoder metric) separately, and set separate SLOs. A throughput win can coexist with a p99
+        latency regression.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="36-mtp.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L36 &middot; Multi-token prediction</span></a>
+    <a class="next" href="38-flash-attention.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L38 &middot; FlashAttention and IO-awareness</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

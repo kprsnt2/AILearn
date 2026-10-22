@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c68">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L68 &middot; RL with self-feedback and its failure modes &mdash; AILearn</title>
+<meta name="description" content="Self-feedback as a reward with a correlated error term: executable grounding, falsifiable critiques, a stop rule, and the regression check that makes loops honest.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L68</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L68 &middot; RL with self-feedback and its failure modes</h1>
+  <p class="lede">When there is no verifier, the model critiques its own attempt &mdash; and the optimiser learns to satisfy the critic, who is the same model. This page builds the loop with a hard stop rule, counts defects per round, and measures the flattery failure.</p>
+  <div class="chips">
+    <span class="chip">~27 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: self-critique loop with a stop rule</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">self-feedback</span>
+  <span class="pill">critic-policy correlation</span>
+  <span class="pill">executable grounding</span>
+  <span class="pill">falsifiable critique</span>
+  <span class="pill">stop rule</span>
+  <span class="pill">regression re-check</span>
+  <span class="pill">flattery failure</span>
+  <span class="pill">defect yield</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c68-s1">1 &middot; Why it exists <a class="hook" href="#c68-s1">#</a></h2>
+
+    <p>The verifier you need does not exist. The task is "build this feature end to end", "make this report
+    correct", "refactor this module" &mdash; there is no unit test that captures the goal, and the reward model you
+    could train would be a model of your own judgement. The failure is <strong>no external reward at
+    all for the work you actually care about</strong>, and the workaround is to have the model generate feedback
+    about its own attempt and optimise against that.</p>
+
+    <p><span class="asof">state as of 2026-10</span> DeepSeek-V4.1-Flash-1017 (Oct 2026) is described as using
+    reinforcement learning with <strong>self-feedback</strong> for end-to-end project development &mdash; the
+    "wish-driven programming" line. The idea in one sentence: instead of a reward model trained on human
+    preference, ask the model to critique the artifact against the stated wish, and treat the critique as
+    the reward signal.</p>
+
+    <div class="callout boss">
+      <p>Self-feedback replaces a reward model you cannot build with a critic that shares the policy's blind
+      spots. That trade is not free and it is not always bad &mdash; it works when the critique is grounded in
+      something checkable (does the project run, does the file exist, does the test pass), and it fails when
+      the critique is a judgement the model can flatter. The engineering is deciding which of those two
+      situations you are in.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c68-s2">2 &middot; The mental model <a class="hook" href="#c68-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> self-feedback is a reward with a correlated error term. Write the
+    reward as the true objective plus two errors &mdash; one the critic can see and one it cannot:</p>
+
+    <div class="formula">
+      R<sub>sf</sub>(y) = r<sup>*</sup>(y) &nbsp;+&nbsp; &epsilon;<sub>visible</sub>(y) &minus; &epsilon;<sub>shared</sub>(y)
+      <span class="note">&epsilon;_visible is a defect the critic detects and fixes; &epsilon;_shared is a defect the critic systematically misjudges because it is the same model. Optimisation amplifies whatever survives.</span>
+    </div>
+
+    <p>Because the critic is sampled from the same model, self-feedback has a specific equilibrium problem:
+    the policy can learn to produce artifacts that <em>this critic</em> cannot fault, which is not the same as
+    artifacts that are good. Two structural defences exist and both are about grounding:</p>
+
+    <table class="table">
+      <thead><tr><th>Defence</th><th>Mechanism</th><th>What it fixes</th><th>What it cannot fix</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Executable grounding</strong></td><td>The critique must cite a command and its output (build, test, lint, run)</td><td>Turns &epsilon; into something checkable</td><td>Anything the checks do not cover &mdash; design, intent</td></tr>
+        <tr><td><strong>Rubric grounding</strong></td><td>The critique must score named criteria with evidence, not a global "good"</td><td>Reduces flattery and length bias</td><td>A rubric can be satisfied literally and wrongly</td></tr>
+        <tr><td><strong>Stop rule</strong></td><td>Iterate until the critique produces no new <em>falsifiable</em> defect, with a hard round cap</td><td>Prevents infinite self-approval loops and token burn</td><td>Cannot tell you the loop converged on the wrong fix</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "correlated error" gets right</h4><p>It predicts the observed pattern in
+      self-refinement: iterations fix superficial, checkable problems first and then stop improving, while
+      the transcript gets longer and more confident.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>The critic is not one model &mdash; a fresh sample with a fresh
+      prompt has partial independence, which is why one round often helps and five rounds do not. Treat
+      independence as a resource that decays with rounds, not a property of the critic.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c68-s3">3 &middot; The mechanism <a class="hook" href="#c68-s3">#</a></h2>
+
+    <p>The loop, with the stop rule made explicit:</p>
+
+    <div class="formula">
+      loop: &nbsp; y<sub>t+1</sub> &larr; revise( y<sub>t</sub>, critique(y<sub>t</sub>) ) &nbsp;until&nbsp; noNewFalsifiableDefect(critique(y<sub>t</sub>)) &nbsp;or&nbsp; t = T
+      <span class="note">"Falsifiable" is the load-bearing word: a defect must name something you can check. "The code could be cleaner" is not a stop condition, it is a licence to loop.</span>
+    </div>
+
+    <p>Two numbers to instrument, because self-feedback without them is indistinguishable from doing nothing
+    expensively:</p>
+    <ul>
+      <li><strong>New-defect yield per round.</strong> If round 3 produces no new checkable defect, the loop is
+          done, whatever it says. If round 3 produces defects but they are all about style, the critic has
+          drifted to the easy surface.</li>
+      <li><strong>Regression rate per round.</strong> Each revision must be re-checked against everything
+          previously satisfied. Self-revision that fixes one thing and breaks another is common and invisible
+          unless you run the full check suite each round.</li>
+    </ul>
+<div class="code" data-lang="python">
+<span class="cm"># L68: self-feedback loop with a stop rule and per-round accounting.</span>
+<span class="cm"># The "artifact" is a set of criteria -&gt; satisfied?. The critic is a noisy, partly blind detector.</span>
+<span class="cm"># Pure stdlib.</span>
+<span class="kw">import</span> random
+
+CRITERIA = [<span class="st">"runs"</span>, <span class="st">"tests_pass"</span>, <span class="st">"handles_empty"</span>, <span class="st">"docstring"</span>, <span class="st">"no_global_state"</span>]
+<span class="cm"># How well a self-critic can SEE a missing criterion. Executable ones are visible; the ones</span>
+<span class="cm"># the model also authored are mostly invisible to it -- that is the shared blind spot.</span>
+VISIBILITY = {<span class="st">"runs"</span>: <span class="nm">0.95</span>, <span class="st">"tests_pass"</span>: <span class="nm">0.95</span>, <span class="st">"handles_empty"</span>: <span class="nm">0.55</span>,
+              <span class="st">"docstring"</span>: <span class="nm">0.30</span>, <span class="st">"no_global_state"</span>: <span class="nm">0.25</span>}
+TOKENS_PER_ROUND = <span class="nm">40000</span>
+
+
+<span class="kw">def</span> critic(art, rng):
+    <span class="kw">return</span> [c <span class="kw">for</span> c <span class="kw">in</span> CRITERIA <span class="kw">if</span> <span class="kw">not</span> art[c] <span class="kw">and</span> rng.random() &lt; VISIBILITY[c]]
+
+
+<span class="kw">def</span> revise(art, defects, rng):
+    new = dict(art)
+    <span class="kw">for</span> d <span class="kw">in</span> defects:
+        new[d] = <span class="kw">True</span>
+        <span class="kw">for</span> other <span class="kw">in</span> CRITERIA:                 <span class="cm"># any fix can silently break something else</span>
+            <span class="kw">if</span> other != d <span class="kw">and</span> new[other] <span class="kw">and</span> rng.random() &lt; <span class="nm">0.15</span>:
+                new[other] = <span class="kw">False</span>
+    <span class="kw">return</span> new
+
+
+<span class="kw">def</span> independent(art):
+    <span class="kw">return</span> sum(art.values()) / len(CRITERIA)
+
+
+<span class="kw">def</span> run(limit=<span class="nm">8</span>, stop_on_zero=<span class="kw">True</span>, seed=<span class="nm">2</span>):
+    rng = random.Random(seed)
+    art = {c: <span class="kw">False</span> <span class="kw">for</span> c <span class="kw">in</span> CRITERIA}
+    rows = []
+    <span class="kw">for</span> r <span class="kw">in</span> range(<span class="nm">1</span>, limit + <span class="nm">1</span>):
+        defects = critic(art, rng)
+        score = independent(art)
+        rows.append((r, len(defects), score, r * TOKENS_PER_ROUND))
+        <span class="kw">if</span> <span class="kw">not</span> defects:
+            <span class="kw">if</span> stop_on_zero:
+                <span class="kw">break</span>
+            <span class="kw">continue</span>
+        art = revise(art, defects, rng)
+    <span class="kw">return</span> rows, art
+
+
+<span class="kw">print</span>(f<span class="st">"{'round':&gt;6}{'defects raised':&gt;16}{'independent score':&gt;19}{'tokens':&gt;10}"</span>)
+rows, art = run()
+<span class="kw">for</span> r, d, s, t <span class="kw">in</span> rows:
+    <span class="kw">print</span>(f<span class="st">"{r:&gt;6}{d:&gt;16}{s:&gt;19.2f}{t:&gt;10,}"</span>)
+<span class="kw">print</span>(f<span class="st">"final artifact: {art}"</span>)
+<span class="kw">print</span>(<span class="st">"\nthe loop stopped at round"</span>, rows[-<span class="nm">1</span>][<span class="nm">0</span>], <span class="st">"because the critic saw NOTHING,"</span>)
+<span class="kw">print</span>(<span class="st">"at an independent score of"</span>, round(rows[-<span class="nm">1</span>][<span class="nm">2</span>], <span class="nm">2</span>), <span class="st">"-- i.e. one criterion is still unmet"</span>)
+<span class="kw">print</span>(<span class="st">"and the critic is structurally blind to it. That gap is the ceiling of self-feedback."</span>)
+
+<span class="cm"># cost of not having the stop rule</span>
+rows_all, _ = run(limit=<span class="nm">8</span>, stop_on_zero=<span class="kw">False</span>)
+<span class="kw">print</span>(f<span class="st">"\nwithout the stop rule, tokens spent: {rows_all[-1][3]:,} for the same final artifact"</span>)
+<span class="kw">print</span>(f<span class="st">"with it: {rows[-1][3]:,}"</span>)
+</div><div class="code out-block" data-lang="output">
+ round  defects raised  independent score    tokens
+     1               3               0.00    40,000
+     2               1               0.60    80,000
+     3               0               0.80   120,000
+final artifact: {'runs': True, 'tests_pass': True, 'handles_empty': True, 'docstring': True, 'no_global_state': False}
+
+the loop stopped at round 3 because the critic saw NOTHING,
+at an independent score of 0.8 -- i.e. one criterion is still unmet
+and the critic is structurally blind to it. That gap is the ceiling of self-feedback.
+
+without the stop rule, tokens spent: 320,000 for the same final artifact
+with it: 120,000
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c68-s4">4 &middot; Your hands <a class="hook" href="#c68-s4">#</a></h2>
+
+    <p>Three labs: run a critique loop with a stop rule and count defects per round, watch what happens
+    without regression checking, and measure the flattery failure where the critic approves a worse artifact.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; run the loop and read where it stopped</h4>
+      <p>Five criteria, an artifact that starts with all five unmet, and a critic whose visibility per criterion is set by how checkable it is. Each round: the critic reports defects, the artifact is revised, and fixes carry a 15% chance of breaking something else.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L68: self-feedback loop with a stop rule and per-round accounting.</span>
+<span class="cm"># The "artifact" is a set of criteria -&gt; satisfied?. The critic is a noisy, partly blind detector.</span>
+<span class="cm"># Pure stdlib.</span>
+<span class="kw">import</span> random
+
+CRITERIA = [<span class="st">"runs"</span>, <span class="st">"tests_pass"</span>, <span class="st">"handles_empty"</span>, <span class="st">"docstring"</span>, <span class="st">"no_global_state"</span>]
+<span class="cm"># How well a self-critic can SEE a missing criterion. Executable ones are visible; the ones</span>
+<span class="cm"># the model also authored are mostly invisible to it -- that is the shared blind spot.</span>
+VISIBILITY = {<span class="st">"runs"</span>: <span class="nm">0.95</span>, <span class="st">"tests_pass"</span>: <span class="nm">0.95</span>, <span class="st">"handles_empty"</span>: <span class="nm">0.55</span>,
+              <span class="st">"docstring"</span>: <span class="nm">0.30</span>, <span class="st">"no_global_state"</span>: <span class="nm">0.25</span>}
+TOKENS_PER_ROUND = <span class="nm">40000</span>
+
+
+<span class="kw">def</span> critic(art, rng):
+    <span class="kw">return</span> [c <span class="kw">for</span> c <span class="kw">in</span> CRITERIA <span class="kw">if</span> <span class="kw">not</span> art[c] <span class="kw">and</span> rng.random() &lt; VISIBILITY[c]]
+
+
+<span class="kw">def</span> revise(art, defects, rng):
+    new = dict(art)
+    <span class="kw">for</span> d <span class="kw">in</span> defects:
+        new[d] = <span class="kw">True</span>
+        <span class="kw">for</span> other <span class="kw">in</span> CRITERIA:                 <span class="cm"># any fix can silently break something else</span>
+            <span class="kw">if</span> other != d <span class="kw">and</span> new[other] <span class="kw">and</span> rng.random() &lt; <span class="nm">0.15</span>:
+                new[other] = <span class="kw">False</span>
+    <span class="kw">return</span> new
+
+
+<span class="kw">def</span> independent(art):
+    <span class="kw">return</span> sum(art.values()) / len(CRITERIA)
+
+
+<span class="kw">def</span> run(limit=<span class="nm">8</span>, stop_on_zero=<span class="kw">True</span>, seed=<span class="nm">2</span>):
+    rng = random.Random(seed)
+    art = {c: <span class="kw">False</span> <span class="kw">for</span> c <span class="kw">in</span> CRITERIA}
+    rows = []
+    <span class="kw">for</span> r <span class="kw">in</span> range(<span class="nm">1</span>, limit + <span class="nm">1</span>):
+        defects = critic(art, rng)
+        score = independent(art)
+        rows.append((r, len(defects), score, r * TOKENS_PER_ROUND))
+        <span class="kw">if</span> <span class="kw">not</span> defects:
+            <span class="kw">if</span> stop_on_zero:
+                <span class="kw">break</span>
+            <span class="kw">continue</span>
+        art = revise(art, defects, rng)
+    <span class="kw">return</span> rows, art
+
+
+<span class="kw">print</span>(f<span class="st">"{'round':&gt;6}{'defects raised':&gt;16}{'independent score':&gt;19}{'tokens':&gt;10}"</span>)
+rows, art = run()
+<span class="kw">for</span> r, d, s, t <span class="kw">in</span> rows:
+    <span class="kw">print</span>(f<span class="st">"{r:&gt;6}{d:&gt;16}{s:&gt;19.2f}{t:&gt;10,}"</span>)
+<span class="kw">print</span>(f<span class="st">"final artifact: {art}"</span>)
+<span class="kw">print</span>(<span class="st">"\nthe loop stopped at round"</span>, rows[-<span class="nm">1</span>][<span class="nm">0</span>], <span class="st">"because the critic saw NOTHING,"</span>)
+<span class="kw">print</span>(<span class="st">"at an independent score of"</span>, round(rows[-<span class="nm">1</span>][<span class="nm">2</span>], <span class="nm">2</span>), <span class="st">"-- i.e. one criterion is still unmet"</span>)
+<span class="kw">print</span>(<span class="st">"and the critic is structurally blind to it. That gap is the ceiling of self-feedback."</span>)
+
+<span class="cm"># cost of not having the stop rule</span>
+rows_all, _ = run(limit=<span class="nm">8</span>, stop_on_zero=<span class="kw">False</span>)
+<span class="kw">print</span>(f<span class="st">"\nwithout the stop rule, tokens spent: {rows_all[-1][3]:,} for the same final artifact"</span>)
+<span class="kw">print</span>(f<span class="st">"with it: {rows[-1][3]:,}"</span>)
+</div><div class="code out-block" data-lang="output">
+ round  defects raised  independent score    tokens
+     1               3               0.00    40,000
+     2               1               0.60    80,000
+     3               0               0.80   120,000
+final artifact: {'runs': True, 'tests_pass': True, 'handles_empty': True, 'docstring': True, 'no_global_state': False}
+
+the loop stopped at round 3 because the critic saw NOTHING,
+at an independent score of 0.8 -- i.e. one criterion is still unmet
+and the critic is structurally blind to it. That gap is the ceiling of self-feedback.
+
+without the stop rule, tokens spent: 320,000 for the same final artifact
+with it: 120,000
+</div>
+      <p class="expect">Three rounds, and the loop stops because the critic saw nothing &mdash; at an independent score of 0.80, with one criterion still unmet that the critic is structurally blind to. That number is the ceiling of self-feedback, and the loop prints it instead of you having to assert it.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the stop rule is the cheapest optimisation available</h4>
+      <p>The last block re-runs the same loop with the stop rule disabled.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L68: self-feedback loop with a stop rule and per-round accounting.</span>
+<span class="cm"># The "artifact" is a set of criteria -&gt; satisfied?. The critic is a noisy, partly blind detector.</span>
+<span class="cm"># Pure stdlib.</span>
+<span class="kw">import</span> random
+
+CRITERIA = [<span class="st">"runs"</span>, <span class="st">"tests_pass"</span>, <span class="st">"handles_empty"</span>, <span class="st">"docstring"</span>, <span class="st">"no_global_state"</span>]
+<span class="cm"># How well a self-critic can SEE a missing criterion. Executable ones are visible; the ones</span>
+<span class="cm"># the model also authored are mostly invisible to it -- that is the shared blind spot.</span>
+VISIBILITY = {<span class="st">"runs"</span>: <span class="nm">0.95</span>, <span class="st">"tests_pass"</span>: <span class="nm">0.95</span>, <span class="st">"handles_empty"</span>: <span class="nm">0.55</span>,
+              <span class="st">"docstring"</span>: <span class="nm">0.30</span>, <span class="st">"no_global_state"</span>: <span class="nm">0.25</span>}
+TOKENS_PER_ROUND = <span class="nm">40000</span>
+
+
+<span class="kw">def</span> critic(art, rng):
+    <span class="kw">return</span> [c <span class="kw">for</span> c <span class="kw">in</span> CRITERIA <span class="kw">if</span> <span class="kw">not</span> art[c] <span class="kw">and</span> rng.random() &lt; VISIBILITY[c]]
+
+
+<span class="kw">def</span> revise(art, defects, rng):
+    new = dict(art)
+    <span class="kw">for</span> d <span class="kw">in</span> defects:
+        new[d] = <span class="kw">True</span>
+        <span class="kw">for</span> other <span class="kw">in</span> CRITERIA:                 <span class="cm"># any fix can silently break something else</span>
+            <span class="kw">if</span> other != d <span class="kw">and</span> new[other] <span class="kw">and</span> rng.random() &lt; <span class="nm">0.15</span>:
+                new[other] = <span class="kw">False</span>
+    <span class="kw">return</span> new
+
+
+<span class="kw">def</span> independent(art):
+    <span class="kw">return</span> sum(art.values()) / len(CRITERIA)
+
+
+<span class="kw">def</span> run(limit=<span class="nm">8</span>, stop_on_zero=<span class="kw">True</span>, seed=<span class="nm">2</span>):
+    rng = random.Random(seed)
+    art = {c: <span class="kw">False</span> <span class="kw">for</span> c <span class="kw">in</span> CRITERIA}
+    rows = []
+    <span class="kw">for</span> r <span class="kw">in</span> range(<span class="nm">1</span>, limit + <span class="nm">1</span>):
+        defects = critic(art, rng)
+        score = independent(art)
+        rows.append((r, len(defects), score, r * TOKENS_PER_ROUND))
+        <span class="kw">if</span> <span class="kw">not</span> defects:
+            <span class="kw">if</span> stop_on_zero:
+                <span class="kw">break</span>
+            <span class="kw">continue</span>
+        art = revise(art, defects, rng)
+    <span class="kw">return</span> rows, art
+
+
+<span class="kw">print</span>(f<span class="st">"{'round':&gt;6}{'defects raised':&gt;16}{'independent score':&gt;19}{'tokens':&gt;10}"</span>)
+rows, art = run()
+<span class="kw">for</span> r, d, s, t <span class="kw">in</span> rows:
+    <span class="kw">print</span>(f<span class="st">"{r:&gt;6}{d:&gt;16}{s:&gt;19.2f}{t:&gt;10,}"</span>)
+<span class="kw">print</span>(f<span class="st">"final artifact: {art}"</span>)
+<span class="kw">print</span>(<span class="st">"\nthe loop stopped at round"</span>, rows[-<span class="nm">1</span>][<span class="nm">0</span>], <span class="st">"because the critic saw NOTHING,"</span>)
+<span class="kw">print</span>(<span class="st">"at an independent score of"</span>, round(rows[-<span class="nm">1</span>][<span class="nm">2</span>], <span class="nm">2</span>), <span class="st">"-- i.e. one criterion is still unmet"</span>)
+<span class="kw">print</span>(<span class="st">"and the critic is structurally blind to it. That gap is the ceiling of self-feedback."</span>)
+
+<span class="cm"># cost of not having the stop rule</span>
+rows_all, _ = run(limit=<span class="nm">8</span>, stop_on_zero=<span class="kw">False</span>)
+<span class="kw">print</span>(f<span class="st">"\nwithout the stop rule, tokens spent: {rows_all[-1][3]:,} for the same final artifact"</span>)
+<span class="kw">print</span>(f<span class="st">"with it: {rows[-1][3]:,}"</span>)
+</div><div class="code out-block" data-lang="output">
+ round  defects raised  independent score    tokens
+     1               3               0.00    40,000
+     2               1               0.60    80,000
+     3               0               0.80   120,000
+final artifact: {'runs': True, 'tests_pass': True, 'handles_empty': True, 'docstring': True, 'no_global_state': False}
+
+the loop stopped at round 3 because the critic saw NOTHING,
+at an independent score of 0.8 -- i.e. one criterion is still unmet
+and the critic is structurally blind to it. That gap is the ceiling of self-feedback.
+
+without the stop rule, tokens spent: 320,000 for the same final artifact
+with it: 120,000
+</div>
+      <p class="expect">Without the stop rule the run spends 320,000 tokens for an identical final artifact; with it, 120,000. The difference is not quality, it is the loop talking to itself. The same rule applies to any refinement pipeline: if defect yield is zero, more rounds cannot help, because there is nothing left that the critic can see.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; raise the visibility of one criterion</h4>
+      <p>Change <code>no_global_state</code> from 0.25 to 0.95 and re-run. The grounded check turns an invisible defect into a visible one.</p>
+<div class="code" data-lang="python">
+VISIBILITY = {<span class="st">"runs"</span>: <span class="nm">0.95</span>, <span class="st">"tests_pass"</span>: <span class="nm">0.95</span>, <span class="st">"handles_empty"</span>: <span class="nm">0.55</span>,
+              <span class="st">"docstring"</span>: <span class="nm">0.30</span>, <span class="st">"no_global_state"</span>: <span class="nm">0.95</span>}   <span class="cm"># &lt;- now grounded</span>
+</div>
+      <p class="expect">The ceiling moves from 0.80 to 1.00: the loop converges because the critic can see everything. That is the whole argument for grounding a critique in a check rather than in an opinion. Remove the executable criteria and the ceiling drops to whatever the model can judge about itself.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c68-s5">5 &middot; Failure modes <a class="hook" href="#c68-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Critic flattery.</strong> Symptom: the artifact gets worse by an external measure while the self-critique says "looks good"; correlate critique score with an independent grader to detect it.</li>
+        <li><strong>No stop rule.</strong> Symptom: token spend grows every round while defect yield is zero; the model keeps finding stylistic "improvements".</li>
+        <li><strong>Regression without re-check.</strong> Symptom: round N fixes defect A and reintroduces defect B, which was fixed in round N&minus;2. Only a full re-check per round catches it.</li>
+        <li><strong>Unfalsifiable critique.</strong> Symptom: transcripts full of "could be more robust" and "consider edge cases" with no command, file, or line referenced.</li>
+        <li><strong>Reward collapse onto style.</strong> Symptom: revisions change naming and formatting but not behaviour; diff size grows while test results are unchanged.</li>
+        <li><strong>Loop-induced overfitting to the critic.</strong> Symptom: the artifact satisfies the model's own rubric while failing the human rubric that motivated the work.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>For every self-feedback loop, log per round: round number, defects raised, defects falsifiable,
+      defects verified fixed, regressions, tokens spent, and an independent score. A loop is only an improvement
+      loop if the independent score moves; otherwise it is a transcript generator.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c68-s6">6 &middot; Connects to <a class="hook" href="#c68-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="65-self-play-dialectic.html">L65 &middot; Self-play and debate</a>,
+    <a class="tag-c" href="59-process-reward.html">L59 &middot; Process rewards</a>,
+    <a class="tag-c" href="63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a>.</p>
+    <p><strong>Unlocks:</strong> end-to-end project generation as a training environment, and tool-use training with execution feedback.</p>
+
+    <ul>
+      <li><a class="tag-c" href="70-tool-use-training.html">L70 &middot; Tool-use training</a> &mdash; execution feedback as the grounded version of self-feedback.</li>
+      <li><a class="tag-c" href="67-data-synthesis.html">L67 &middot; Data synthesis</a> &mdash; environments that make the critique checkable.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; the general form of the flattery failure.</li>
+      <li><a class="tag-d" href="../track-d/89-llm-as-judge.html">L89 &middot; LLM-as-judge</a> &mdash; bias measurement for the critic in this loop.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c68-s7">7 &middot; Self-check <a class="hook" href="#c68-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does a self-feedback loop need a full re-check of all previously satisfied criteria every round?</p>
+        <details><summary>Reveal answer</summary><p>Because revision is not monotone. A change that fixes defect A can reintroduce defect B, and if you only check the newlyraised defect, you will not see it. The regression rate per round is the metric that reveals this, and it is only measurablewith a full check suite run at every iteration. Without it, a five-round loop can end worse than round one while every roundreports progress.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: 5 rounds, 40k tokens per round, defect yields [3, 2, 1, 0, 0]. How much of the budget was spent after the loop had converged, at a stop rule of no-new-defect?</p>
+        <details><summary>Reveal answer</summary><p>Convergence at round 3 (first zero-yield round is round 4; a correct stop rule halts after round 3's yield of 1 is resolved).Rounds 4 and 5 spend 80k tokens for zero defects. With a hard stop on zero yield, you cut 40% of the spend. This is thecheapest single improvement available to any self-refinement pipeline.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> What distinguishes a falsifiable critique from an unfalsifiable one?</p>
+        <details><summary>Reveal answer</summary><p>A falsifiable critique names something checkable: a file, a line, a failing command, a missing test, a numerical result.An unfalsifiable one names a quality (more robust, cleaner) with no way to determine whether the revision achieved it.Only falsifiable critiques can drive an improvement loop, because only they give a criterion for stopping.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: your self-refinement loop's artifact passes all internal checks but a human reviewer rejects it. What happened and what does it tell you about the critic?</p>
+        <details><summary>Reveal answer</summary><p>The loop converged on the critic's fixed point, which is not the human's. The critic's coverage and the human's intent differ:the human may care about design, intent, or constraints the rubric never encoded. It tells you the critic set the ceiling of theloop, and that the ceiling is below the task. Fix: ground the critique in the user's stated wish plus an external check, and adda human or independent-model review to the gate.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> When is self-feedback the right choice over training a reward model?</p>
+        <details><summary>Reveal answer</summary><p>When you cannot afford the data for a reward model but you can afford a critique that is grounded in execution &mdash; andwhen the task's success is partially checkable. The execution grounding is what keeps the correlated error bounded. If nothingabout the task is checkable, self-feedback is a preference model with one annotator who is also the policy: expect it to teachthe model's own taste, including its flaws.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="67-data-synthesis.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L67 &middot; Synthetic data and agent-environment synthesis</span></a>
+    <a class="next" href="69-reasoning-effort.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L69 &middot; Thinking mode, reasoning effort, and thinking-in-tool-use</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

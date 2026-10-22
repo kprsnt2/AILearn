@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="tools/kv-calc">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KV-cache &amp; cost calculator — AILearn</title>
+<meta name="description" content="Compute KV-cache memory, prefill time, decode throughput and dollars for any model configuration. Compare MHA, GQA and MLA at long context.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .head { padding: 34px 0 4px; max-width: 880px; }
+  .head h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); letter-spacing: -1.2px; }
+  .grid { display: grid; grid-template-columns: 340px minmax(0,1fr); gap: 20px; align-items: start; margin-top: 24px; }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 20px; }
+  .panel h3 { margin: 0 0 14px !important; font-size: .7rem; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--txt-3); font-family: var(--mono); text-transform: uppercase; }
+  .field { margin-bottom: 13px; }
+  .field label { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .73rem;
+    color: var(--txt-2); margin-bottom: 5px; }
+  .field input[type=number], .field select {
+    width: 100%; padding: 8px 11px; border-radius: 8px; background: #060910;
+    border: 1px solid var(--line); color: var(--txt); font-family: var(--mono); font-size: .82rem; outline: none;
+  }
+  .field input[type=number]:focus, .field select:focus { border-color: rgba(99,102,241,.6); }
+  .field input[type=range] { width: 100%; accent-color: var(--violet); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .presets { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .preset { font-family: var(--mono); font-size: .66rem; padding: 5px 10px; border-radius: 99px;
+    border: 1px solid var(--line); background: transparent; color: var(--txt-2); cursor: pointer; }
+  .preset:hover { color: var(--cyan); border-color: rgba(56,189,248,.45); }
+
+  .out { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 10px; margin-bottom: 16px; }
+  .obox { background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .obox .v { font-family: var(--mono); font-size: 1.28rem; font-weight: 700; color: var(--txt); line-height: 1.2; }
+  .obox .l { font-size: .63rem; color: var(--txt-3); text-transform: uppercase; letter-spacing: .7px; margin-top: 3px; }
+  .obox .n { font-size: .63rem; color: var(--txt-3); font-family: var(--mono); margin-top: 4px; }
+  .warnbox { border-color: rgba(239,68,68,.45); background: rgba(239,68,68,.07); }
+  .warnbox .v { color: #fca5a5; }
+
+  table.cmp { width: 100%; border-collapse: collapse; font-size: .82rem; font-family: var(--mono); }
+  table.cmp th { text-align: right; font-size: .62rem; letter-spacing: .9px; text-transform: uppercase;
+    color: var(--txt-3); padding: 8px 10px; border-bottom: 1px solid var(--line-strong); }
+  table.cmp th:first-child { text-align: left; }
+  table.cmp td { padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--txt-2); text-align: right; }
+  table.cmp td:first-child { text-align: left; color: var(--txt); }
+  table.cmp tr.best td { background: rgba(16,185,129,.07); color: #6ee7b7; }
+  .bar { height: 7px; background: rgba(255,255,255,.07); border-radius: 3px; overflow: hidden; margin-top: 5px; }
+  .bar i { display: block; height: 100%; border-radius: 3px; background: var(--grad); }
+  .note { font-size: .78rem; color: var(--txt-3); line-height: 1.6; margin-top: 14px; }
+  .formula-mini { background: rgba(99,102,241,.07); border: 1px solid rgba(99,102,241,.22);
+    border-radius: 8px; padding: 10px 14px; font-family: var(--mono); font-size: .72rem;
+    color: #c7d2fe; margin-bottom: 14px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="index.html">Tools</a>
+      <a href="../agi/index.html">AGI Lab</a>
+    </div>
+    <div class="nav-tools">
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="head">
+  <div class="track-tag">TOOL · MEMORY &amp; COST</div>
+  <h1>Where the money actually goes.</h1>
+  <p class="lede">
+    The KV cache is the tensor that grows without bound while you serve. This calculator computes it
+    exactly, then prices a workload. Move the context slider past a few hundred thousand tokens and
+    watch which number becomes the bottleneck — that moment is the whole reason Attention compression
+    research exists.
+  </p>
+</header>
+
+<div class="grid">
+  <div>
+    <div class="panel">
+      <h3>Presets</h3>
+      <div class="presets">
+        <button class="preset" data-p="7b-mha">7B MHA</button>
+        <button class="preset" data-p="70b-gqa">70B GQA</button>
+        <button class="preset" data-p="v4flash">V4-Flash-ish</button>
+        <button class="preset" data-p="v41">V4.1-Flash-ish</button>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Model</h3>
+      <div class="row2">
+        <div class="field"><label>layers L</label><input type="number" id="layers" value="32"></div>
+        <div class="field"><label>d_model</label><input type="number" id="dmodel" value="4096"></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>attention heads</label><input type="number" id="heads" value="32"></div>
+        <div class="field"><label>KV heads</label><input type="number" id="kvheads" value="32"></div>
+      </div>
+      <div class="field">
+        <label>attention type</label>
+        <select id="atype">
+          <option value="mha">MHA — kv_heads = heads</option>
+          <option value="gqa">GQA — kv_heads &lt; heads</option>
+          <option value="mqa">MQA — kv_heads = 1</option>
+          <option value="mla">MLA — low-rank latent (1/4 of GQA per gen-1)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>cache precision</label>
+        <select id="cprec">
+          <option value="2">fp16 / bf16 (2 bytes)</option>
+          <option value="1">fp8 / int8 (1 byte)</option>
+          <option value="0.5625">int4-ish (4.5 bits)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Workload</h3>
+      <div class="field">
+        <label>context / prompt <span id="ctxlab">128,000 tok</span></label>
+        <input type="range" id="ctx" min="0" max="20" step="1" value="11">
+      </div>
+      <div class="row2">
+        <div class="field"><label>output tokens</label><input type="number" id="outtok" value="512"></div>
+        <div class="field"><label>batch (concurrent)</label><input type="number" id="batch" value="8"></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>$ / 1M input tok</label><input type="number" id="pin" value="0.28" step="0.01"></div>
+        <div class="field"><label>$ / 1M output tok</label><input type="number" id="pout" value="0.42" step="0.01"></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>GPU mem (GB)</label><input type="number" id="gpu" value="80"></div>
+        <div class="field"><label>GPU bandwidth (GB/s)</label><input type="number" id="bw" value="3350"></div>
+      </div>
+      <p class="note" style="margin-top:4px;">Price defaults are illustrative — set them to your actual provider rates.</p>
+    </div>
+  </div>
+
+  <div>
+    <div class="out">
+      <div class="obox"><div class="v" id="o-pertok">—</div><div class="l">cache per token</div><div class="n" id="o-pertok-n">—</div></div>
+      <div class="obox"><div class="v" id="o-cache">—</div><div class="l">cache @ context</div><div class="n" id="o-cache-n">—</div></div>
+      <div class="obox" id="o-batch-box"><div class="v" id="o-batch">—</div><div class="l">cache × batch</div><div class="n" id="o-batch-n">—</div></div>
+      <div class="obox"><div class="v" id="o-prefill">—</div><div class="l">prefill (bandwidth)</div><div class="n" id="o-prefill-n">—</div></div>
+      <div class="obox"><div class="v" id="o-decode">—</div><div class="l">decode tok/s (est)</div><div class="n" id="o-decode-n">—</div></div>
+      <div class="obox"><div class="v" id="o-cost">—</div><div class="l">cost / request</div><div class="n" id="o-cost-n">—</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>Formula</h3>
+      <div class="formula-mini">
+        bytes_per_token = 2 × L × H<sub>kv</sub> × d<sub>head</sub> × bytes<br>
+        d<sub>head</sub> = d_model / heads &nbsp;·&nbsp; cache = 2 × L × H<sub>kv</sub> × d<sub>head</sub> × n_tokens × bytes
+      </div>
+      <table class="cmp" id="table">
+        <thead><tr><th>scheme</th><th>kv heads</th><th>bytes/token</th><th>@ ctx</th><th>× batch</th><th>fits?</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <p class="note">
+        Prefill and decode are bandwidth-bound estimates: prefill ≈ (2 × params × prompt) / (bandwidth × efficiency),
+        decode ≈ bandwidth / bytes_read_per_step. Real throughput depends on kernels, batching and hardware, so treat
+        these as orders of magnitude, not benchmarks. The <em>ratios</em> between attention schemes are exact.
+      </p>
+    </div>
+
+    <div class="callout boss" style="margin-top:16px;">
+      <p id="insight">Move the context slider.</p>
+    </div>
+  </div>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="concept-lab.html"><span class="dir">← PREVIOUS</span><span class="ttl">Concept lab</span></a>
+  <a class="next" href="scaling-lab.html"><span class="dir">NEXT →</span><span class="ttl">Scaling-law explorer</span></a>
+</nav>
+</main>
+
+<footer>AILearn · Tools · estimates for intuition, not benchmarks</footer>
+<script src="../_shell.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var CTX_STEPS = [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1000000, 2000000, 4000000, 8000000, 16000000, 32000000, 64000000, 128000000, 256000000, 512000000, 1024000000];
+
+  function fmtBytes(b) {
+    if (b >= 1e12) return (b / 1e12).toFixed(2) + ' TB';
+    if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+    if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+    if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
+    return b.toFixed(0) + ' B';
+  }
+  function fmtNum(n) { return n.toLocaleString('en-US'); }
+
+  function read() {
+    var heads = Math.max(1, parseInt($('heads').value, 10) || 1);
+    var cfg = {
+      L: Math.max(1, parseInt($('layers').value, 10) || 1),
+      dmodel: Math.max(1, parseInt($('dmodel').value, 10) || 1),
+      heads: heads,
+      kvheads: Math.max(1, parseInt($('kvheads').value, 10) || 1),
+      atype: $('atype').value,
+      prec: parseFloat($('cprec').value),
+      ctx: CTX_STEPS[parseInt($('ctx').value, 10)],
+      outtok: Math.max(1, parseInt($('outtok').value, 10) || 1),
+      batch: Math.max(1, parseInt($('batch').value, 10) || 1),
+      pin: parseFloat($('pin').value) || 0,
+      pout: parseFloat($('pout').value) || 0,
+      gpu: parseFloat($('gpu').value) || 80,
+      bw: parseFloat($('bw').value) || 3350
+    };
+    if (cfg.atype === 'mha') cfg.kvheads = cfg.heads;
+    if (cfg.atype === 'mqa') cfg.kvheads = 1;
+    return cfg;
+  }
+
+  function bytesPerToken(cfg) {
+    var dhead = cfg.dmodel / cfg.heads;
+    var b = 2 * cfg.L * cfg.kvheads * dhead * cfg.prec * 2; /* ×2 because K and V */
+    if (cfg.atype === 'mla') b = b * 0.25; /* gen-1 published ratio: 1/4 the HBM of the prior generation */
+    return b;
+  }
+
+  function render() {
+    var c = read();
+    $('ctxlab').textContent = fmtNum(c.ctx) + ' tok';
+    if (c.atype === 'mha') $('kvheads').value = c.heads;
+    if (c.atype === 'mqa') $('kvheads').value = 1;
+
+    var bpt = bytesPerToken(c);
+    var cache = bpt * c.ctx;
+    var batchCache = cache * c.batch;
+    var gpuBytes = c.gpu * 1e9;
+
+    /* weights: assume ~params = 12 * L * d_model^2 as a rough transformer estimate */
+    var params = 12 * c.L * c.dmodel * c.dmodel;
+    var weightBytes = params * 2; /* fp16 */
+
+    var prefillBytes = 2 * params * c.ctx; /* approx read of weights per layer pass */
+    var prefillSec = prefillBytes / (c.bw * 1e9) * 4; /* ×L-ish correction already inside params; ~4 for overhead */
+    var decodeSec = bpt / (c.bw * 1e9); /* per token, bandwidth bound */
+    var decodeTps = decodeSec > 0 ? 1 / decodeSec : 0;
+
+    var costIn = (c.ctx / 1e6) * c.pin;
+    var costOut = (c.outtok / 1e6) * c.pout;
+
+    $('o-pertok').textContent = fmtBytes(bpt);
+    $('o-pertok-n').textContent = '2×L×Hkv×dhead×' + c.prec + 'B';
+    $('o-cache').textContent = fmtBytes(cache);
+    $('o-cache-n').textContent = fmtNum(c.ctx) + ' tokens';
+    $('o-batch').textContent = fmtBytes(batchCache);
+    $('o-batch-n').textContent = '× ' + c.batch + ' concurrent';
+    $('o-prefill').textContent = prefillSec.toFixed(2) + ' s';
+    $('o-prefill-n').textContent = 'est. bandwidth bound';
+    $('o-decode').textContent = fmtNum(Math.round(decodeTps));
+    $('o-decode-n').textContent = 'est. single-stream';
+    $('o-cost').textContent = '$' + (costIn + costOut).toFixed(4);
+    $('o-cost-n').textContent = 'in $' + costIn.toFixed(4) + ' + out $' + costOut.toFixed(4);
+
+    var bb = $('o-batch-box');
+    if (batchCache + weightBytes > gpuBytes) {
+      bb.className = 'obox warnbox';
+      $('o-batch-n').textContent = 'EXCEEDS ' + c.gpu + ' GB GPU';
+    } else {
+      bb.className = 'obox';
+      $('o-batch-n').textContent = '× ' + c.batch + ' · ' + Math.round((batchCache + weightBytes) / gpuBytes * 100) + '% of GPU';
+    }
+
+    /* comparison table */
+    var schemes = [
+      { name: 'MHA', kv: c.heads },
+      { name: 'GQA (÷4)', kv: Math.max(1, Math.round(c.heads / 4)) },
+      { name: 'GQA (÷8)', kv: Math.max(1, Math.round(c.heads / 8)) },
+      { name: 'MQA', kv: 1 },
+      { name: 'MLA (×0.25)', kv: c.heads, mla: true }
+    ];
+    var rows = schemes.map(function (s) {
+      var bb2 = 2 * c.L * s.kv * (c.dmodel / c.heads) * c.prec * 2;
+      if (s.mla) bb2 = bb2 * 0.25;
+      var cacheB = bb2 * c.ctx;
+      var tot = cacheB * c.batch + weightBytes;
+      return { name: s.name, kv: s.kv, bpt: bb2, cache: cacheB, batch: cacheB * c.batch, fits: tot <= gpuBytes };
+    });
+    var minBpt = Math.min.apply(null, rows.map(function (r) { return r.bpt; }));
+    $('tbody').innerHTML = rows.map(function (r) {
+      return '<tr' + (r.bpt === minBpt ? ' class="best"' : '') + '><td>' + r.name + '</td><td>' + r.kv +
+        '</td><td>' + fmtBytes(r.bpt) + '</td><td>' + fmtBytes(r.cache) + '</td><td>' + fmtBytes(r.batch) +
+        '</td><td style="color:' + (r.fits ? '#6ee7b7' : '#fca5a5') + '">' + (r.fits ? 'yes' : 'no') + '</td></tr>';
+    }).join('');
+
+    /* insight */
+    var ratio = cache / (cache + weightBytes);
+    var ins;
+    if (cache < weightBytes) {
+      ins = 'At this context the <b>weights dominate</b>: cache is ' + fmtBytes(cache) + ' vs weights ~' + fmtBytes(weightBytes) +
+        '. Compressing attention buys you little here — batching does.';
+    } else if (ratio < 0.85) {
+      ins = 'The cache (' + fmtBytes(cache) + ') is now comparable to the weights. You have entered the regime where ' +
+        'attention-memory choices (GQA → MLA) start to beat model-size choices for serving cost.';
+    } else {
+      ins = '<b>The cache is the system.</b> At ' + fmtNum(c.ctx) + ' tokens the KV cache is ' + fmtBytes(cache) +
+        ' — ' + (cache / weightBytes).toFixed(1) + '× the weights. Moving MHA → MQA here cuts it by ' +
+        (c.heads) + '×; MLA keeps per-head expressiveness while paying a projection cost. This is exactly why ' +
+        'DeepSeek-V4.1-Flash reports KV cache at 1/4 the HBM of the prior generation, and why 1M-token contexts were not practical before these techniques.';
+    }
+    $('insight').innerHTML = ins;
+  }
+
+  ['layers','dmodel','heads','kvheads','atype','cprec','ctx','outtok','batch','pin','pout','gpu','bw'].forEach(function (id) {
+    var el = $(id);
+    if (el) { el.addEventListener('input', render); el.addEventListener('change', render); }
+  });
+
+  var presets = {
+    '7b-mha': { layers: 32, dmodel: 4096, heads: 32, kvheads: 32, atype: 'mha' },
+    '70b-gqa': { layers: 80, dmodel: 8192, heads: 64, kvheads: 8, atype: 'gqa' },
+    'v4flash': { layers: 60, dmodel: 7168, heads: 56, kvheads: 8, atype: 'gqa' },
+    'v41': { layers: 60, dmodel: 8192, heads: 64, kvheads: 64, atype: 'mla' }
+  };
+  [].slice.call(document.querySelectorAll('.preset')).forEach(function (b) {
+    b.addEventListener('click', function () {
+      var p = presets[b.getAttribute('data-p')];
+      Object.keys(p).forEach(function (k) { if ($(k)) $(k).value = p[k]; });
+      render();
+    });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

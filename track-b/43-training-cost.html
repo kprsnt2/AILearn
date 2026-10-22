@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b43">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L43 · Training Cost Modeling: FLOPs, MFU, $ Per Run — AILearn</title>
+<meta name="description" content="Turn a proposed training run into hours and dollars before it starts: 6ND, an honest MFU, and a cross-check against a published run that pins MFU at 33%.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L43</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L43 &middot; Training Cost Modeling: FLOPs, MFU, and $ Per Run</h1>
+  <p class="lede">Six numbers turn a proposed run into a budget: N, D, the 6ND multiplier, the accelerator's peak FLOP/s, an honest MFU, and the price per GPU-hour. DeepSeek-V3's published 2.788M H800-hours back-solves to a 33.1% MFU &mdash; that is your calibration point.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: full cost model for a 500B run</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">6ND FLOPs</span>
+  <span class="pill">MFU</span>
+  <span class="pill">GPU-hours</span>
+  <span class="pill">$/run</span>
+  <span class="pill">error budget</span>
+  <span class="pill">wall-clock vs cost</span>
+  <span class="pill">cross-check against a published run</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b43-s1">1 &middot; Why it exists <a class="hook" href="#b43-s1">#</a></h2>
+
+    <p>The failure this lesson prevents is the one you live with: a cost estimate off by 3&times; turns a viable plan into an
+    overrun, and nobody notices until the run is 60% complete. The estimates go wrong in one specific way &mdash; people use peak
+    FLOP/s instead of achieved FLOP/s, or count the cost of the model but not of the parallelism needed to run it.</p>
+
+    <p>Three concrete numbers to anchor the scale. A 500B-active model trained on 15T tokens needs
+    6 &times; 500&times;10<sup>9</sup> &times; 15&times;10<sup>12</sup> = 4.5&times;10<sup>25</sup> FLOPs. At 35% MFU on
+    989 TFLOP/s accelerators that is 36.11M accelerator-hours. At $2/h &mdash; a reasonable 2026 rate for rented
+    H800-class capacity <span class="asof">state as of 2026-10</span> &mdash; that is <strong>$72.2M</strong>. At 25% MFU it
+    is $101.1M. The MFU assumption moves the budget by $29M, so getting MFU right is not academic bookkeeping; it is the
+    difference between an approved project and a cancelled one.</p>
+
+    <p>The one public data point that pins MFU for a state-of-the-art sparse model is DeepSeek-V3
+    <span class="asof">arXiv:2412.19437</span>: 671B total / 37B active, 14.8T pretraining tokens, and
+    <strong>2.788M H800 GPU hours</strong>. That is enough to derive the number every other estimate depends on.</p>
+
+    <div class="callout boss">
+      <p>Cost = (6 &times; N<sub>active</sub> &times; D) / (MFU &times; peak FLOP/s &times; 3600) GPU-hours &times; $/hour. Four
+      multiplications and one division. Do them before the money is committed, not after.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b43-s2">2 &middot; The mental model <a class="hook" href="#b43-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a road trip budget from distance and fuel economy. Distance is fixed by the model and
+    data; fuel economy (MFU) is a property of the vehicle <em>and the road</em>; price per litre is the market. Most estimates go
+    wrong on the fuel economy because they use the manufacturer's best-case figure instead of the vehicle's real consumption with
+    a load.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Distance and price are stable; efficiency is the variable that
+      carries the uncertainty and should be sourced from measurement, not a datasheet.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Fuel economy is roughly constant per vehicle. MFU depends on the
+      <em>configuration</em>: pipeline bubble, TP all-reduce, expert all-to-all and failure restarts all reduce it. The same model
+      on the same hardware can run at 20% or 40% MFU depending on the parallel plan (L42) &mdash; so MFU is a design output, not
+      a constant.</p></div>
+    </div>
+
+    <h3>MFU: what it means and what it is not</h3>
+    <div class="formula">
+      MFU = achieved FLOP/s &divide; peak dense FLOP/s &nbsp;&nbsp;&nbsp;and&nbsp;&nbsp;&nbsp;
+      achieved = 6&thinsp;N<sub>active</sub>&thinsp;D / (GPU-hours &times; 3600)
+      <span class="note">Note N<sub>active</sub>, not N<sub>total</sub>: a sparse model only spends FLOPs on active parameters, so MFU computed against total parameters would be meaningless (you would show 3% &ldquo;efficiency&rdquo; for a perfectly efficient MoE). This is the single most common modelling error.</span>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b43-s3">3 &middot; The mechanism <a class="hook" href="#b43-s3">#</a></h2>
+
+    <h3>The anchor: back-solving MFU from DeepSeek-V3</h3>
+    <p>We know N<sub>active</sub> = 37B, D = 14.8T, GPU-hours = 2.788M, and the device is an H800. So:</p>
+    <div class="formula">
+      FLOPs = 6 &times; 37&times;10<sup>9</sup> &times; 14.8&times;10<sup>12</sup> = 3.286&times;10<sup>24</sup><br>
+      achieved = 3.286&times;10<sup>24</sup> / (2.788&times;10<sup>6</sup> &times; 3600) = <strong>3.274&times;10<sup>14</sup> FLOP/s</strong> = 327.4 TFLOP/s<br>
+      MFU = 327.4 / 989 = <strong>33.1%</strong>
+      <span class="note">989 TFLOP/s is the H800's dense bf16 peak used throughout this track. The implied 327 TFLOP/s is the achieved rate. Everything a plan claims must be consistent with this number: if your estimator assumes 50% MFU you are claiming 1.5&times; better than a published frontier run.</span>
+    </div>
+
+    <p>That is the most valuable number in the track. It says: <strong>~33% MFU is what a world-class sparse training run actually
+    achieves</strong> after pipeline bubbles, tensor-parallel all-reduces, expert all-to-all, and the fact that not every step is a
+    clean matmul. Use 30&ndash;35% for planning. Use 50% only if you can show the profile that justifies it.</p>
+
+    <h3>Worked end to end: a 500B-active run on 15T tokens</h3>
+    <table class="table">
+      <thead><tr><th>MFU assumption</th><th>GPU-hours (989 TFLOP/s)</th><th>Cost at $2/h</th><th>Cost at $3/h</th></tr></thead>
+      <tbody>
+        <tr><td>25%</td><td>50.56M</td><td>$101.11M</td><td>$151.67M</td></tr>
+        <tr><td>35%</td><td><strong>36.11M</strong></td><td><strong>$72.22M</strong></td><td>$108.33M</td></tr>
+        <tr><td>45%</td><td>28.09M</td><td>$56.17M</td><td>$84.26M</td></tr>
+      </tbody>
+    </table>
+
+    <p>Every cell is one multiplication chain away from the formula, and the 25%&ndash;45% spread is a <strong>1.8&times;</strong>
+    budget range &mdash; a $45M swing on a single assumption. This is why the deliverable of this lesson is a cost sheet with the
+    MFU assumption stated explicitly on the same line as the total, never a single number.</p>
+
+    <h3>From GPU-hours to wall-clock: the second half of the plan</h3>
+    <p>36.11M GPU-hours on 4,096 accelerators is 36.11&times;10<sup>6</sup> / 4,096 = <strong>8,816 hours = 367 days</strong>
+    at perfect utilisation; at 88% it is 417 days. On 16,384 GPUs the nominal figure is 2,204 hours (92 days). So cluster size buys time, not money.</p>
+    <div class="formula">
+      wall-clock = GPU-hours / (GPU count &times; (1 &minus; failure_rate))
+      <span class="note">At 16k GPUs, hardware failures and restarts are not an edge case &mdash; they are the dominant scheduling concern. Effective utilisation of 85&ndash;90% from restarts and checkpoint recovery is typical, so a 92-day nominal run is really ~103&ndash;108 days.</span>
+    </div>
+    <p>The consequence: the cost is fixed by FLOPs and MFU, but the <em>schedule</em> is a separate budget item with its own risk.
+    A cheaper-per-hour contract on a smaller cluster can be more expensive if it doubles the calendar time and delays revenue.</p>
+
+    <h3>The MoE twist: which N goes in 6ND</h3>
+    <p>For a sparse model you must use N<sub>active</sub>, and the difference is enormous:</p>
+    <table class="table">
+      <thead><tr><th>Model <span class="asof">state as of 2026-10</span></th><th>N<sub>active</sub></th><th>N<sub>total</sub></th><th>FLOPs at 14.8T tokens, using total (wrong)</th><th>using active (right)</th></tr></thead>
+      <tbody>
+        <tr><td>DeepSeek-V3</td><td>37B</td><td>671B</td><td>5.96&times;10<sup>25</sup></td><td><strong>3.29&times;10<sup>24</sup></strong></td></tr>
+      </tbody>
+    </table>
+    <p>Using total parameters overstates compute by 18.1&times; and would produce a >$1B estimate for a run that cost a fraction
+    of that. Whenever you see a training-cost figure for an MoE, check which N it used before believing it.</p>
+
+    <div class="callout audit">
+      <p><strong>The cost sheet, as an artifact:</strong> N<sub>active</sub>, D, FLOPs = 6ND, peak FLOP/s per device, MFU
+      (with its justification), GPU-hours, $/GPU-hour with its source and date, total $, cluster size, wall-clock, and one
+      comparison against a published run with the implied MFU. Every subsequent change should update this sheet, and the delta
+      should be explainable in one line.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b43-s4">4 &middot; Your hands <a class="hook" href="#b43-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; back-solve MFU from a published run</h4>
+      <p>Always calibrate before extrapolating. This reproduces the 33.1% anchor and shows you the arithmetic to redo for any
+      published run you trust.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># Known: DeepSeek-V3, 37B active, 14.8T tokens, 2.788M H800 GPU-hours</span>
+N_act, D, gpu_hours, peak = <span class="nm">37e9</span>, <span class="nm">14.8e12</span>, <span class="nm">2.788e6</span>, <span class="nm">989e12</span>
+
+flops = <span class="nm">6</span> * N_act * D
+achieved = flops / (gpu_hours * <span class="nm">3600</span>)
+mfu = achieved / peak
+<span class="fn">print</span>(<span class="st">f"FLOPs          = {flops:.3e}"</span>)
+<span class="fn">print</span>(<span class="st">f"achieved FLOP/s= {achieved:.4e}  ({achieved/1e12:.1f} TFLOP/s)"</span>)
+<span class="fn">print</span>(<span class="st">f"implied MFU    = {mfu:.3f}  ({mfu*100:.1f}%)"</span>)
+      </div>
+      <p class="expect">FLOPs = 3.286&times;10<sup>24</sup>; achieved = 3.274&times;10<sup>14</sup> FLOP/s = 327.4 TFLOP/s;
+      MFU = 0.331 (33.1%). <strong>Use this as your planning MFU.</strong> Falsification of any plan assuming &gt;45%: ask for the
+      profile, because it would beat a frontier run by 35%.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the full cost sheet for any proposed run</h4>
+      <p>One function, all the outputs a decision needs. Change N and D to your candidate.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">cost_sheet</span>(N_act, D, peak=<span class="nm">989e12</span>, mfu=<span class="nm">0.331</span>,
+               usd_h=<span class="nm">2.0</span>, gpus=<span class="nm">4096</span>, fail=<span class="nm">0.88</span>):
+    flops = <span class="nm">6</span> * N_act * D
+    hours = flops / (<span class="nm">3600</span> * mfu * peak)
+    usd = hours * usd_h
+    wall_days = hours / (gpus * fail) / <span class="nm">24</span>
+    <span class="kw">return</span> flops, hours, usd, wall_days
+
+<span class="kw">for</span> N, D, tag <span class="kw">in</span> [(<span class="nm">37e9</span>, <span class="nm">14.8e12</span>, <span class="st">"V3-like"</span>),
+                       (<span class="nm">49e9</span>, <span class="nm">20e12</span>,   <span class="st">"V4-Pro-ish"</span>),
+                       (<span class="nm">13e9</span>, <span class="nm">30e12</span>,   <span class="st">"Flash over-trained"</span>),
+                       (<span class="nm">500e9</span>, <span class="nm">15e12</span>,  <span class="st">"500B dense-ish"</span>)]:
+    f, h, u, w = <span class="fn">cost_sheet</span>(N, D)
+    <span class="fn">print</span>(<span class="st">f"{tag:20s} FLOPs={f:.2e} hours={h/1e6:7.2f}M  \${u/1e6:7.1f}M  wall={w:6.1f} d @4096 GPUs"</span>)
+      </div>
+      <p class="expect">Measured: V3-like &rarr; 3.29&times;10<sup>24</sup> FLOPs, 2.79M hours, $5.6M, 32.2 days. V4-Pro-ish
+      (49B &times; 20T) &rarr; 5.88&times;10<sup>24</sup>, 4.99M hours, $10.0M, 57.7 days. Flash over-trained (13B &times; 30T)
+      &rarr; 2.34&times;10<sup>24</sup>, 1.99M hours, $4.0M, 23.0 days. 500B &times; 15T &rarr; 4.5&times;10<sup>25</sup>,
+      38.2M hours, $76.4M, 441 days. (The V4-Pro-ish row is an illustrative token count, not a published figure.) Notice the last row: the wall-clock is the binding constraint, not the dollars.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; sensitivity: which assumption moves the budget most?</h4>
+      <p>Cost models are usually argued about on the wrong variable. This ranks the sensitivities in one pass.</p>
+      <div class="code" data-lang="bash">
+python -c "
+base=dict(N=500e9,D=15e12,peak=989e12,mfu=0.35,usd=2.0)
+def hours(d): return 6*d['N']*d['D']/(3600*d['mfu']*d['peak'])
+h0=hours(base)
+for k,factor in [('mfu',0.8),('mfu',1.2),('D',1.2),('N',1.2),('usd',1.2),('peak',1.2)]:
+    d=dict(base)
+    if k=='usd': print(f'{k} x{factor}: cost \${h0*base[\"usd\"]*factor/1e6:.1f}M (hours unchanged)')
+    else:
+        d[k]=base[k]*factor; h=hours(d)
+        print(f'{k} x{factor}: {h/1e6:.2f}M hours, \${h*base[\"usd\"]/1e6:.1f}M  ({(h/h0-1)*100:+.0f}%)')
+"
+      </div>
+      <p class="expect">A 20% MFU error moves cost by &plusmn;20% (from $72.2M to $90.3M or $60.2M); a 20% data error moves
+      it 20%; a 20% price error moves it 20%. All the same magnitude &mdash; but MFU is the one you have the least evidence for,
+      which is why it deserves the sensitivity range rather than a point estimate.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b43-s5">5 &middot; Failure modes <a class="hook" href="#b43-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Using N<sub>total</sub> for an MoE.</strong> Symptom: estimates are 10&ndash;20&times; too high and the plan
+        looks impossible. Check which N the estimate used; FLOPs must use active parameters.</li>
+        <li><strong>Assuming datasheet MFU.</strong> Symptom: the run takes 2&ndash;3&times; longer than planned. Use the ~33%
+        anchor from this page, or measure your own on a 100-step probe.</li>
+        <li><strong>Ignoring restart and checkpoint cost.</strong> Symptom: wall-clock is 15&ndash;25% longer than the
+        GPU-hours/GPU-count figure, with no single catastrophic failure to blame. Model utilisation at 85&ndash;90%.</li>
+        <li><strong>Pricing at list rate for a reserved contract (or the reverse).</strong> Symptom: the budget differs from the
+        invoice by the committed-use discount. Pin the $/GPU-hour with its source and date on the sheet.</li>
+        <li><strong>Forgetting the post-training bill.</strong> Symptom: pretraining is budgeted and RL/SFT (L51&ndash;L62) adds
+        20&ndash;100% on top, especially with long chain-of-thought rollouts. The full run cost is not the pretraining cost.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b43-s6">6 &middot; Connects to <a class="hook" href="#b43-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L26&ndash;L28 (N and D), L42 (why MFU is below 100%), L30 (active vs total). &nbsp;
+    <strong>Unlocks:</strong> build/buy decisions, and the serving side of the same arithmetic (L44).</p>
+    <ul>
+      <li><a class="tag-b" href="26-scaling-laws.html">L26 &middot; C = 6ND</a> &mdash; where the multiplier comes from.</li>
+      <li><a class="tag-b" href="28-over-training.html">L28 &middot; Over-training</a> &mdash; why D is often far above 20N.</li>
+      <li><a class="tag-b" href="30-moe.html">L30 &middot; MoE</a> &mdash; active vs total parameters.</li>
+      <li><a class="tag-b" href="42-parallelism.html">L42 &middot; Parallelism</a> &mdash; the mechanisms that cap MFU.</li>
+      <li><a class="tag-b" href="44-inference-serving.html">L44 &middot; Serving</a> &mdash; the other half of total cost of ownership.</li>
+      <li><a class="tag-d" href="../track-d/91-cost-latency.html">L91 &middot; Cost &amp; latency budgets</a> &mdash; the same discipline applied to operations.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b43-s7">7 &middot; Self-check <a class="hook" href="#b43-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Back out the MFU implied by 37B active, 14.8T tokens, 2.788M H800-hours at 989 TFLOP/s peak. Show each step.</p>
+        <details><summary>Reveal answer</summary><p>FLOPs = 6 &times; 37&times;10<sup>9</sup> &times; 14.8&times;10<sup>12</sup> = 3.286&times;10<sup>24</sup>. Seconds = 2.788&times;10<sup>6</sup>
+        &times; 3600 = 1.00368&times;10<sup>10</sup>. Achieved = 3.286&times;10<sup>24</sup>/1.00368&times;10<sup>10</sup> = 3.274&times;10<sup>14</sup> FLOP/s
+        = 327.4 TFLOP/s. MFU = 327.4/989 = <strong>33.1%</strong>. This is the calibration point for every estimate in this
+        lesson.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A 500B-active model on 15T tokens. Compute GPU-hours and dollars at 35% MFU and $2/GPU-hour, and the wall-clock on 4,096 GPUs at 88% utilisation.</p>
+        <details><summary>Reveal answer</summary><p>FLOPs = 6&times;5&times;10<sup>11</sup>&times;1.5&times;10<sup>13</sup> = 4.5&times;10<sup>25</sup>. GPU-seconds =
+        4.5&times;10<sup>25</sup>/(0.35&times;989&times;10<sup>12</sup>) = 1.30&times;10<sup>11</sup> s &rarr; /3600 = <strong>36.11M GPU-hours</strong>;
+        &times; $2 = <strong>$72.22M</strong>. Wall-clock = 36.11&times;10<sup>6</sup>/(4096&times;0.88)&times;24<sup>-1</sup> = 36.11&times;10<sup>6</sup>/3604.5 =
+        10,018 hours = <strong>417 days</strong>. That is why such a run needs a much larger cluster or a smaller model.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why would computing MFU against 671B instead of 37B be wrong, and by how much would it mislead you?</p>
+        <details><summary>Reveal answer</summary><p>A sparse model only performs FLOPs on active parameters, so dividing 6&times;671B&times;D by achieved
+        FLOP/s understates MFU by 671/37 = 18.1&times;: the published run would appear to have a 1.8% &ldquo;MFU&rdquo;, which would suggest
+        enormous headroom for improvement that does not exist. Conversely, computing predicted FLOPs from 671B overstates the run's cost by
+        18.1&times;. Always use active parameters for compute, total for memory.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: your 4,096-GPU run was budgeted at 60 days and is on day 75 at 80% complete. What two measurements separate &ldquo;MFU was lower than planned&rdquo; from &ldquo;utilisation was lower than planned&rdquo;?</p>
+        <details><summary>Reveal answer</summary><p>(1) Achieved FLOP/s during <em>active</em> training steps &mdash; measured from a profiler or from step time &times; known FLOPs per step;
+        if this is below the plan's assumption, it is an MFU problem (bubble, comms, kernel efficiency). (2) Fraction of wall-clock spent in
+        active training vs restarts, checkpoint writes and idle &mdash; if the fraction is below the planned 88%, it is a utilisation
+        problem (failures, data stalls, scheduling).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Two proposals: (A) 16,384 GPUs at $2.30/h, (B) 8,192 GPUs at $1.90/h. Both produce the same GPU-hours. Which is cheaper and what else must be considered?</p>
+        <details><summary>Reveal answer</summary><p>For identical GPU-hours H, A costs 2.30H and B costs 1.90H, so B is 17.4% cheaper in absolute
+        spend. But B takes 2&times; the wall-clock, so the decision also depends on time-to-market, the cost of capital, and the risk
+        that a longer run is more exposed to hardware/price changes. Also, MFU is not identical between the two: a larger cluster has more
+        failure events and restart overhead, which can partially offset the price difference. The mistake is comparing $/hour without
+        computing total wall-clock and effective utilisation.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="42-parallelism.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L42 &middot; Parallelism: DP, TP, PP, EP, FSDP</span></a>
+    <a class="next" href="44-inference-serving.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L44 &middot; Serving: batching, continuous batching, PagedAttention</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

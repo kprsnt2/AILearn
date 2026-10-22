@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="tools/index">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tools — AILearn</title>
+<meta name="description" content="Interactive tools that make AI systems arithmetic you can feel: spaced repetition, concept recall, KV-cache cost, scaling laws, and an autonomy simulator.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .head { padding: 40px 0 6px; max-width: 880px; }
+  .head h1 { font-size: clamp(1.9rem, 4.2vw, 2.7rem); letter-spacing: -1.3px; }
+  .tgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px,1fr)); gap: 16px; margin: 32px 0; }
+  .tool {
+    display: block; text-decoration: none; background: var(--card); border: 1px solid var(--line);
+    border-radius: 16px; padding: 24px 26px; transition: .22s; position: relative; overflow: hidden;
+  }
+  .tool:hover { transform: translateY(-4px); border-color: rgba(99,102,241,.45); box-shadow: var(--shadow); }
+  .tool .ic { font-size: 1.5rem; margin-bottom: 14px; display: block; }
+  .tool h3 { margin: 0 0 8px !important; font-size: 1.06rem; color: var(--txt); letter-spacing: -.2px; text-transform: none; }
+  .tool p { margin: 0; font-size: .87rem; color: var(--txt-2); line-height: 1.6; }
+  .tool .go { margin-top: 16px; font-family: var(--mono); font-size: .7rem; color: var(--cyan); letter-spacing: 1px; }
+  .tool::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(circle at 100% 0%, rgba(99,102,241,.1), transparent 60%);
+    opacity: 0; transition: .25s;
+  }
+  .tool:hover::after { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="../agi/index.html">AGI Lab</a>
+      <a href="index.html">Tools</a>
+    </div>
+    <div class="nav-tools">
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="head">
+  <div class="track-tag">TOOLS</div>
+  <h1>Arithmetic you can feel.</h1>
+  <p class="lede">
+    Reading about KV-cache growth does not stick. Watching the byte count change when you move from
+    MHA to GQA to MLA does. Every tool here is built to make one number undeniable — the same reason
+    you ran a six-way CLI benchmark instead of trusting a leaderboard.
+  </p>
+</header>
+
+<div class="tgrid">
+  <a class="tool" href="flashcards.html">
+    <span class="ic">🃏</span>
+    <h3>Flashcard trainer</h3>
+    <p>120 cards that ask you to reconstruct mechanisms, not recall definitions. Real SM-2 scheduling, per-track filters, keyboard driven, stored locally.</p>
+    <span class="go">OPEN →</span>
+  </a>
+  <a class="tool" href="concept-lab.html">
+    <span class="ic">⚡</span>
+    <h3>Concept lab</h3>
+    <p>Choose the right mechanism under a timer. Builds a per-concept weakness map and tells you exactly which lessons to reopen.</p>
+    <span class="go">OPEN →</span>
+  </a>
+  <a class="tool" href="kv-calc.html">
+    <span class="ic">💾</span>
+    <h3>KV-cache &amp; cost calculator</h3>
+    <p>Compute cache bytes, prefill time, decode throughput and dollars for any configuration. Compare MHA, GQA and MLA side by side at 1M context.</p>
+    <span class="go">OPEN →</span>
+  </a>
+  <a class="tool" href="scaling-lab.html">
+    <span class="ic">📈</span>
+    <h3>Scaling-law explorer</h3>
+    <p>Plot loss against compute, find the Chinchilla-optimal allocation, then flip to inference-aware costs and watch the optimum move.</p>
+    <span class="go">OPEN →</span>
+  </a>
+  <a class="tool" href="agi-sim.html">
+    <span class="ic">🧬</span>
+    <h3>SKILLA simulator</h3>
+    <p>Run the autonomy economy: skills, falsification pressure, staked bids, earned authority, drift. Watch which regimes actually accumulate verified knowledge.</p>
+    <span class="go">OPEN →</span>
+  </a>
+  <a class="tool" href="../agi/index.html">
+    <span class="ic">🏛</span>
+    <h3>AGI Lab</h3>
+    <p>The design documents: SKILLA, the FABLE benchmark, and the kill-switch theorem. Read these before the simulator so you know what the knobs mean.</p>
+    <span class="go">OPEN →</span>
+  </a>
+</div>
+
+<div class="callout boss">
+  <p><strong>How to use these honestly:</strong> a tool you drive for ten minutes is not understanding.
+  The rule is the same as for reading: use a tool only when you will implement or measure something
+  from it within two weeks. The flashcards are the exception — recall maintenance is the one thing
+  that should be habitual.</p>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="../index.html"><span class="dir">← BACK</span><span class="ttl">AILearn · the course</span></a>
+  <a class="next" href="flashcards.html"><span class="dir">NEXT →</span><span class="ttl">Flashcards</span></a>
+</nav>
+</main>
+
+<footer>AILearn · Tools · everything runs locally in your browser</footer>
+<script src="../_shell.js"></script>
+</body>
+</html>

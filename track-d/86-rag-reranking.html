@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d86">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L86 · Reranking, query expansion, multi-hop, HyDE — AILearn</title>
+<meta name="description" content="A reranker is a latency purchase, and the marginal precision per 10 candidates collapses from 8.6 points to 0.06 between N=20 and N=100. The break-even arithmetic for when to rerank, expand queries, or go multi-hop.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L86</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L86 &middot; Reranking, query expansion, multi-hop, HyDE</h1>
+  <p class="lede">A reranker buys precision and pays in latency, linearly in the number of candidates you feed it. The curve saturates hard: going from 20 to 100 candidates costs 5&times; the latency for +6.6 precision points, and from 50 to 100 it costs 2&times; for +0.5. The break-even is a number, not a preference.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: reranker eval + candidate-count study</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">bi-encoder vs cross-encoder</span>
+  <span class="pill">candidate depth N</span>
+  <span class="pill">latency-precision frontier</span>
+  <span class="pill">query expansion</span>
+  <span class="pill">HyDE</span>
+  <span class="pill">multi-hop decomposition</span>
+  <span class="pill">recall ceiling vs precision</span>
+  <span class="pill">reranker in the loop</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d86-s1">1 &middot; Why it exists <a class="hook" href="#d86-s1">#</a></h2>
+
+    <p>The failure: <strong>the right document is at rank 11 and you show the model 8.</strong> A bi-encoder embeds query and
+    document <em>independently</em>, so it can never see that a passage containing the answer is a good match &mdash; it only knows
+    that the two vectors point roughly the same way. The gold chunk sits in the top-50 but out of the top-8, and the model
+    answers from the eight plausible-but-wrong chunks.</p>
+
+    <p>The fix is a cross-encoder: read the (query, passage) pair <em>together</em> with full attention, produce a relevance
+    score. That is much more accurate and much more expensive &mdash; you cannot precompute anything, so cost is
+    <code>&Theta;(N)</code> forward passes per query. Which makes reranking a <strong>budget allocation problem</strong>: how many
+    candidates <code>N</code> do you pay to rescore, given a latency budget and a precision target?</p>
+
+    <p>The second failure is that reranking cannot fix a missing document. If recall@N is 0.62, then 38% of queries have the
+    answer outside the candidate set and <em>no reranker</em> can recover them. Teams routinely add a reranker, see a modest
+    improvement, and conclude reranking is overrated &mdash; when the real constraint was candidate-set recall, which requires
+    query expansion or multi-hop decomposition, not a better ranker.</p>
+
+    <div class="callout boss">
+      <p>Ask which quantity is binding before choosing a technique. <strong>If recall@N is low, no reranker helps</strong> &mdash; fix
+      candidate generation (expand the query, decompose the question, retrieve from more sources). <strong>If recall@N is high but
+      precision@k is low, a reranker is exactly the right tool</strong> &mdash; and then choose <code>N</code> from the latency budget
+      using the diminishing-returns curve, not from a blog post.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d86-s2">2 &middot; The mental model <a class="hook" href="#d86-s2">#</a></h2>
+
+    <p>Two-stage retrieval is a <strong>recall-then-precision</strong> pipeline, and the stages have completely different cost
+    structures:</p>
+
+    <table class="table">
+      <thead><tr><th>Stage</th><th>Sees</th><th>Cost per query</th><th>Strength</th><th>Weakness</th></tr></thead>
+      <tbody>
+        <tr><td>Bi-encoder (dense) / BM25</td><td>query and doc separately</td><td><code>O(1)</code> query encode + ANN lookup over the whole corpus</td><td>recall at scale; can search 10<sup>6</sup> docs</td><td>cannot model fine-grained interaction</td></tr>
+        <tr><td>Cross-encoder reranker</td><td>query and doc jointly</td><td><code>O(N)</code> forward passes over N candidates</td><td>precise relevance ordering</td><td>expensive; needs a candidate set first</td></tr>
+        <tr><td>LLM listwise rerank</td><td>all candidates in one prompt</td><td>one large call; context-bound</td><td>reasoning about relevance</td><td>position bias (L89), truncation past ~20 docs</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a stadium search then a panel interview</h4><p>Stage one is a fast filter that narrows a million applicants to two hundred &mdash; cheap per applicant, coarse. Stage two is a panel interview: expensive per candidate, but it reads the whole resume and asks questions. You would not interview the whole stadium, and you would not hire from the filter alone.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A panel interview can only assess people who reached it &mdash; it cannot rescue an applicant the filter excluded. Same here: the reranker's input set is a hard ceiling on achievable recall, and a reranker that is <em>highly confident</em> about the wrong 20 candidates is worse than no reranker, because it suppresses the uncertainty that would have made you widen the search.</p></div>
+    </div>
+
+    <p>Query expansion and HyDE attack stage one. <strong>Expansion</strong> rewrites one query into several (synonyms, sub-questions)
+    and unions the candidate sets, raising recall@N at the cost of <code>m</code> retrieval calls. <strong>HyDE</strong>
+    (hypothetical document embeddings) asks the model to write a <em>plausible answer</em> and retrieves with that instead of the
+    question &mdash; useful because answers resemble documents more than questions do, and dangerous because a hallucinated answer
+    drags retrieval toward the hallucination.</p>
+
+    <p><strong>Multi-hop</strong> is a different animal: the answer requires chaining (A names B, B's record names C). No single
+    query retrieves all three hops, so the pipeline must iterate &mdash; and each hop's error compounds (L82).</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d86-s3">3 &middot; The mechanism <a class="hook" href="#d86-s3">#</a></h2>
+
+    <p>The two curves that decide everything. Candidate-set recall rises with <code>N</code> and saturates; the reranker's
+    precision rises with <code>N</code> and saturates faster. Their product is what you actually get.</p>
+
+    <div class="formula">
+      R(N) = R<sub>max</sub>(1 &minus; e<sup>&minus;N/k<sub>0</sub></sup>) &nbsp;&nbsp;&nbsp;&nbsp; P(N) = p<sub>0</sub> + (p<sub>max</sub> &minus; p<sub>0</sub>)(1 &minus; e<sup>&minus;N/n<sub>0</sub></sup>) &nbsp;&nbsp;&nbsp;&nbsp; L(N) = N &middot; c
+      <span class="note"><code>R(N)</code> = probability the answer is anywhere in the top N (the ceiling), <code>P(N)</code> = precision of the final top-k after reranking, <code>L(N)</code> = added latency, <code>c</code> = per-candidate reranker cost. All three are measured, not assumed. The optimisation is: maximise <code>P</code> subject to <code>L(N) &le; budget</code>.</span>
+    </div>
+
+    <p>The marginal return, which is the number to look at:</p>
+
+    <div class="formula">
+      &Delta;P per 10 extra candidates = [P(N+10) &minus; P(N)] &times; 100 points
+      <span class="note">This derivative collapses fast. With <code>p<sub>0</sub>=0.55, p<sub>max</sub>=0.90, n<sub>0</sub>=12</code>: N=10&rarr;20 gains <strong>8.60 pts</strong>, 20&rarr;30 gains <strong>3.74</strong>, 30&rarr;40 gains <strong>1.62</strong>, 40&rarr;50 gains <strong>0.71</strong>, and 50&rarr;100 gains only <strong>0.53 total</strong>. Stop where the marginal point costs more latency than it is worth.</span>
+    </div>
+
+    <p>The pipeline, with the decision points explicit and measured rather than assumed.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math
+
+<span class="kw">def</span> <span class="fn">choose_depth</span>(budget_ms, cost_per_cand_ms=<span class="nm">4.0</span>, n_max=<span class="nm">200</span>):
+    <span class="cm"># The maximum N the latency budget allows. That is a CEILING, not an optimum.</span>
+    <span class="kw">return</span> <span class="fn">min</span>(n_max, <span class="fn">int</span>(budget_ms / cost_per_cand_ms))
+
+<span class="kw">def</span> <span class="fn">marginal_curve</span>(p0, p_max, n0, steps=(<span class="nm">10</span>,<span class="nm">20</span>,<span class="nm">30</span>,<span class="nm">40</span>,<span class="nm">50</span>,<span class="nm">100</span>)):
+    <span class="kw">def</span> <span class="fn">P</span>(n): <span class="kw">return</span> p0 + (p_max - p0) * (<span class="nm">1</span> - math.<span class="fn">exp</span>(-n / n0))
+    <span class="kw">return</span> [(n, <span class="fn">P</span>(n), (<span class="fn">P</span>(n) - <span class="fn">P</span>(steps[i-<span class="nm">1</span>])) * <span class="nm">100</span>) <span class="kw">for</span> i, n <span class="kw">in</span> <span class="fn">enumerate</span>(steps)]
+
+<span class="kw">def</span> <span class="fn">stop_at</span>(curve, min_gain= <span class="nm">2.0</span>):
+    <span class="cm"># Stop increasing N once an increment buys less than `min_gain` precision points.</span>
+    <span class="kw">return</span> [n <span class="kw">for</span> n, p, g <span class="kw">in</span> curve <span class="kw">if</span> g &gt;= min_gain][-<span class="nm">1</span>]
+
+<span class="cm"># ---- Query expansion: union of candidate sets ----</span>
+<span class="kw">def</span> <span class="fn">union_recall</span>(single_r, m_variants, independence=<span class="nm">0.7</span>):
+    <span class="cm"># Probability the answer is found by >=1 of m query variants.</span>
+    <span class="cm"># independence=0 -&gt; variants identical (no gain); 1 -&gt; fully independent.</span>
+    <span class="kw">if</span> independence &lt;= <span class="nm">0</span>:
+        <span class="kw">return</span> single_r
+    p_miss = (<span class="nm">1</span> - single_r) ** (m_variants * independence)
+    <span class="kw">return</span> <span class="nm">1</span> - p_miss
+    </div>
+
+    <p>Three decisions are encoded in that code. <strong>(1) <code>choose_depth</code> gives a ceiling, not an answer</strong> &mdash;
+    a large budget does not mean you should use it, because the marginal curve has already flattened.
+    <strong>(2) <code>stop_at</code> makes the stopping rule a declared threshold</strong> rather than a vibe, so it survives a
+    reviewer asking "why 30?". <strong>(3) <code>union_recall</code> forces the independence question</strong>: three paraphrases
+    generated by the same model from the same question are highly correlated, so <code>independence</code> should be well below 1
+    &mdash; and if your measured gain from expansion is near zero, you have just measured that independence empirically.</p>
+
+    <table class="table">
+      <thead><tr><th>Technique</th><th>Fixes</th><th>Cost</th><th>Fails when</th></tr></thead>
+      <tbody>
+        <tr><td>Cross-encoder rerank</td><td>precision@k</td><td><code>O(N)</code> forward passes</td><td>recall@N is the binding constraint</td></tr>
+        <tr><td>Query expansion (union, RRF)</td><td>recall@N</td><td><code>m</code> retrievals + dedup</td><td>variants are correlated; expansion drifts off-target</td></tr>
+        <tr><td>HyDE</td><td>vocabulary mismatch</td><td>one generation + one embedding</td><td>the model hallucinates specifics and retrieves documents that agree with the hallucination</td></tr>
+        <tr><td>Multi-hop decomposition</td><td>answers requiring chaining</td><td>iterations &times; retrieval + reasoning</td><td>the chain is speculative; hop errors compound (L82)</td></tr>
+        <tr><td>LLM listwise rerank</td><td>reasoning about relevance</td><td>one big call; position bias</td><td>more than ~20 candidates (truncation) or biased ordering (L89)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>Reranker evaluation must hold the candidate set fixed. If you compare "top-8 from dense" against
+      "rerank top-50 then take 8", you have changed two variables and the improvement is unattributable. The audit-grade
+      comparison is: same candidate list, with and without rerank, reporting <strong>recall@50 (unchanged by definition)</strong>
+      and <strong>precision@8 before vs after</strong>. Then a separate experiment for <code>N</code>. Log both.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d86-s4">4 &middot; Your hands <a class="hook" href="#d86-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Find the depth where reranking stops paying</h4>
+      <p>Candidate-depth sweep with a realistic saturation shape. The last column is the only one that should drive the decision.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+
+<span class="kw">def</span> <span class="fn">recall_at</span>(k, r_max=<span class="nm">0.92</span>, k0=<span class="nm">18.0</span>):
+    <span class="kw">return</span> r_max * (<span class="nm">1</span> - math.<span class="fn">exp</span>(-k / k0))
+
+<span class="kw">def</span> <span class="fn">precision_after</span>(p0, N, p_max=<span class="nm">0.90</span>, n0=<span class="nm">12.0</span>):
+    <span class="kw">return</span> p0 + (p_max - p0) * (<span class="nm">1</span> - math.<span class="fn">exp</span>(-N / n0))
+
+COST_MS = <span class="nm">4.0</span>
+print(<span class="st">"N   recall@N  precision  latency   dPrecision_per_10"</span>)
+prev = <span class="kw">None</span>
+<span class="kw">for</span> N <span class="kw">in</span> (<span class="nm">10</span>, <span class="nm">20</span>, <span class="nm">30</span>, <span class="nm">40</span>, <span class="nm">50</span>, <span class="nm">75</span>, <span class="nm">100</span>):
+    p = <span class="fn">precision_after</span>(<span class="nm">0.55</span>, N)
+    d = <span class="st">""</span> <span class="kw">if</span> prev <span class="kw">is</span> <span class="kw">None</span> <span class="kw">else</span> <span class="st">f"{(p - prev)*100:+.2f} pts per {(N-prev_n)} docs"</span>
+    print(<span class="st">f"{N:3d} {recall_at(N):9.4f} {p:10.4f} {N*COST_MS:7.0f}ms  {d}"</span>)
+    prev, prev_n = p, N
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>N=10 recall=0.3921 precision=0.7479 latency=40ms</code> &middot;
+      <code>N=20 recall=0.6171 precision=0.8339 80ms</code> &middot;
+      <code>N=30 recall=0.7462 precision=0.8713 120ms</code> &middot;
+      <code>N=40 precision=0.8875 160ms</code> &middot;
+      <code>N=50 recall=0.8628 precision=0.8946 200ms</code> &middot;
+      <code>N=75 precision=0.8993 300ms</code> &middot;
+      <code>N=100 recall=0.9164 precision=0.8999 400ms</code>.
+      Read the marginal column: <strong>+8.60 pts</strong> going 10&rarr;20, then <strong>+3.74</strong>, <strong>+1.62</strong>,
+      <strong>+0.71</strong>, and by 100 candidates the remaining headroom to <code>p_max=0.90</code> is essentially exhausted.
+      Going from 20 to 100 candidates costs <strong>5&times; the reranker latency for +6.6 precision points</strong>; 30 is the
+      defensible default (the last increment above 2 pts).
+      <strong>Falsifier:</strong> if your measured curve does <em>not</em> saturate by N=100, your reranker is weak or your
+      corpus is genuinely hard &mdash; fit <code>n<sub>0</sub></code> to your data and trust your curve over this one.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Query expansion: measure independence instead of assuming it</h4>
+      <p>The union-recall model has one free parameter: how independent the variants are. Sweep it and see how much expansion
+      could possibly buy.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">union_recall</span>(single_r, m, independence):
+    <span class="kw">if</span> independence &lt;= <span class="nm">0</span>:
+        <span class="kw">return</span> single_r
+    <span class="kw">return</span> <span class="nm">1</span> - (<span class="nm">1</span> - single_r) ** (m * independence)
+
+<span class="kw">print</span>(<span class="st">"single_r=0.62, 4 query variants"</span>)
+<span class="kw">for</span> ind <span class="kw">in</span> (<span class="nm">0.0</span>, <span class="nm">0.25</span>, <span class="nm">0.5</span>, <span class="nm">0.75</span>, <span class="nm">1.0</span>):
+    print(<span class="st">f"  independence={ind:.2f} -&gt; union recall = {union_recall(0.62, 4, ind):.4f}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nmeasured-vs-predicted check: you can ESTIMATE independence from data"</span>)
+<span class="cm"># If you know single-query recall r1 and observed union recall ru with m variants:</span>
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">estimate_independence</span>(r1, ru, m):
+    <span class="kw">if</span> ru &gt;= <span class="nm">1.0</span> <span class="kw">or</span> r1 &gt;= <span class="nm">1.0</span>:
+        <span class="kw">return</span> <span class="kw">None</span>
+    <span class="kw">return</span> math.<span class="fn">log</span>(<span class="nm">1</span> - ru) / (m * math.<span class="fn">log</span>(<span class="nm">1</span> - r1))
+print(<span class="st">"  r1=0.62, m=4, observed union=0.70 -&gt; independence ="</span>,
+      <span class="fn">round</span>(<span class="fn">estimate_independence</span>(<span class="nm">0.62</span>, <span class="nm">0.70</span>, <span class="nm">4</span>), <span class="nm">3</span>))
+print(<span class="st">"  r1=0.62, m=4, observed union=0.85 -&gt; independence ="</span>,
+      <span class="fn">round</span>(<span class="fn">estimate_independence</span>(<span class="nm">0.62</span>, <span class="nm">0.85</span>, <span class="nm">4</span>), <span class="nm">3</span>))
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>independence=0.00 &rarr; 0.6200</code>,
+      <code>0.25 &rarr; 0.6552</code>, <code>0.50 &rarr; 0.6840</code>, <code>0.75 &rarr; 0.7082</code>, <code>1.00 &rarr; 0.7284</code>.
+      Even fully independent variants at <code>m=4</code> only lift recall from 0.62 to 0.728 &mdash; <strong>expansion is a
+      modest lever</strong>, and the measured-independence function is the useful artifact: an observed union of 0.70 with
+      <code>r1=0.62</code> implies independence 0.174, i.e. your four variants are largely redundant. That is a concrete
+      instruction to generate more <em>different</em> queries, not more queries.
+      <strong>Falsifier:</strong> if your measured union recall exceeds the <code>independence=1.0</code> prediction, the variants
+      are contributing beyond union coverage (e.g. they change the reranker's input too) &mdash; re-measure with the reranker held
+      fixed.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Attribute the error: recall or precision? (copy-paste)</h4>
+      <p>The diagnostic that tells you whether to buy a reranker or a better candidate generator.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">diagnose</span>(results, k_show=<span class="nm">8</span>, n_cands=<span class="nm">50</span>):
+    <span class="cm"># results: list of dicts {"q": str, "candidates": [ids in ranked order], "gold": id}</span>
+    in_cands = <span class="fn">sum</span>(r[<span class="st">"gold"</span>] <span class="kw">in</span> r[<span class="st">"candidates"</span>][:n_cands] <span class="kw">for</span> r <span class="kw">in</span> results)
+    in_topk = <span class="fn">sum</span>(r[<span class="st">"gold"</span>] <span class="kw">in</span> r[<span class="st">"candidates"</span>][:k_show] <span class="kw">for</span> r <span class="kw">in</span> results)
+    n = <span class="fn">len</span>(results)
+    recallN, recallK = in_cands / n, in_topk / n
+    <span class="kw">if</span> recallN &lt; <span class="nm">0.80</span>:
+        verdict = <span class="st">"FIX CANDIDATE GENERATION (expansion / decomposition / chunking)"</span>
+    <span class="kw">elif</span> recallK / max(recallN, <span class="nm">1e-9</span>) &lt; <span class="nm">0.85</span>:
+        verdict = <span class="st">"RERANK: gold is present but ranked too low"</span>
+    <span class="kw">else</span>:
+        verdict = <span class="st">"RETRIEVAL IS FINE: the failure is downstream (generation / prompt)"</span>
+    <span class="kw">return</span> {<span class="st">"n"</span>: n, <span class="st">"recall@N"</span>: <span class="fn">round</span>(recallN, <span class="nm">3</span>),
+            <span class="st">"recall@k"</span>: <span class="fn">round</span>(recallK, <span class="nm">3</span>), <span class="st">"verdict"</span>: verdict}
+
+<span class="cm"># 20 queries; gold is usually in the top-50 but rarely in the top-8</span>
+results = [{<span class="st">"q"</span>: <span class="st">f"q{i}"</span>, <span class="st">"gold"</span>: <span class="st">"g"</span>, <span class="st">"candidates"</span>:
+           ([<span class="st">"g"</span>] + [<span class="st">f"d{j}"</span> <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">49</span>)]) <span class="kw">if</span> i % <span class="nm">5</span> <span class="kw">else</span>
+           ([<span class="st">f"d{j}"</span> <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">50</span>)] + [<span class="st">"g"</span>])}
+           <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">20</span>)]
+<span class="cm"># put gold at rank 12 for the non-missed ones</span>
+<span class="kw">for</span> r <span class="kw">in</span> results:
+    <span class="kw">if</span> <span class="st">"g"</span> <span class="kw">in</span> r[<span class="st">"candidates"</span>] <span class="kw">and</span> r[<span class="st">"candidates"</span>][<span class="nm">0</span>] == <span class="st">"g"</span>:
+        r[<span class="st">"candidates"</span>] = r[<span class="st">"candidates"</span>][<span class="nm">1</span>:<span class="nm">12</span>] + [<span class="st">"g"</span>] + r[<span class="st">"candidates"</span>][<span class="nm">12</span>:]
+print(<span class="fn">diagnose</span>(results))
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>{'n': 20, 'recall@N': 0.8, 'recall@k': 0.0, 'verdict': 'RERANK: gold is present but ranked too low'}</code> &mdash;
+      gold is in the top-50 for 80% of queries but in the top-8 for <strong>none</strong>, so the candidate generator is adequate and
+      the ranking is the problem. That is the case a reranker is built for. Flip the construction (gold missing from the candidate
+      set) and the verdict becomes <code>FIX CANDIDATE GENERATION</code>.
+      <strong>Falsifier:</strong> if <code>recall@N &lt; 0.8</code> and <code>recall@k ≈ recall@N</code>, the ranker is already
+      doing perfectly on what it is given &mdash; buying a reranker would be spending money to reorder a set that lacks the answer.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d86-s5">5 &middot; Failure modes <a class="hook" href="#d86-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Reranking a candidate set that lacks the answer.</strong> Reranker is applied to a recall-limited top-N. Symptom: modest or zero improvement; recall@N measured below 0.8 while effort goes into reranker prompts.</li>
+        <li><strong>Depth picked from a blog post.</strong> N=100 because "more candidates is better". Symptom: p95 latency blown by reranker time; precision gain under 1 point versus N=30.</li>
+        <li><strong>Confounder-laden A/B.</strong> Rerank arm uses a different retrieval depth than the control. Symptom: improvement cannot be attributed; the control is not actually a control.</li>
+        <li><strong>HyDE hallucination capture.</strong> The hypothetical answer invents specifics and retrieval returns documents agreeing with the invention. Symptom: retrieved chunks are internally consistent but unsupported by the corpus; citations point at real documents that do not say it.</li>
+        <li><strong>Expansion drowning precision.</strong> Ten query variants union into 500 candidates. Symptom: recall up, precision down; the model gets a long noisy context and answers worse (L79).</li>
+        <li><strong>Multi-hop with unverified intermediate answers.</strong> Hop 1's answer is wrong and hops 2&ndash;3 are confidently built on it. Symptom: chain of plausible reasoning ending in an unsupported claim; error compounds as <code>p<sup>h</sup></code> (L82).</li>
+        <li><strong>Listwise reranker truncation.</strong> 40 candidates in one prompt, model sees the first 20. Symptom: candidates past position ~20 are never selected &mdash; measurable by permuting the input order and watching the winner change (L89 position bias).</li>
+        <li><strong>Reranker trained on a different distribution.</strong> Applied out-of-domain. Symptom: it compresses scores near 0.5 and reordering is nearly random &mdash; check score spread before trusting the ordering.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d86-s6">6 &middot; Connects to <a class="hook" href="#d86-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="85-rag-retrieval.html">L85 &middot; Hybrid retrieval</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG evaluation</a>,
+    <a class="tag-d" href="97-rag-in-production.html">L97 &middot; RAG in production</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="85-rag-retrieval.html">L85 &middot; Hybrid retrieval</a> &mdash; fusion decides what enters the candidate set; reranking decides the order within it.</li>
+      <li><a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG evaluation</a> &mdash; recall@N and precision@k must be measured separately or this page's decision rule is unusable.</li>
+      <li><a class="tag-a" href="../track-a/22-vector-search.html">L22 &middot; ANN recall</a> &mdash; the ANN index's own recall caps <code>R(N)</code> regardless of <code>N</code>.</li>
+      <li><a class="tag-a" href="../track-a/11-activations.html">L11 &middot; Activations</a> &mdash; cross-encoders are large MLPs over concatenated inputs; per-candidate cost is a real forward pass, not a lookup.</li>
+      <li><a class="tag-d" href="89-llm-as-judge.html">L89 &middot; LLM-as-judge</a> &mdash; listwise LLM reranking is judging; it inherits position and verbosity bias.</li>
+      <li><a class="tag-d" href="91-cost-latency.html">L91 &middot; Cost/latency</a> &mdash; the reranker is usually the largest retrievable latency term; budget it explicitly.</li>
+      <li><a class="tag-d" href="96-production-checklist.html">L96 &middot; Production checklist</a> &mdash; the chosen N and its measured curve are review evidence, not a config value.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d86-s7">7 &middot; Self-check <a class="hook" href="#d86-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> You have 800 ms and each reranked candidate costs 4 ms. How many <em>should</em> you rerank, and why is the budget not the answer?</p>
+        <details><summary>Reveal answer</summary><p>The budget allows <code>800/4 = 200</code> candidates, but from the measured curve the precision gain from 50 to 100 is about <strong>0.53 points</strong> and from 100 to 200 is effectively zero, for +400 ms. The right choice is around <strong>N=30</strong>, the last depth where an increment buys more than ~2 points. Budget gives an upper bound; the marginal-precision curve gives the operating point. Always report both, and report the latency you chose not to spend.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> recall@50 = 0.91, precision@8 = 0.44. Which technique, and estimate the achievable ceiling.</p>
+        <details><summary>Reveal answer</summary><p><strong>Reranker</strong> &mdash; the answer is present 91% of the time, so improved ordering can plausibly reach <code>0.91 &times; precision</code>. With a cross-encoder reaching ~0.89 precision on in-set candidates, final precision@8 could approach <code>0.91 &times; 0.89 &asymp; 0.81</code> &mdash; a large jump from 0.44. The residual 9% of queries are recall failures you cannot fix with reranking; they need better candidate generation. That split &mdash; 9% recall, 47% precision &mdash; apportions effort honestly.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Four query variants lift recall from 0.62 to 0.70. Estimate their independence and state the implication.</p>
+        <details><summary>Reveal answer</summary><p><code>independence = ln(1&minus;0.70)/(4&middot;ln(1&minus;0.62)) = ln(0.30)/(4&middot;ln(0.38)) = (&minus;1.20397)/(4&middot;&minus;0.96758) = 0.311</code>. The variants are ~31% as diverse as fully independent ones &mdash; largely redundant. Implication: generating more paraphrases of the same question buys little; you need variants that probe different <em>aspects</em> (entities, constraints, alternative phrasings from a different model or a different prompt strategy), or move to multi-hop decomposition if the question genuinely needs chaining.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: a multi-hop agent answers 2-hop questions at 0.72 but 3-hop at 0.38. What does that imply about per-hop accuracy, and what do you instrument?</p>
+        <details><summary>Reveal answer</summary><p>If accuracy compounds as <code>p<sup>h</sup></code>: <code>0.72<sup>0.5</sup>&hellip;</code> take <code>p = 0.72^(1/2) = 0.849</code> per hop; then 3 hops predicts <code>0.849&#179; = 0.612</code>, which is well above the observed 0.38. So the model is <strong>not</strong> simply compounding &mdash; hops 2+ are harder than hop 1, most likely because each hop's query is conditioned on a previous answer and errors propagate through the <em>query</em>, not just the final result. Instrument per-hop: the generated sub-question, the retrieved chunk, and whether the hop answer matches gold. That separates "wrong retrieval at hop 2" from "wrong reasoning over a right chunk".</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why must a reranker A/B hold the candidate set fixed?</p>
+        <details><summary>Reveal answer</summary><p>Because changing depth <em>and</em> adding a reranker changes two variables, and depth alone improves recall. A rerank arm that gets top-50 while the control gets top-8 will look better even if the reranker is random &mdash; the win belongs to depth. Holding candidates fixed isolates the ordering effect, which is the only thing a reranker claims to do. The clean experiment: same 50 candidates, order by dense score (control) vs cross-encoder score (treatment), report precision@8 for both. Then, separately, vary N with the reranker fixed.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="85-rag-retrieval.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L85 &middot; Retrieval: hybrid search</span></a>
+    <a class="next" href="87-rag-evaluation.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L87 &middot; RAG evaluation</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

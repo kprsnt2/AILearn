@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c61">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L61 &middot; Test-time compute: sampling, verifiers, and the budget allocation problem &mdash; AILearn</title>
+<meta name="description" content="Depth, width and verification as three compute axes, an explicit accuracy-per-token allocator, and the optimal-k arithmetic that kills &#x27;just sample more&#x27;.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L61</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L61 &middot; Test-time compute: sampling, verifiers, and the budget allocation problem</h1>
+  <p class="lede">Spending more compute helps only when the remaining error has the right structure &mdash; voting needs uncorrelated errors, deeper reasoning needs serial work, verifiers need a better discriminator than the generator. This page turns the budget into a fitted router and shows where each axis stops paying.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: budget allocator</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">depth vs width</span>
+  <span class="pill">self-consistency</span>
+  <span class="pill">best-of-n</span>
+  <span class="pill">verifier reranking</span>
+  <span class="pill">optimal k</span>
+  <span class="pill">accuracy per token</span>
+  <span class="pill">effort router</span>
+  <span class="pill">truncation rate</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c61-s1">1 &middot; Why it exists <a class="hook" href="#c61-s1">#</a></h2>
+
+    <p>A system that answers every request with the same effort is leaving money on the table in both
+    directions. It over-spends on "what is the capital of France" (a 9,000-token reasoning chain for a
+    lookup) and under-spends on "prove this bound holds for all n" (a 200-token answer that gives up
+    early). The failure is not accuracy on any single item; it is that <strong>the budget is not a
+    function of the item</strong>.</p>
+
+    <p>The second failure is subtler and more expensive: <strong>buying test-time compute in the wrong
+    currency</strong>. Sampling 32 answers and taking the plurality is cheap and works when errors are
+    random. Sampling 32 answers and reranking with a weak verifier is expensive and can be <em>worse</em>
+    than sampling 4, because the verifier's errors are correlated with the model's. The distinction
+    matters: whether extra compute helps depends on the <em>structure</em> of the remaining error, not on
+    the amount spent.</p>
+
+    <div class="callout boss">
+      <p>Test-time compute is a portfolio allocation problem. You have four assets &mdash; more reasoning
+      tokens, more samples (self-consistency), a verifier/reranker, and an escalation to a stronger model
+      &mdash; each with a cost and a return that depends on the question's difficulty. The skill is not
+      spending more; it is routing each query to the asset with the best marginal return at its difficulty.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c61-s2">2 &middot; The mental model <a class="hook" href="#c61-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> three compute axes, each attacking a different limitation.</p>
+
+    <table class="table">
+      <thead><tr><th>Axis</th><th>What it adds</th><th>Helps when</th><th>Useless when</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Deeper</strong> (more reasoning tokens per sample)</td><td>Serial steps</td><td>The item needs a long dependent chain</td><td>The item is a lookup, or the model already gets it</td></tr>
+        <tr><td><strong>Wider</strong> (k samples, vote)</td><td>Independent chances</td><td>Errors are uncorrelated and the correct answer is the mode</td><td>Errors are concentrated on one wrong answer (lesson 60 &sect;4)</td></tr>
+        <tr><td><strong>Smarter verify</strong> (verifier, reranker, unit tests)</td><td>Selection quality</td><td>You can score candidates better than the generator produces them</td><td>The verifier shares the generator's blind spots</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "portfolio" gets right</h4><p>It makes the budget decision explicit and
+      measurable: for each difficulty band, an expected accuracy and an expected cost, so you can choose
+      the allocation with the best accuracy-per-dollar rather than the best average accuracy.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Real returns are not monotone and not independent. Accuracy
+      can plateau (more tokens do nothing), the vote can hurt (correlated errors), and the verifier can be
+      gamed. The allocator's parameters must be re-fit on fresh data, because they encode a single model's
+      failure structure at a single point in time.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c61-s3">3 &middot; The mechanism <a class="hook" href="#c61-s3">#</a></h2>
+
+    <p>The allocation rule, written so it can be computed rather than argued about:</p>
+
+    <div class="formula">
+      util. = P(correct | q, a) / cost(q, a) &nbsp;&nbsp;|&nbsp;&nbsp; a<sup>*</sup>(q) = argmax<sub>a&isin;A</sub> [ P(correct | q, a) / cost(q, a) ] subject to budget
+      <span class="note">a ranges over actions: answer directly, reason deeper, sample k and vote, verify-and-rerank, escalate. P(correct | q, a) must be estimated per difficulty band, not globally.</span>
+    </div>
+
+    <p>The self-consistency half has a closed form worth knowing, because it sets the ceiling on what
+    "wider" can buy:</p>
+
+    <div class="formula">
+      k<sup>*</sup> &asymp; log( 1 / ( &beta; &middot; C ) ) / log( 1 / (1 &minus; p) )
+      <span class="note">Optimal number of samples when each costs C, the reward per correct answer is &beta;, and a single sample is correct with probability p. Returns diminish geometrically in k.</span>
+    </div>
+
+    <p>That formula is why "just sample more" is a bad default: the marginal gain per sample decays
+    geometrically, so past a small k you are buying nothing. The lab below implements a router fitted on
+    binned data and compares it against fixed policies on the same task distribution.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L61: the budget allocator, plus the optimal-k arithmetic for self-consistency.</span>
+<span class="cm"># Pure stdlib.</span>
+<span class="kw">import</span> math
+
+<span class="cm"># Measured on a binned eval set: (band, action, accuracy, tokens per query).</span>
+MEASURED = [
+    (<span class="st">"easy"</span>,   <span class="st">"direct"</span>,  <span class="nm">0.96</span>,   <span class="nm">180</span>),
+    (<span class="st">"easy"</span>,   <span class="st">"deep"</span>,    <span class="nm">0.96</span>,  <span class="nm">3400</span>),
+    (<span class="st">"easy"</span>,   <span class="st">"vote8"</span>,   <span class="nm">0.97</span>,  <span class="nm">1600</span>),
+    (<span class="st">"medium"</span>, <span class="st">"direct"</span>,  <span class="nm">0.78</span>,   <span class="nm">450</span>),
+    (<span class="st">"medium"</span>, <span class="st">"deep"</span>,    <span class="nm">0.84</span>,  <span class="nm">5200</span>),
+    (<span class="st">"medium"</span>, <span class="st">"vote8"</span>,   <span class="nm">0.89</span>,  <span class="nm">3900</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"direct"</span>,  <span class="nm">0.31</span>,  <span class="nm">1100</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"deep"</span>,    <span class="nm">0.58</span>, <span class="nm">14000</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"vote8"</span>,   <span class="nm">0.44</span>,  <span class="nm">9500</span>),
+]
+BAND_MIX = {<span class="st">"easy"</span>: <span class="nm">0.70</span>, <span class="st">"medium"</span>: <span class="nm">0.24</span>, <span class="st">"hard"</span>: <span class="nm">0.06</span>}   <span class="cm"># share of traffic</span>
+
+table = {}
+<span class="kw">print</span>(f<span class="st">"{'band':&lt;8}{'action':&lt;8}{'acc':&gt;6}{'tokens':&gt;8}{'acc per 1k tok':&gt;16}"</span>)
+<span class="kw">for</span> band, action, acc, tok <span class="kw">in</span> MEASURED:
+    table[(band, action)] = (acc, tok)
+    <span class="kw">print</span>(f<span class="st">"{band:&lt;8}{action:&lt;8}{acc:&gt;6.2f}{tok:&gt;8}{acc / (tok / 1000):&gt;16.3f}"</span>)
+
+tot_acc = tot_tok = <span class="nm">0.0</span>
+<span class="kw">for</span> band, share <span class="kw">in</span> BAND_MIX.items():
+    acc, tok = table[(band, <span class="st">"deep"</span>)]
+    tot_acc += share * acc
+    tot_tok += share * tok
+<span class="kw">print</span>(f<span class="st">"\nuniform 'deep' : accuracy={tot_acc:.3f}  mean tokens/query={tot_tok:.0f}"</span>)
+
+<span class="cm"># Router: per band, maximise accuracy subject to a per-query token cap, cheapest tie-break.</span>
+CAP = <span class="nm">5000.0</span>
+tot_acc = tot_tok = <span class="nm">0.0</span>
+<span class="kw">print</span>(f<span class="st">"\nrouter, cap {CAP:.0f} tokens/query:"</span>)
+<span class="kw">for</span> band, share <span class="kw">in</span> BAND_MIX.items():
+    opts = [(a, table[(band, a)]) <span class="kw">for</span> a <span class="kw">in</span> (<span class="st">"direct"</span>, <span class="st">"deep"</span>, <span class="st">"vote8"</span>)
+            <span class="kw">if</span> table[(band, a)][<span class="nm">1</span>] &lt;= CAP] <span class="kw">or</span> [(<span class="st">"direct"</span>, table[(band, <span class="st">"direct"</span>)])]
+    best = max(opts, key=<span class="kw">lambda</span> o: (round(o[<span class="nm">1</span>][<span class="nm">0</span>], <span class="nm">3</span>), -o[<span class="nm">1</span>][<span class="nm">1</span>]))
+    tot_acc += share * best[<span class="nm">1</span>][<span class="nm">0</span>]
+    tot_tok += share * best[<span class="nm">1</span>][<span class="nm">1</span>]
+    <span class="kw">print</span>(f<span class="st">"  {band:&lt;7} -&gt; {best[0]:&lt;7} acc={best[1][0]:.2f} tokens={best[1][1]:&gt;6}"</span>)
+<span class="kw">print</span>(f<span class="st">"  totals        : accuracy={tot_acc:.3f}  mean tokens/query={tot_tok:.0f}"</span>)
+
+
+<span class="cm"># Optimal k for self-consistency: stop when the marginal accuracy gain times the</span>
+<span class="cm"># value of a correct answer no longer covers the cost of one more sample.</span>
+<span class="kw">def</span> majority_acc(p, k):
+    m = (k + <span class="nm">1</span>) // <span class="nm">2</span>
+    <span class="kw">return</span> sum(math.comb(k, j) * p ** j * (<span class="nm">1</span> - p) ** (k - j) <span class="kw">for</span> j <span class="kw">in</span> range(m, k + <span class="nm">1</span>))
+
+
+<span class="kw">def</span> best_k(p, cost, value):
+    prev, best = p, <span class="nm">1</span>
+    <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>, <span class="nm">64</span>, <span class="nm">2</span>):
+        acc = majority_acc(p, k)
+        <span class="kw">if</span> (acc - prev) * value &lt; cost:
+            <span class="kw">return</span> best, prev
+        prev, best = acc, k
+    <span class="kw">return</span> best, prev
+
+
+<span class="kw">print</span>(<span class="st">"\nself-consistency: stop when marginal gain x value &lt; cost"</span>)
+<span class="kw">for</span> p, cost, value <span class="kw">in</span> ((<span class="nm">0.6</span>, <span class="nm">1</span>, <span class="nm">3</span>), (<span class="nm">0.6</span>, <span class="nm">1</span>, <span class="nm">40</span>), (<span class="nm">0.85</span>, <span class="nm">1</span>, <span class="nm">3</span>), (<span class="nm">0.5</span>, <span class="nm">1</span>, <span class="nm">100</span>)):
+    k, acc = best_k(p, cost, value)
+    <span class="kw">print</span>(f<span class="st">"  p={p:.2f} cost={cost} value={value:&gt;3} -&gt; k*={k:&gt;2}  majority accuracy={acc:.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+band    action     acc  tokens  acc per 1k tok
+easy    direct    0.96     180           5.333
+easy    deep      0.96    3400           0.282
+easy    vote8     0.97    1600           0.606
+medium  direct    0.78     450           1.733
+medium  deep      0.84    5200           0.162
+medium  vote8     0.89    3900           0.228
+hard    direct    0.31    1100           0.282
+hard    deep      0.58   14000           0.041
+hard    vote8     0.44    9500           0.046
+
+uniform 'deep' : accuracy=0.908  mean tokens/query=4468
+
+router, cap 5000 tokens/query:
+  easy    -&gt; vote8   acc=0.97 tokens=  1600
+  medium  -&gt; vote8   acc=0.89 tokens=  3900
+  hard    -&gt; direct  acc=0.31 tokens=  1100
+  totals        : accuracy=0.911  mean tokens/query=2122
+
+self-consistency: stop when marginal gain x value &lt; cost
+  p=0.60 cost=1 value=  3 -&gt; k*= 1  majority accuracy=0.600
+  p=0.60 cost=1 value= 40 -&gt; k*= 7  majority accuracy=0.710
+  p=0.85 cost=1 value=  3 -&gt; k*= 1  majority accuracy=0.850
+  p=0.50 cost=1 value=100 -&gt; k*= 1  majority accuracy=0.500
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c61-s4">4 &middot; Your hands <a class="hook" href="#c61-s4">#</a></h2>
+
+    <p>Three labs: fit an effort router on binned statistics, compute the optimal k for a price, and run the
+    browser version that produces a contract-compliant harness report.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; fit the router and compare it to a uniform policy</h4>
+      <p>Nine measured (band, action) cells, a traffic mix, and a hard per-query token cap. The router picks the most accurate action under the cap, breaking ties on cost.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L61: the budget allocator, plus the optimal-k arithmetic for self-consistency.</span>
+<span class="cm"># Pure stdlib.</span>
+<span class="kw">import</span> math
+
+<span class="cm"># Measured on a binned eval set: (band, action, accuracy, tokens per query).</span>
+MEASURED = [
+    (<span class="st">"easy"</span>,   <span class="st">"direct"</span>,  <span class="nm">0.96</span>,   <span class="nm">180</span>),
+    (<span class="st">"easy"</span>,   <span class="st">"deep"</span>,    <span class="nm">0.96</span>,  <span class="nm">3400</span>),
+    (<span class="st">"easy"</span>,   <span class="st">"vote8"</span>,   <span class="nm">0.97</span>,  <span class="nm">1600</span>),
+    (<span class="st">"medium"</span>, <span class="st">"direct"</span>,  <span class="nm">0.78</span>,   <span class="nm">450</span>),
+    (<span class="st">"medium"</span>, <span class="st">"deep"</span>,    <span class="nm">0.84</span>,  <span class="nm">5200</span>),
+    (<span class="st">"medium"</span>, <span class="st">"vote8"</span>,   <span class="nm">0.89</span>,  <span class="nm">3900</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"direct"</span>,  <span class="nm">0.31</span>,  <span class="nm">1100</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"deep"</span>,    <span class="nm">0.58</span>, <span class="nm">14000</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"vote8"</span>,   <span class="nm">0.44</span>,  <span class="nm">9500</span>),
+]
+BAND_MIX = {<span class="st">"easy"</span>: <span class="nm">0.70</span>, <span class="st">"medium"</span>: <span class="nm">0.24</span>, <span class="st">"hard"</span>: <span class="nm">0.06</span>}   <span class="cm"># share of traffic</span>
+
+table = {}
+<span class="kw">print</span>(f<span class="st">"{'band':&lt;8}{'action':&lt;8}{'acc':&gt;6}{'tokens':&gt;8}{'acc per 1k tok':&gt;16}"</span>)
+<span class="kw">for</span> band, action, acc, tok <span class="kw">in</span> MEASURED:
+    table[(band, action)] = (acc, tok)
+    <span class="kw">print</span>(f<span class="st">"{band:&lt;8}{action:&lt;8}{acc:&gt;6.2f}{tok:&gt;8}{acc / (tok / 1000):&gt;16.3f}"</span>)
+
+tot_acc = tot_tok = <span class="nm">0.0</span>
+<span class="kw">for</span> band, share <span class="kw">in</span> BAND_MIX.items():
+    acc, tok = table[(band, <span class="st">"deep"</span>)]
+    tot_acc += share * acc
+    tot_tok += share * tok
+<span class="kw">print</span>(f<span class="st">"\nuniform 'deep' : accuracy={tot_acc:.3f}  mean tokens/query={tot_tok:.0f}"</span>)
+
+<span class="cm"># Router: per band, maximise accuracy subject to a per-query token cap, cheapest tie-break.</span>
+CAP = <span class="nm">5000.0</span>
+tot_acc = tot_tok = <span class="nm">0.0</span>
+<span class="kw">print</span>(f<span class="st">"\nrouter, cap {CAP:.0f} tokens/query:"</span>)
+<span class="kw">for</span> band, share <span class="kw">in</span> BAND_MIX.items():
+    opts = [(a, table[(band, a)]) <span class="kw">for</span> a <span class="kw">in</span> (<span class="st">"direct"</span>, <span class="st">"deep"</span>, <span class="st">"vote8"</span>)
+            <span class="kw">if</span> table[(band, a)][<span class="nm">1</span>] &lt;= CAP] <span class="kw">or</span> [(<span class="st">"direct"</span>, table[(band, <span class="st">"direct"</span>)])]
+    best = max(opts, key=<span class="kw">lambda</span> o: (round(o[<span class="nm">1</span>][<span class="nm">0</span>], <span class="nm">3</span>), -o[<span class="nm">1</span>][<span class="nm">1</span>]))
+    tot_acc += share * best[<span class="nm">1</span>][<span class="nm">0</span>]
+    tot_tok += share * best[<span class="nm">1</span>][<span class="nm">1</span>]
+    <span class="kw">print</span>(f<span class="st">"  {band:&lt;7} -&gt; {best[0]:&lt;7} acc={best[1][0]:.2f} tokens={best[1][1]:&gt;6}"</span>)
+<span class="kw">print</span>(f<span class="st">"  totals        : accuracy={tot_acc:.3f}  mean tokens/query={tot_tok:.0f}"</span>)
+
+
+<span class="cm"># Optimal k for self-consistency: stop when the marginal accuracy gain times the</span>
+<span class="cm"># value of a correct answer no longer covers the cost of one more sample.</span>
+<span class="kw">def</span> majority_acc(p, k):
+    m = (k + <span class="nm">1</span>) // <span class="nm">2</span>
+    <span class="kw">return</span> sum(math.comb(k, j) * p ** j * (<span class="nm">1</span> - p) ** (k - j) <span class="kw">for</span> j <span class="kw">in</span> range(m, k + <span class="nm">1</span>))
+
+
+<span class="kw">def</span> best_k(p, cost, value):
+    prev, best = p, <span class="nm">1</span>
+    <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>, <span class="nm">64</span>, <span class="nm">2</span>):
+        acc = majority_acc(p, k)
+        <span class="kw">if</span> (acc - prev) * value &lt; cost:
+            <span class="kw">return</span> best, prev
+        prev, best = acc, k
+    <span class="kw">return</span> best, prev
+
+
+<span class="kw">print</span>(<span class="st">"\nself-consistency: stop when marginal gain x value &lt; cost"</span>)
+<span class="kw">for</span> p, cost, value <span class="kw">in</span> ((<span class="nm">0.6</span>, <span class="nm">1</span>, <span class="nm">3</span>), (<span class="nm">0.6</span>, <span class="nm">1</span>, <span class="nm">40</span>), (<span class="nm">0.85</span>, <span class="nm">1</span>, <span class="nm">3</span>), (<span class="nm">0.5</span>, <span class="nm">1</span>, <span class="nm">100</span>)):
+    k, acc = best_k(p, cost, value)
+    <span class="kw">print</span>(f<span class="st">"  p={p:.2f} cost={cost} value={value:&gt;3} -&gt; k*={k:&gt;2}  majority accuracy={acc:.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+band    action     acc  tokens  acc per 1k tok
+easy    direct    0.96     180           5.333
+easy    deep      0.96    3400           0.282
+easy    vote8     0.97    1600           0.606
+medium  direct    0.78     450           1.733
+medium  deep      0.84    5200           0.162
+medium  vote8     0.89    3900           0.228
+hard    direct    0.31    1100           0.282
+hard    deep      0.58   14000           0.041
+hard    vote8     0.44    9500           0.046
+
+uniform 'deep' : accuracy=0.908  mean tokens/query=4468
+
+router, cap 5000 tokens/query:
+  easy    -&gt; vote8   acc=0.97 tokens=  1600
+  medium  -&gt; vote8   acc=0.89 tokens=  3900
+  hard    -&gt; direct  acc=0.31 tokens=  1100
+  totals        : accuracy=0.911  mean tokens/query=2122
+
+self-consistency: stop when marginal gain x value &lt; cost
+  p=0.60 cost=1 value=  3 -&gt; k*= 1  majority accuracy=0.600
+  p=0.60 cost=1 value= 40 -&gt; k*= 7  majority accuracy=0.710
+  p=0.85 cost=1 value=  3 -&gt; k*= 1  majority accuracy=0.850
+  p=0.50 cost=1 value=100 -&gt; k*= 1  majority accuracy=0.500
+</div>
+      <p class="expect">The uniform 'deep' policy costs 4,468 tokens per query for 0.908 accuracy. The router gets 0.911 for 2,122 &mdash; slightly better accuracy at less than half the tokens. Note what it does with the hard band: sends it to direct, because nothing under the cap helps. That refusal is the honest output of the optimizer, and the signal that the hard band needs escalation, not more tokens.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the optimal k, and why 'sample more' is usually wrong</h4>
+      <p>The last block of the same script stops adding samples when the marginal accuracy gain, times the value of a correct answer, no longer covers the cost of a sample.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L61: the budget allocator, plus the optimal-k arithmetic for self-consistency.</span>
+<span class="cm"># Pure stdlib.</span>
+<span class="kw">import</span> math
+
+<span class="cm"># Measured on a binned eval set: (band, action, accuracy, tokens per query).</span>
+MEASURED = [
+    (<span class="st">"easy"</span>,   <span class="st">"direct"</span>,  <span class="nm">0.96</span>,   <span class="nm">180</span>),
+    (<span class="st">"easy"</span>,   <span class="st">"deep"</span>,    <span class="nm">0.96</span>,  <span class="nm">3400</span>),
+    (<span class="st">"easy"</span>,   <span class="st">"vote8"</span>,   <span class="nm">0.97</span>,  <span class="nm">1600</span>),
+    (<span class="st">"medium"</span>, <span class="st">"direct"</span>,  <span class="nm">0.78</span>,   <span class="nm">450</span>),
+    (<span class="st">"medium"</span>, <span class="st">"deep"</span>,    <span class="nm">0.84</span>,  <span class="nm">5200</span>),
+    (<span class="st">"medium"</span>, <span class="st">"vote8"</span>,   <span class="nm">0.89</span>,  <span class="nm">3900</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"direct"</span>,  <span class="nm">0.31</span>,  <span class="nm">1100</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"deep"</span>,    <span class="nm">0.58</span>, <span class="nm">14000</span>),
+    (<span class="st">"hard"</span>,   <span class="st">"vote8"</span>,   <span class="nm">0.44</span>,  <span class="nm">9500</span>),
+]
+BAND_MIX = {<span class="st">"easy"</span>: <span class="nm">0.70</span>, <span class="st">"medium"</span>: <span class="nm">0.24</span>, <span class="st">"hard"</span>: <span class="nm">0.06</span>}   <span class="cm"># share of traffic</span>
+
+table = {}
+<span class="kw">print</span>(f<span class="st">"{'band':&lt;8}{'action':&lt;8}{'acc':&gt;6}{'tokens':&gt;8}{'acc per 1k tok':&gt;16}"</span>)
+<span class="kw">for</span> band, action, acc, tok <span class="kw">in</span> MEASURED:
+    table[(band, action)] = (acc, tok)
+    <span class="kw">print</span>(f<span class="st">"{band:&lt;8}{action:&lt;8}{acc:&gt;6.2f}{tok:&gt;8}{acc / (tok / 1000):&gt;16.3f}"</span>)
+
+tot_acc = tot_tok = <span class="nm">0.0</span>
+<span class="kw">for</span> band, share <span class="kw">in</span> BAND_MIX.items():
+    acc, tok = table[(band, <span class="st">"deep"</span>)]
+    tot_acc += share * acc
+    tot_tok += share * tok
+<span class="kw">print</span>(f<span class="st">"\nuniform 'deep' : accuracy={tot_acc:.3f}  mean tokens/query={tot_tok:.0f}"</span>)
+
+<span class="cm"># Router: per band, maximise accuracy subject to a per-query token cap, cheapest tie-break.</span>
+CAP = <span class="nm">5000.0</span>
+tot_acc = tot_tok = <span class="nm">0.0</span>
+<span class="kw">print</span>(f<span class="st">"\nrouter, cap {CAP:.0f} tokens/query:"</span>)
+<span class="kw">for</span> band, share <span class="kw">in</span> BAND_MIX.items():
+    opts = [(a, table[(band, a)]) <span class="kw">for</span> a <span class="kw">in</span> (<span class="st">"direct"</span>, <span class="st">"deep"</span>, <span class="st">"vote8"</span>)
+            <span class="kw">if</span> table[(band, a)][<span class="nm">1</span>] &lt;= CAP] <span class="kw">or</span> [(<span class="st">"direct"</span>, table[(band, <span class="st">"direct"</span>)])]
+    best = max(opts, key=<span class="kw">lambda</span> o: (round(o[<span class="nm">1</span>][<span class="nm">0</span>], <span class="nm">3</span>), -o[<span class="nm">1</span>][<span class="nm">1</span>]))
+    tot_acc += share * best[<span class="nm">1</span>][<span class="nm">0</span>]
+    tot_tok += share * best[<span class="nm">1</span>][<span class="nm">1</span>]
+    <span class="kw">print</span>(f<span class="st">"  {band:&lt;7} -&gt; {best[0]:&lt;7} acc={best[1][0]:.2f} tokens={best[1][1]:&gt;6}"</span>)
+<span class="kw">print</span>(f<span class="st">"  totals        : accuracy={tot_acc:.3f}  mean tokens/query={tot_tok:.0f}"</span>)
+
+
+<span class="cm"># Optimal k for self-consistency: stop when the marginal accuracy gain times the</span>
+<span class="cm"># value of a correct answer no longer covers the cost of one more sample.</span>
+<span class="kw">def</span> majority_acc(p, k):
+    m = (k + <span class="nm">1</span>) // <span class="nm">2</span>
+    <span class="kw">return</span> sum(math.comb(k, j) * p ** j * (<span class="nm">1</span> - p) ** (k - j) <span class="kw">for</span> j <span class="kw">in</span> range(m, k + <span class="nm">1</span>))
+
+
+<span class="kw">def</span> best_k(p, cost, value):
+    prev, best = p, <span class="nm">1</span>
+    <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>, <span class="nm">64</span>, <span class="nm">2</span>):
+        acc = majority_acc(p, k)
+        <span class="kw">if</span> (acc - prev) * value &lt; cost:
+            <span class="kw">return</span> best, prev
+        prev, best = acc, k
+    <span class="kw">return</span> best, prev
+
+
+<span class="kw">print</span>(<span class="st">"\nself-consistency: stop when marginal gain x value &lt; cost"</span>)
+<span class="kw">for</span> p, cost, value <span class="kw">in</span> ((<span class="nm">0.6</span>, <span class="nm">1</span>, <span class="nm">3</span>), (<span class="nm">0.6</span>, <span class="nm">1</span>, <span class="nm">40</span>), (<span class="nm">0.85</span>, <span class="nm">1</span>, <span class="nm">3</span>), (<span class="nm">0.5</span>, <span class="nm">1</span>, <span class="nm">100</span>)):
+    k, acc = best_k(p, cost, value)
+    <span class="kw">print</span>(f<span class="st">"  p={p:.2f} cost={cost} value={value:&gt;3} -&gt; k*={k:&gt;2}  majority accuracy={acc:.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+band    action     acc  tokens  acc per 1k tok
+easy    direct    0.96     180           5.333
+easy    deep      0.96    3400           0.282
+easy    vote8     0.97    1600           0.606
+medium  direct    0.78     450           1.733
+medium  deep      0.84    5200           0.162
+medium  vote8     0.89    3900           0.228
+hard    direct    0.31    1100           0.282
+hard    deep      0.58   14000           0.041
+hard    vote8     0.44    9500           0.046
+
+uniform 'deep' : accuracy=0.908  mean tokens/query=4468
+
+router, cap 5000 tokens/query:
+  easy    -&gt; vote8   acc=0.97 tokens=  1600
+  medium  -&gt; vote8   acc=0.89 tokens=  3900
+  hard    -&gt; direct  acc=0.31 tokens=  1100
+  totals        : accuracy=0.911  mean tokens/query=2122
+
+self-consistency: stop when marginal gain x value &lt; cost
+  p=0.60 cost=1 value=  3 -&gt; k*= 1  majority accuracy=0.600
+  p=0.60 cost=1 value= 40 -&gt; k*= 7  majority accuracy=0.710
+  p=0.85 cost=1 value=  3 -&gt; k*= 1  majority accuracy=0.850
+  p=0.50 cost=1 value=100 -&gt; k*= 1  majority accuracy=0.500
+</div>
+      <p class="expect">At p = 0.60 the vote is worth it only when a correct answer is worth 40 samples: k* = 7 and majority accuracy is 0.710 instead of 0.600. At p = 0.50 voting is worthless at any k. And for p = 0.85 the marginal sample never pays even at value 3. The k* is a function of price and of p &mdash; never a constant.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; report the curve, not the number</h4>
+      <p>The deliverable of this lesson is a table, one row per action, with the truncation rate attached. Fill it in for your own model
+      and keep it next to the eval.</p>
+      <div class="code" data-lang="text">
+action      n    accuracy   p50 tokens   p95 tokens   truncation rate   cost/1k answers
+direct      ...  ...        ...          ...          ...               ...
+deep        ...  ...        ...          ...          ...               ...
+vote4       ...  ...        ...          ...          ...               ...
+vote8       ...  ...        ...          ...          ...               ...
+verify-16   ...  ...        ...          ...          ...               ...
+      </div>
+      <p class="expect">Falsifier for every row: if accuracy does not rise between two adjacent cost levels by more than the eval's"
+      " standard error, that extra spend is not evidence. With 200 items and a 50% ceiling, one SE is about 3.5 points &mdash; so any"
+      " claimed gain smaller than that is a tie.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c61-s5">5 &middot; Failure modes <a class="hook" href="#c61-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Uniform effort.</strong> Symptom: cost is dominated by easy items that gained nothing from the budget; the accuracy gain per 1k extra tokens is below noise.</li>
+        <li><strong>Voting on correlated errors.</strong> Symptom: k-sampling lowers accuracy on whole categories at once, not a few items &mdash; the majority is wrong systematically, not randomly.</li>
+        <li><strong>Verifier reranking a weak generator.</strong> Symptom: pass@k rises but pass@1 after reranking falls; the verifier prefers fluent wrong answers (lesson 59's flourish problem).</li>
+        <li><strong>Budget truncation reported as model failure.</strong> Symptom: accuracy drops precisely on the items with the longest solutions, and the stop reason in the logs is "budget" rather than "answer found".</li>
+        <li><strong>Cost accounting that omits reasoning tokens.</strong> Symptom: the cost model says a cascade is cheaper while the bill says otherwise, because thinking tokens are billed even though the user never sees them.</li>
+        <li><strong>Router drift.</strong> Symptom: after a model upgrade the same routing policy sends the hardest items to the cheapest path, because the router's bins were fitted on the old model's difficulty curve.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Report test-time compute as a curve, not a number: accuracy against cost per 1k tokens, for each
+      action, with the harness's truncation rate and the router's fallback rate attached. A single accuracy
+      figure without the cost is uncomparable to any other run, including your own next week.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c61-s6">6 &middot; Connects to <a class="hook" href="#c61-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="60-chain-of-thought.html">L60 &middot; Chain of thought</a>,
+    <a class="tag-c" href="59-process-reward.html">L59 &middot; Process rewards</a>,
+    <a class="tag-a" href="../track-a/17-samplers.html">L17 &middot; Samplers</a>.</p>
+    <p><strong>Unlocks:</strong> the effort-routing policy used in production, and long-CoT training objectives.</p>
+
+    <ul>
+      <li><a class="tag-c" href="62-long-cot-r1.html">L62 &middot; Long CoT</a> &mdash; training a model whose reasoning length responds to difficulty.</li>
+      <li><a class="tag-c" href="69-reasoning-effort.html">L69 &middot; Reasoning effort</a> &mdash; the serving-side control (low / high / max).</li>
+      <li><a class="tag-d" href="../track-d/91-cost-latency.html">L91 &middot; Cost &amp; latency</a> &mdash; cascades and SLOs for the same decision.</li>
+      <li><a class="tag-d" href="../track-d/88-evals.html">L88 &middot; Evals</a> &mdash; pass@k versus pass^k, the statistics this page assumes.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c61-s7">7 &middot; Self-check <a class="hook" href="#c61-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Batch has two difficulty bands. Easy: 1000 items, accuracy 0.95 direct, 0.95 with 4k extra tokens, cost 200 vs 4200 tokens. Hard: 100 items, 0.30 direct, 0.55 deep, cost 800 vs 12000. Which band should get the deep budget, per token?</p>
+        <details><summary>Reveal answer</summary><p>Easy: 0.95/200 = 4.75 accuracy-per-1k-tokens (no gain at all, so the deep path is pure waste). Hard: directly 0.30/0.8 = 0.375per-1k; deep 0.55/12 = 0.046 per-1k. The deep path buys 25 accuracy points on 100 items for 100 &times; 11.2k tokens. Pertoken the direct path is still more efficient on the hard band, which is exactly the point: routing should be driven bythe marginal gain on the specific band, not by the global average.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> For p = 0.6, cost C = 1 and &beta; = 1, what is the optimal k for majority voting, and why is it not `as many as affordable`?</p>
+        <details><summary>Reveal answer</summary><p>k* &asymp; log(1/1)&hellip; the formula gives zero at equality, so the correct reading is that the marginal sample adds0.4 of a reward against a cost of 1 &mdash; sampling does not pay until the reward per correct answer is raised. In generalthe marginal gain decays geometrically, so the optimal k is small; past it, each sample costs C and addsless than C. If a policy tells you to sample 64 times, check what it assumed about the reward.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why can reranking with a verifier make pass@1 worse even though pass@k improves?</p>
+        <details><summary>Reveal answer</summary><p>pass@k measures whether <em>any</em> sample was correct. Reranking adds a selection step, and selection errors are newerrors: if the verifier is fooled by fluent wrong answers, it will pick them out of a set that contained a correct one.So the generator's improvement is real and the selector throws it away. This is why a verifier must be evaluated onselection accuracy, separately from generation coverage.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: accuracy drops 12 points after a harness change, concentrated on long-solution items only. What is the first hypothesis and what single log field confirms it?</p>
+        <details><summary>Reveal answer</summary><p>Budget truncation: the new harness reduced max reasoning tokens or changed the stop condition. The confirming field is thestop reason per request &mdash; budget against natural. If truncated requests account for most of the drop, the modelis unchanged and the harness is the regression.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> When is escalation to a stronger model the right buy over deeper reasoning on the same model?</p>
+        <details><summary>Reveal answer</summary><p>When the failure is capability, not depth: the weaker model fails because it does not know the method, not because it ranout of steps. Diagnose by checking whether accuracy on that band rises with more tokens at all &mdash; if it does not, morecompute on the same policy is wasted, and escalation is the only axis left.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="60-chain-of-thought.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L60 &middot; Chain of thought: why intermediate tokens buy compute</span></a>
+    <a class="next" href="62-long-cot-r1.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L62 &middot; Long CoT and R1-Zero: RL that grows reasoning</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

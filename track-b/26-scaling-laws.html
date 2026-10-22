@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b26">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L26 · Kaplan Scaling Laws — AILearn</title>
+<meta name="description" content="Loss is a power law in parameters, data and compute. How to fit your own scaling law and use it to kill a doomed run before you spend the money.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L26</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L26 &middot; Kaplan Scaling Laws: Loss Is a Power Law</h1>
+  <p class="lede">A $30M pretraining run that turns out to be three points short of the target is not a research failure, it is a forecasting failure &mdash; and forecasting was possible for $50k. This page gives you the equation that lets you predict loss from compute before you spend it.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: fit your own tiny scaling law</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">power law</span>
+  <span class="pill">compute frontier</span>
+  <span class="pill">C = 6ND</span>
+  <span class="pill">N_opt &prop; C<sup>a</sup></span>
+  <span class="pill">sublinear returns</span>
+  <span class="pill">extrapolation risk</span>
+  <span class="pill">isoFLOP slices</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b26-s1">1 &middot; Why it exists <a class="hook" href="#b26-s1">#</a></h2>
+
+    <p>Pretraining is the only part of the LLM pipeline where the unit of failure is a rounding error in the budget.
+    The largest runs cost tens of millions of dollars and lock 10,000+ GPUs for months. You get <em>one</em> shot per budget cycle.
+    Before 2020 the decision &mdash; how big, how much data, how long &mdash; was folklore passed between labs.</p>
+
+    <p>The forcing failure: every lab that trained a large model had to answer &ldquo;is the next 10&times; worth it?&rdquo;
+    with no evidence. Teams would pick a size because a competitor shipped that size. When the run finished above target,
+    there was no way to know whether the failure was architectural, data-related, or simply <em>under-allocated compute</em> &mdash;
+    and the money was already gone.</p>
+
+    <p>Kaplan et al., <em>Scaling Laws for Neural Language Models</em> <span class="asof">arXiv:2001.08361</span>, replaced folklore
+    with a measurable law: cross-entropy loss on held-out text falls as a power law in model size, dataset size, and
+    compute, over more than six orders of magnitude, and the law fitted on models small enough to train in a day
+    predicted models that cost a thousand times more.</p>
+
+    <div class="callout boss">
+      <p>Loss is a smooth, predictable function of how much you spend. So &ldquo;will this run hit the target?&rdquo; is an
+      arithmetic question answerable with 1&eacute;-2 scale models, not a gamble you discover the answer to at month three.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b26-s2">2 &middot; The mental model <a class="hook" href="#b26-s2">#</a></h2>
+
+    <p><strong>Analogy:</strong> loss is a land value that drops as you move away from the city, and each order of
+    magnitude of compute moves you one fixed <em>fraction</em> of the remaining distance closer. Not one fixed number of
+    kilometres &mdash; a fraction. That distinction is the whole page: <em>diminishing absolute returns, constant
+    relative returns</em>.</p>
+
+    <p>Distance to the irreducible floor shrinks by a constant factor per decade of compute. So going from 10<sup>22</sup>
+    to 10<sup>23</sup> FLOPs (10&times; the compute) buys the same <em>multiplicative</em> improvement as going from
+    10<sup>25</sup> to 10<sup>26</sup> &mdash; but in absolute loss points, the early decade buys far more than the late one.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Constant relative return per decade of spend. Adding a fixed
+      multiplicative budget buys a predictable multiplicative loss improvement, which is why forecasting works at all.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>The floor is not zero and is unknown; the exponent changes when you change
+      architecture, data mixture or tokenizer. A scaling law is only valid <em>inside the family you fitted</em> &mdash;
+      swap in a new architecture (MoE, MLA, a different data mix) and the coefficients are dead.</p></div>
+    </div>
+
+    <h3>The one number everyone forgets: C = 6ND</h3>
+    <p>Training compute for a dense transformer is approximately 6 &times; (parameters) &times; (training tokens). The 6 is
+    2 FLOPs forward + 4 FLOPs backward per parameter per token &mdash; the standard multiplier, and the sentence
+    &ldquo;about 6 FLOPs per parameter per token&rdquo; is the single most reused fact in this track. Backward is 2&times;
+    forward because each linear layer needs a gradient with respect to its input <em>and</em> its weights.</p>
+
+    <table class="table">
+      <thead><tr><th>Check</th><th>Arithmetic</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>Chinchilla 70B trained on 1.4T tokens</td><td>6 &times; 70&times;10<sup>9</sup> &times; 1.4&times;10<sup>12</sup></td><td><strong>5.88&times;10<sup>23</sup> FLOPs</strong></td></tr>
+        <tr><td>Gopher 280B on 300B tokens</td><td>6 &times; 280&times;10<sup>9</sup> &times; 3.0&times;10<sup>11</sup></td><td><strong>5.04&times;10<sup>23</sup> FLOPs</strong></td></tr>
+      </tbody>
+    </table>
+    <p>Those two runs used essentially the <em>same compute</em>. Their loss differed by multiple points, because one spent
+    its FLOPs on parameters and the other on tokens. That is the subject of lesson 27; the point here is that C = 6ND is
+    how you compare any two runs on a fair axis. <span class="asof">state as of 2026-10</span></p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b26-s3">3 &middot; The mechanism <a class="hook" href="#b26-s3">#</a></h2>
+
+    <p>Kaplan's three laws, in the form the paper fits them (N = non-embedding parameters, D = tokens, C = FLOPs):</p>
+
+    <div class="formula">
+      L(N) = (N<sub>c</sub> / N)<sup>&alpha;<sub>N</sub></sup> &nbsp;&nbsp; L(D) = (D<sub>c</sub> / D)<sup>&alpha;<sub>D</sub></sup> &nbsp;&nbsp; L(C) = (C<sub>c</sub> / C)<sup>&alpha;<sub>C</sub></sup>
+      <span class="note">L is nats-per-token; N<sub>c</sub>, D<sub>c</sub>, C<sub>c</sub> are fitted constants; each is a straight line on a log-log plot. Kaplan reports &alpha;<sub>N</sub>&asymp;0.076, &alpha;<sub>D</sub>&asymp;0.095, &alpha;<sub>C</sub>&asymp;0.050 in the paper's own fit.</span>
+    </div>
+
+    <p>Because &alpha; is small, the predictions are shockingly insensitive to the constant and shockingly sensitive to
+    the exponent. Take the paper's reported C<sub>c</sub> &asymp; 2.3&times;10<sup>8</sup> and &alpha;<sub>C</sub> = 0.05, and predict the loss
+    at 10<sup>25</sup> FLOPs:</p>
+
+    <div class="code" data-lang="python">
+<span class="cm"># predict loss at C = 1e25 FLOPs from Kaplan's reported fit constants</span>
+C_c, alpha = <span class="nm">2.3e8</span>, <span class="nm">0.05</span>
+<span class="kw">for</span> C <span class="kw">in</span> (<span class="nm">1e21</span>, <span class="nm">1e23</span>, <span class="nm">1e25</span>):
+    L = (C_c / C) ** alpha
+    <span class="fn">print</span>(<span class="st">f"C={C:.0e}  L={L:.4f} nats/token  ({L/<span class="nm">0.6931</span>:.3f} bits/token)"</span>)
+<span class="cm"># C=1e+21  L=0.2334 nats/token  (0.337 bits/token)</span>
+<span class="cm"># C=1e+23  L=0.1854 nats/token  (0.267 bits/token)</span>
+<span class="cm"># C=1e+25  L=0.1473 nats/token  (0.212 bits/token)</span>
+    </div>
+
+    <p>Read the spacing: from 10<sup>21</sup> to 10<sup>25</sup> FLOPs &mdash; a 10,000&times; increase in spend &mdash; loss falls
+    from 0.2334 to 0.1473, a 37% relative cut but only 0.086 nats absolute. Every <em>100&times;</em> of compute multiplies loss by
+    100<sup>-0.05</sup> = 0.7943, i.e. it closes 1 &minus; 0.7943 = <strong>20.6%</strong> of the distance to zero; a 1000&times; bump
+    multiplies loss by 1000<sup>-0.05</sup> = 0.7079 and closes 29.2%. Note the fit constants are from the paper's reported
+    fit and give the right <em>shape</em>; absolute nats depend on the paper's &ldquo;nats/token&rdquo; convention.</p>
+
+    <h3>How you actually fit one</h3>
+    <p>You do not read coefficients out of a paper and trust them &mdash; they are stale the week the architecture changes.
+    You fit them on your own family. The procedure:</p>
+    <ol>
+      <li>Train 6&ndash;10 small models spanning at least 2 decades of compute (e.g. 2M to 200M parameters) on the <em>same</em> data, tokenizer and LR schedule shape.</li>
+      <li>Record loss at a fixed token-per-parameter ratio so you are not confounding N and D.</li>
+      <li>Fit <code>L = (Nc/N)^aN</code> by least squares <em>in log-log space</em> &mdash; the fit is linear there, so `numpy.polyfit` on log N vs log L is exactly the right tool.</li>
+      <li>Validate: hold out the largest model, predict it from the smaller ones, and report the error. <em>That error</em> is your forecast uncertainty.</li>
+    </ol>
+
+    <div class="callout audit">
+      <p>A scaling-law forecast with no held-out validation is a rumour. The audit artifact is: <em>n</em> runs, the fitted
+      (C<sub>c</sub>, &alpha;), the held-out model's predicted vs actual loss, and the resulting error in loss points. Save
+      the checkpoints and seeds &mdash; if you can't retrain the 8th point you can't prove the law was fitted, not tuned.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b26-s4">4 &middot; Your hands <a class="hook" href="#b26-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; fit a power law to synthetic ground truth and recover the exponent</h4>
+      <p>You need to know whether your fitter is honest before you point it at $50k of training. Here the truth is known:
+      &alpha; = 0.076. If your recovery is off by more than ~10%, the fitter or the data is wrong.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">26</span>)
+N = np.logspace(<span class="nm">6.3</span>, <span class="nm">9.0</span>, <span class="nm">9</span>)          <span class="cm"># 2M .. 1B params</span>
+Nc, aN = <span class="nm">8.8e13</span>, <span class="nm">0.076</span>
+L_true = (Nc / N) ** aN
+L_obs  = L_true * (<span class="nm">1</span> + rng.normal(<span class="nm">0</span>, <span class="nm">0.004</span>, N.size))   <span class="cm"># 0.4% measurement noise</span>
+
+slope, icpt = np.polyfit(np.log(N), np.log(L_obs), <span class="nm">1</span>)
+<span class="fn">print</span>(<span class="st">f"recovered alpha_N = {-slope:.4f}  (truth 0.076)"</span>)
+<span class="fn">print</span>(<span class="st">f"implied N_c       = {np.exp(icpt/slope):.3e}"</span>)
+
+<span class="cm"># held-out extrapolation: fit on the 8 smallest, predict the 9th</span>
+s2, i2 = np.polyfit(np.log(N[:-<span class="nm">1</span>]), np.log(L_obs[:-<span class="nm">1</span>]), <span class="nm">1</span>)
+pred = np.exp(i2 + s2 * np.log(N[-<span class="nm">1</span>]))
+<span class="fn">print</span>(<span class="st">f"holdout N={N[-1]:.3e}  predicted {pred:.4f}  actual {L_obs[-1]:.4f}  err {abs(pred-L_obs[-1]):.5f}"</span>)
+      </div>
+      <p class="expect">Recovered &alpha; comes out at ~0.0745 (vs truth 0.076 &mdash; within the ~0.003 you get from 0.4% noise),
+      and holdout error is ~0.004 nats. What would falsify it: a recovered exponent materially different from 0.076, or holdout
+      error growing with model size &mdash; that second symptom means the law is not a power law in your family and
+      extrapolation is unsafe.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the &ldquo;how much does 10&times; buy&rdquo; calculator</h4>
+      <p>The question your VP asks. Answer it with two logarithms, not a slide deck.</p>
+      <div class="code" data-lang="bash">
+python -c "
+for a in (0.076, 0.05):
+    print(f'alpha={a}: each 10x compute multiplies loss by {10**-a:.4f}, '
+          f'closes {100*(1-10**-a):.2f}% of remaining distance, '
+          f'1000x closes {100*(1-1000**-a):.2f}%')
+"
+      </div>
+      <p class="expect">For &alpha; = 0.05: each 10&times; buys 10.87% of the remaining distance and a 1000&times; budget bump
+      buys only 29.21%. If someone proposes a 10&times; run to fix a quality complaint, this printout is either the rebuttal
+      or the justification &mdash; in numbers.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; find the break: when does the law stop holding?</h4>
+      <p>Power laws break at both ends. At the small end the irreducible loss floor bends the curve; at the large end data
+      repetition does. Fit including an offset term and see whether the exponent moves.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+N = np.logspace(<span class="nm">6</span>, <span class="nm">10</span>, <span class="nm">12</span>)
+L = <span class="nm">1.69</span> + (<span class="nm">8.8e13</span> / N) ** <span class="nm">0.35</span>      <span class="cm"># floor + power law</span>
+<span class="kw">for</span> floor <span class="kw">in</span> (<span class="nm">0.0</span>, <span class="nm">1.0</span>, <span class="nm">1.69</span>):
+    s, _ = np.polyfit(np.log(N), np.log(L - floor), <span class="nm">1</span>)
+    <span class="fn">print</span>(<span class="st">f"assumed floor {floor:.2f} -> fitted exponent {-s:.3f}"</span>)
+<span class="cm"># floor 0.00 -> 0.344</span>
+<span class="cm"># floor 1.00 -> 0.347</span>
+<span class="cm"># floor 1.69 -> 0.350   ← recovers the truth</span>
+      </div>
+      <p class="expect">With the correct 1.69 floor you recover 0.350 exactly; with floor 0 you get 0.344. Small here because
+      the range spans 10<sup>6</sup>&ndash;10<sup>10</sup> params; narrow the range to 10<sup>6</sup>&ndash;10<sup>8</sup> and the
+      bias grows. That is the trap in L29 (emergence): omit the floor and a smooth curve looks like it has a kink.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b26-s5">5 &middot; Failure modes <a class="hook" href="#b26-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Architecture drift.</strong> You fit on dense GQA models, then ship an MoE with a different active-parameter
+        count. Symptom: every 5B+-scale prediction is 0.05&ndash;0.2 nats optimistic, and the miss has the same sign every time.</li>
+        <li><strong>Tokenizer drift.</strong> Loss is nats-<em>per-token</em>. A new tokenizer with a bigger vocab makes
+        loss per token go DOWN for the same quality because each token carries more bytes. Symptom: predicted vs actual
+        disagree after a tokenizer upgrade while bits-per-byte (lesson 16) stays flat &mdash; you "improved" by changing the unit.</li>
+        <li><strong>Data contamination of the frontier.</strong> Small models memorise a small corpus, so their perplexity is
+        flattered. Symptom: the fitted exponent is <em>too small</em> (headroom looks huge), then the big run lands worse
+        than predicted. Check exact-match rates on a canary set before trusting small-model numbers.</li>
+        <li><strong>Single-seed fitting.</strong> Seed-to-seed variance at small scale (often several milli-nats) exceeds the
+        per-decade effect you are trying to measure. Symptom: adding one small run changes your forecast by more than the
+        forecast's own confidence interval.</li>
+        <li><strong>Extrapolating past the data wall.</strong> With a fixed corpus of D tokens, loss law in N silently changes
+        slope past N &asymp; D/20 because you are now repeating data (lesson 28). Symptom: the largest run underperforms
+        only when its tokens-per-parameter ratio exceeds the range you fitted.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b26-s6">6 &middot; Connects to <a class="hook" href="#b26-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> lessons 16 (loss &amp; perplexity) and 19 (a full transformer you can train).
+    &nbsp; <strong>Unlocks:</strong> everything in this track &mdash; every architecture decision downstream is a bet about
+    which scaling-law axis you are moving.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/16-loss-perplexity.html">L16 &middot; Cross-entropy, perplexity, bits-per-byte</a> &mdash; the unit you must keep constant or the law is meaningless.</li>
+      <li><a class="tag-a" href="../track-a/19-full-transformer.html">L19 &middot; The full transformer</a> &mdash; the trainable family you fit the law on.</li>
+      <li><a class="tag-b" href="27-chinchilla.html">L27 &middot; Chinchilla</a> &mdash; Kaplan said &ldquo;scale N and D together&rdquo;; Chinchilla said which ratio.</li>
+      <li><a class="tag-b" href="28-over-training.html">L28 &middot; Over-training</a> &mdash; the break in the law at high token-per-parameter ratios.</li>
+      <li><a class="tag-b" href="29-emergence.html">L29 &middot; Emergence</a> &mdash; the same log-log curves, read through a discontinuous metric.</li>
+      <li><a class="tag-b" href="43-training-cost.html">L43 &middot; Training cost modeling</a> &mdash; turns FLOPs into GPU-hours and dollars.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b26-s7">7 &middot; Self-check <a class="hook" href="#b26-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is the backward pass assumed to cost 2&times; the forward pass, and what breaks in C = 6ND if that were wrong?</p>
+        <details><summary>Reveal answer</summary><p>Per linear layer, forward does one matmul per token. Backward needs dL/dx (for the previous
+        layer) and dL/dW (for the update) &mdash; two matmuls of the same shape &mdash; i.e. 2 &times; the forward matmul cost. Per parameter per token: forward 2 FLOPs, backward 4, total 6. If backward were 1&times; you would get C = 4ND
+        and every budget estimate would be 1.5&times; too high.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> With &alpha;<sub>C</sub> = 0.05, a 10&times; compute increase multiplies loss by what factor, and closes what fraction of the remaining distance to zero?</p>
+        <details><summary>Reveal answer</summary><p>Multiplier = 10<sup>-0.05</sup> = 0.8913. So loss falls ~10.9%, meaning 10.9% of the distance from the current
+        loss to zero is closed &mdash; but if there is a floor L<sub>&infin;</sub>, you have closed 10.9% of the distance to the floor only if
+        you divide by (L - L<sub>&infin;</sub>); the fractional closure of the distance to the floor is still exactly 1 &minus; 10<sup>-&alpha;</sup>. This is
+        why the same 10&times; feels huge at 10<sup>20</sup> FLOPs and invisible at 10<sup>27</sup>.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your 9 small-model fits show an excellent straight line (R&sup2; &gt; 0.999) but the 10th, larger model lands 0.08 nats worse than predicted. Name two candidate causes and the single experiment that separates them.</p>
+        <details><summary>Reveal answer</summary><p>(a) data repetition &mdash; the big run exceeded the unique-token budget so it is loss-limited by duplicated data;
+        (b) a data-wall or tokenizer mismatch; (c) small-model contamination flattering the fit. The separating experiment: re-read the
+        10th run's loss restricted to the first epoch's tokens, and check unique-token count per parameter. If first-epoch loss matches
+        the prediction and full-run loss is worse, it is repetition. If both are worse, it is contamination or an architecture difference.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> 6 &times; 300&times;10<sup>9</sup> &times; 9&times;10<sup>11</sup> = ? Express in ZFLOPs and say how many H800-GPU-days that is at a sustained 350 TFLOP/s per GPU.</p>
+        <details><summary>Reveal answer</summary><p>6 &times; 3&times;10<sup>11</sup> &times; 9&times;10<sup>11</sup> = 1.62&times;10<sup>24</sup> FLOPs = 1620 ZFLOPs.
+        At 3.5&times;10<sup>14</sup> FLOP/s, GPU-seconds = 1.62&times;10<sup>24</sup> / 3.5&times;10<sup>14</sup> = 4.63&times;10<sup>9</sup> s = 1.286&times;10<sup>6</sup> GPU-hours
+        = 53,571 GPU-days. At 1000 GPUs that is ~54 days of perfect utilisation, before any failure, checkpoint stall or queueing overhead.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is it correct to say a scaling law is a <em>forecast</em> and not a <em>theory</em>, and what audit artifact proves you have one?</p>
+        <details><summary>Reveal answer</summary><p>A theory explains why the exponent takes that value; a forecast only predicts the next point. Nobody has a
+        derivation of &alpha; from first principles &mdash; it is a fitted regularity. So the only defensible claim is the forecast, and the only
+        proof is out-of-sample: N-1 runs fitted, 1 run held out, predicted vs actual loss reported. Anything else is curve-fitting one
+        straight line through points you already paid for.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="../track-a/25-foundations-capstone.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L25 &middot; Capstone: GPT-2 scale truth check</span></a>
+    <a class="next" href="27-chinchilla.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L27 &middot; Chinchilla: compute-optimal data vs params</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

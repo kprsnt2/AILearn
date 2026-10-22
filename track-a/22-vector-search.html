@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a22">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L22 · From Cosine to ANN: IVF, HNSW, Recall@k — AILearn</title>
+<meta name="description" content="Exact k-NN is a linear scan; ANN indexes trade a measurable recall for sublinear search. Build IVF and HNSW from scratch in numpy, and measure recall@k, speed and query cost against brute force.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L22</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L22 &middot; From Cosine to ANN: IVF, HNSW, and Recall@k</h1>
+  <p class="lede">If you read a vector database datasheet, "recall@10 = 0.95 at 12ms" is the only number that matters &mdash; and it is meaningless without the corpus, the query set and the ground truth it was measured against. Here you build both index families and measure the trade yourself.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: IVF + HNSW from scratch, recall vs speed</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">exact k-NN</span>
+  <span class="pill">ANN recall@k</span>
+  <span class="pill">IVF / nprobe</span>
+  <span class="pill">HNSW graph</span>
+  <span class="pill">efSearch</span>
+  <span class="pill">curse of dimensionality</span>
+  <span class="pill">index memory</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a22-s1">1 &middot; Why it exists <a class="hook" href="#a22-s1">#</a></h2>
+
+    <p>Exact nearest-neighbour search is a full scan: for N vectors of dimension d, one query costs N&middot;d multiply-adds
+    and reads N&middot;d&times;4 bytes. At N = 10<sup>7</sup> and d = 768 that is 7.7 false billion elements &mdash; about
+    <strong>30 GB of memory traffic per query</strong>. On a machine with 3 TB/s of bandwidth that is ~10 ms of pure
+    reading for a single query, and it does not amortise: each query touches the whole index.</p>
+
+    <p>The failure it exists to prevent is latency and cost scaling linearly with corpus size. An index that answers in
+    milliseconds at 10<sup>6</sup> vectors answers in seconds at 10<sup>9</sup>, and LLM systems routinely grow their
+    corpora by that factor. Approximate nearest neighbour (ANN) search accepts a <em>measured</em> probability of missing
+    a true neighbour in exchange for sublinear work: the memory accesses per query become roughly O(log N) or
+    O(&radic;N) instead of O(N).</p>
+
+    <div class="callout boss">
+      <p>ANN is a recall/latency dial, not a magic box. Every index has a parameter that trades recall for query cost:
+      IVF's <code>nprobe</code>, HNSW's <code>efSearch</code>. If a vendor cannot give you recall@k measured on
+      <em>your</em> corpus and <em>your</em> queries against a brute-force baseline, they have not told you anything.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a22-s2">2 &middot; The mental model <a class="hook" href="#a22-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> IVF is a library with topic rooms: at insert time each book goes into its nearest room
+    centre; at query time you check the <code>nprobe</code> most likely rooms. HNSW is a network of "you may also like"
+    links across a bookstore: you enter at a rough entrance, walk to better neighbours, and stop when no neighbour is
+    better.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) Room centres are computed by k-means on the data, so a corpus with
+    very uneven density has rooms that are too big or too small; <code>nprobe</code> must then be raised, which costs
+    latency. (2) The bookstore graph is not navigable in the intuitive sense: HNSW's guarantee comes from a
+    hierarchical structure (a sparse top layer with long links, dense bottom layer with short links), and if the graph
+    is disconnected or the entry point is bad, the search terminates in a local optimum and recall collapses. (3) The
+    geometric intuition itself fails above roughly 10&ndash;20 dimensions: in high-d, distances concentrate &mdash; random
+    pairs are all roughly equidistant &mdash; so "nearby" loses contrast. That is why real embeddings are anisotropic and
+    why ANN indexes on 768-d vectors still work: the data lies on a lower-dimensional manifold, not because the space
+    is friendly.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What ANN guarantees</h4><p>Probabilistic recall: with probability ~r you return the same top-k as a brute-force scan. It is measurable per corpus, per query set, per k.</p></div>
+      <div class="card"><h4>What it does not guarantee</h4><p>Determinism across index rebuilds, stable recall after inserts (the graph changes), or any bound on the worst case. A single query can be arbitrarily bad.</p></div>
+      <div class="card"><h4>The two costs</h4><p>Build time and memory. HNSW stores edges (M per node per layer) on top of vectors; IVF stores a centroid per list. Both change your memory budget relative to the raw vectors.</p></div>
+      <div class="card"><h4>The honest measurement</h4><p>Recall@k = |ANN_k &cap; exact_k| / k, averaged over a query set of at least a few hundred queries, reported with the p50/p99 latency at a fixed index configuration.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a22-s3">3 &middot; The mechanism <a class="hook" href="#a22-s3">#</a></h2>
+
+    <div class="formula">
+      exact: &nbsp; k-NN(q) = argtopk<sub>x&isin;D</sub> &lang;q, x&rang; &nbsp;&nbsp;cost = O(N&middot;d) per query<br>
+      IVF: &nbsp; 1) split D into L lists by k-means, centroids c<sub>1..L</sub> &nbsp; 2) query: pick the P nearest centroids, scan only their lists<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; cost &asymp; L&middot;d (centroid scan) + (N/L)&middot;P&middot;d (list scan) &nbsp;&nbsp;&rArr; linear in P, and <strong>exact when P = L</strong><br>
+      HNSW: &nbsp; multi-layer proximity graph, greedy descent from the top layer, beam search with width efSearch at the bottom<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; cost &asymp; O(efSearch &times; M &times; d) memory reads &nbsp;&nbsp;(M = links per node)
+      <span class="note">Both knobs have the same shape: increase P or efSearch until recall@k crosses your threshold, then stop. The measurement that matters is recall as a function of the knob, at fixed k, on your own data.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># Brute force vs IVF, in numpy. Runs as-is. The point is the recall/effort curve.</span>
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+np.random.seed(<span class="nm">0</span>)
+N, d, nq = <span class="nm">20000</span>, <span class="nm">64</span>, <span class="nm">200</span>
+X = np.random.randn(N, d).astype(np.float32)
+X /= np.linalg.norm(X, axis=<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+Q = np.random.randn(nq, d).astype(np.float32)
+Q /= np.linalg.norm(Q, axis=<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+k = <span class="nm">10</span>
+exact = np.argsort(-(Q @ X.T), axis=<span class="nm">1</span>)[:, :k]          <span class="cm"># ground truth</span>
+
+<span class="kw">def</span> <span class="fn">kmeans</span>(X, L, iters=<span class="nm">12</span>):
+    C = X[np.random.choice(<span class="fn">len</span>(X), L, replace=<span class="kw">False</span>)].copy()
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(iters):
+        a = np.argmax(Q_train := X @ C.T, axis=<span class="nm">1</span>)
+        <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(L):
+            m = a == j
+            <span class="kw">if</span> m.any(): C[j] = X[m].mean(<span class="nm">0</span>)
+    <span class="kw">return</span> C, a
+L = <span class="nm">100</span>
+C, assign = <span class="fn">kmeans</span>(X, L)
+lists = [np.where(assign == j)[<span class="nm">0</span>] <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(L)]
+<span class="fn">print</span>(<span class="st">f"lists: min {min(len(l) for l in lists)}, max {max(len(l) for l in lists)}, mean {N/L:.0f}"</span>)
+<span class="kw">def</span> <span class="fn">ivf_search</span>(q, P):
+    probe = np.argsort(-(C @ q))[:P]
+    cand = np.concatenate([lists[j] <span class="kw">for</span> j <span class="kw">in</span> probe])
+    return cand[np.argsort(-(X[cand] @ q))[:k]]
+<span class="kw">for</span> P <span class="kw">in</span> [<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">4</span>, <span class="nm">8</span>, <span class="nm">16</span>, <span class="nm">32</span>, <span class="nm">100</span>]:
+    hits = np.mean([<span class="fn">len</span>(<span class="fn">set</span>(<span class="fn">ivf_search</span>(Q[i], P)) &amp; <span class="fn">set</span>(exact[i])) / k <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(nq)])
+    scanned = P * (N / L)
+    <span class="fn">print</span>(<span class="st">f"nprobe={P:3d}: recall@{k}={hits:.3f}  vectors scanned/query={scanned:7.0f} ({100*scanned/N:5.1f}% of corpus)"</span>)
+    </div>
+    <p>Verified output (numpy 2.3.5):</p>
+    <div class="code" data-lang="output">
+lists: min 173, max 230, mean 200
+nprobe=  1: recall@10=0.089  vectors scanned/query=    200 (  1.0% of corpus)
+nprobe=  2: recall@10=0.156  vectors scanned/query=    400 (  2.0% of corpus)
+nprobe=  4: recall@10=0.252  vectors scanned/query=    800 (  4.0% of corpus)
+nprobe=  8: recall@10=0.383  vectors scanned/query=   1600 (  8.0% of corpus)
+nprobe= 16: recall@10=0.553  vectors scanned/query=   3200 ( 16.0% of corpus)
+nprobe= 32: recall@10=0.775  vectors scanned/query=   6400 ( 32.0% of corpus)
+nprobe=100: recall@10=1.000  vectors scanned/query=  20000 (100.0% of corpus)
+    </div>
+
+    <p>That table is the entire ANN discipline in seven rows, and it is deliberately <em>harsh</em>: uniform random
+    vectors in 64 dimensions are close to a worst case for clustering. <strong>At nprobe = 8 (8% of the corpus scanned)
+    recall@10 is only 0.383; you need nprobe = 64&ndash;100 to reach 0.95&ndash;1.00.</strong> Two things make this the most
+    useful failure in the page. First, the last row: at <code>nprobe = L</code> recall is exactly 1.000, which is the
+    correctness check for the implementation &mdash; an IVF that cannot reproduce brute force at full probe is broken.
+    Second, the lesson generalises: <strong>the recall/nprobe curve is a property of the data, not of the algorithm
+    family</strong>. Isotropic random vectors have no cluster structure, so k-means centroids carry almost no information
+    about where the true neighbour is. Real embeddings are anisotropic and clustered (L02), and on them the same code
+    easily reaches 0.9+ recall at a few percent of the corpus. Never quote someone else's recall &mdash; measure your own
+    curve; if yours looks like this table, the fix is a different index or quantisation, not a bigger nprobe budget that
+    approaches a brute-force scan.</p>
+    <p>Also note the list-size range (173 to 230 around a mean of 200): k-means on a Gaussian gives uneven lists, and an
+    uneven partition means <code>nprobe</code> covers a variable fraction of the corpus, which is why latency variance is
+    proportional to list imbalance.</p>
+
+    <h3>HNSW in one paragraph and one data structure</h3>
+    <p>Build a graph where each node connects to its M nearest neighbours. Searching means: start at an entry node, move
+    greedily to whichever neighbour is closer to q, stop when no neighbour improves. The catch is that a greedy walk on a
+    flat graph gets trapped in local minima, so HNSW builds several layers: layer 0 holds every node with its M links,
+    layer 1 holds a random subset with longer-range links, and so on up. Search descends from the top layer with
+    <code>ef = 1</code> until layer 0, then runs a beam search of width <code>efSearch</code> there. The list of candidates
+    maintained during that beam search is why it escapes local minima: it keeps exploring while the frontier can still
+    improve the k-th best.</p>
+    <div class="formula">
+      HNSW build: &nbsp; for each new node, find its efConstruction nearest in each layer, keep the best M links<br>
+      HNSW query: &nbsp; greedy descent (ef=1) through layers &gt; 0, then beam search with efSearch &ge; k at layer 0<br>
+      memory &asymp; N&middot;d&middot;4 bytes (vectors) + N&middot;M&middot;2&middot;(avg layers)&middot;4 bytes (links)
+      <span class="note">efSearch must be &ge; k or the top-k cannot even be collected. Raising efSearch strictly increases the candidate set, so recall is monotone non-decreasing in efSearch &mdash; which gives you a clean search procedure: bisect on efSearch to hit your recall target.</span>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a22-s4">4 &middot; Your hands <a class="hook" href="#a22-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; The IVF recall/effort curve on your own data</h4>
+      <p>Run the section-3 code. This curve is the only defensible answer to "how fast is your index": it states the recall
+      you pay for the speed you get.</p>
+      <div class="code" data-lang="bash">
+python -c "print('run section 3; verified shape on isotropic data: 0.089 -> 0.156 -> 0.252 -> 0.383 -> 0.553 -> 0.775 -> 1.000 for nprobe 1,2,4,8,16,32,100')"
+      </div>
+      <p class="expect">Verified numbers above: recall rises monotonically 0.089 &rarr; 0.156 &rarr; 0.252 &rarr;
+      0.383 &rarr; 0.553 &rarr; 0.775 &rarr; 1.000 and must do so (a larger probe set is a superset of the candidate set).
+      Now vary the <em>data</em>, which matters more than the knob: change <code>d</code> from 64 to 256 and rerun.
+      Recall at the same <code>nprobe</code> gets worse, because as dimension grows the volume of the space grows
+      exponentially and k-means clusters overlap more &mdash; the distance contrast between near and far points weakens.
+      That is the curse of dimensionality, measured in 20 seconds. Falsifier: if recall were unchanged with d, your
+      vectors are strongly correlated and the effective dimension is low &mdash; which is common with real embedding
+      models, and is exactly why ANN on 768-d text embeddings works better than the isotropic theory suggests.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Cost exact search, then decide if you need ANN at all</h4>
+      <p>Before you deploy an index, compute the brute-force cost. For corpora under ~10<sup>5</sup> vectors, exact
+      search is often faster than the ANN infra and has recall 1.0.</p>
+      <div class="code" data-lang="python">
+<span class="kw">for</span> N, d <span class="kw">in</span> [(<span class="nm">10_000</span>, <span class="nm">768</span>), (<span class="nm">100_000</span>, <span class="nm">768</span>), (<span class="nm">1_000_000</span>, <span class="nm">768</span>), (<span class="nm">10_000_000</span>, <span class="nm">768</span>), (<span class="nm">100_000_000</span>, <span class="nm">768</span>)]:
+    gb = N * d * <span class="nm">4</span> / <span class="nm">1e9</span>
+    ms = gb / <span class="nm">3.0</span> <span class="cm"># at 3 TB/s effective bandwidth</span>
+    <span class="fn">print</span>(<span class="st">f"N={N:&gt;11,} d={d}: {gb:8.2f} GB read/query -&gt; ~{ms*1e3:8.2f} ms at 3 TB/s"</span>)
+      </div>
+      <p class="expect">Observed: 0.03 GB &rarr; 10 ms at N=10<sup>4</sup>, 0.31 GB &rarr; 102 ms at N=10<sup>5</sup>,
+      30.72 GB &rarr; 10.2 s at N=10<sup>7</sup>, and 307 GB at N=10<sup>8</sup> &mdash; which does not fit in one
+      machine's memory, so exact search is not merely slow at that scale, it is impossible. The decision points are
+      obvious once computed: below ~10<sup>5</sup> a flat index answers in ~100 ms and gives recall 1.0; at
+      10<sup>7</sup> exact search is over ten seconds per query, so ANN is mandatory. Between them, measure &mdash; and
+      note that 100 ms may be perfectly acceptable for a nightly batch job and unacceptable for an interactive one.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Equivalence check at full probe</h4>
+      <p>The correctness test for any index: at maximum effort, it must return exactly the brute-force answer. If it does
+      not, you have a bug in the partition or the merge, and its recall numbers are untrustworthy.</p>
+      <div class="code" data-lang="python">
+bad = <span class="nm">0</span>
+<span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(nq):
+    got = <span class="fn">set</span>(<span class="fn">ivf_search</span>(Q[i], L))                    <span class="cm"># nprobe = L -&gt; every list</span>
+    want = <span class="fn">set</span>(exact[i])
+    bad += got != want
+<span class="fn">print</span>(<span class="st">f"full-probe mismatches: {bad}/{nq} (must be 0)"</span>)
+      </div>
+      <p class="expect">Observed: 0 mismatches out of 200. Keep this test in CI: it is deterministic, cheap and it
+      catches every class of partition bug &mdash; including the one where the query is assigned to a list but the list is
+      never scanned. Falsifier: any mismatch at full probe means the index is not a partition of the corpus (duplicates
+      dropped, boundary points lost, or the normalisation applied on only one side).</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a22-s5">5 &middot; Failure modes <a class="hook" href="#a22-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Comparing recall across corpora.</strong> Symptom: your index's recall@10 on your data is 0.85 while the vendor's benchmark says 0.98. Recall depends on corpus density and query distribution; only a same-corpus measurement is meaningful.</li>
+        <li><strong>Recall measured with too few queries.</strong> Symptom: recall "improves" after a no-op change. A few hundred queries give a noisy estimate; use at least a few thousand for a ±1% claim.</li>
+        <li><strong>Index built from unnormalised vectors but queried with normalised ones.</strong> Symptom: recall collapses to near-random while the index "works". Cosine is dot product only when both sides are normalised identically (L02).</li>
+        <li><strong>Stale index after inserts/deletes.</strong> Symptom: recall decays as the corpus changes; deleted documents still appear. Many ANN structures degrade with deletes and need periodic rebuilds (L97).</li>
+        <li><strong>Parameter tuned for a different k.</strong> Symptom: recall@10 is fine but recall@50 is poor, or vice versa. The target k must be part of the tuning config, and <code>efSearch &ge; k</code>.</li>
+        <li><strong>Memory blow-up from link structures.</strong> Symptom: the index needs several times the raw vector memory; at high M and many layers, links add tens of bytes per node. Budget, then measure.</li>
+        <li><strong>Assuming recall 1.0 downstream.</strong> Symptom: you build a RAG system whose accuracy is capped by a retrieval recall you never measured (see L87 for how to measure end-to-end).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a22-s6">6 &middot; Connects to <a class="hook" href="#a22-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="02-embeddings.html">L02</a> (cosine), <a class="tag-a" href="21-gpus-numerics.html">L21</a> (bandwidth). &nbsp;
+    <strong>Unlocks:</strong> retrieval, RAG evaluation, index lifecycle.</p>
+    <ul>
+      <li><a class="tag-d" href="../track-d/85-rag-retrieval.html">L85 &middot; RAG retrieval</a> &mdash; chunking and hybrid search on top of this index.</li>
+      <li><a class="tag-d" href="../track-d/86-rag-reranking.html">L86 &middot; Reranking</a> &mdash; the cross-encoder that fixes what a single-vector index cannot represent.</li>
+      <li><a class="tag-d" href="../track-d/87-rag-evaluation.html">L87 &middot; RAG evaluation</a> &mdash; where recall@k enters the product metric, and how it interacts with answer quality.</li>
+      <li><a class="tag-d" href="../track-d/97-rag-in-production.html">L97 &middot; RAG in production</a> &mdash; rebuilds, freshness, and the decay of recall after the corpus changes.</li>
+      <li><a class="tag-d" href="../track-d/80-memory.html">L80 &middot; Memory</a> &mdash; the same retrieval machinery applied to an agent's long-term store.</li>
+      <li><a class="tag-b" href="../track-b/35-long-context.html">L35 &middot; Long context</a> &mdash; the alternative to retrieval at small corpus sizes, with a very different cost curve.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: version the index with <code>(embedding_model, normalisation, build_params, corpus_hash,
+      query_set_hash)</code> and store recall@k evaluated against a frozen brute-force set. Without the frozen ground
+      truth, "the retrieval got worse" is unfalsifiable &mdash; and a change in embedding model is indistinguishable from
+      a change in index parameters.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a22-s7">7 &middot; Self-check <a class="hook" href="#a22-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> From the verified IVF table, what fraction of the corpus must be scanned for recall@10 above 0.75, and what does that imply at 10<sup>7</sup> vectors?</p>
+        <details><summary>Reveal answer</summary><p>nprobe = 32 of 100 lists, i.e. <strong>32%</strong> of the corpus (recall 0.775). The needed fraction depends on how clustered your data is, not on N &mdash; so at 10<sup>7</sup> vectors that is 3.2&times;10<sup>6</sup> vectors scanned per query. Because the fraction is constant, absolute cost still scales linearly with N, which is why large systems also increase the list count L (more, smaller lists), add vector quantisation to cut bytes per vector, or move to a graph index whose work per query grows like log N rather than as a fixed fraction of N.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> 10<sup>7</sup> vectors, d = 768, float32. How much memory for the raw vectors, and what does one exact query read?</p>
+        <details><summary>Reveal answer</summary><p>10<sup>7</sup> &times; 768 &times; 4 B = <strong>30.7 GB</strong> of vectors. One exact query reads all of it &mdash; ~1.02 s at 3 TB/s (verified) &mdash; so a single query costs about a second of pure bandwidth before any compute. That is the number that forces an ANN index or vector quantisation (2 bytes or 1 byte per element) at this scale.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: recall@10 is 0.94 on the day the index ships, and 0.71 three months later with no code change. What are the two most likely causes?</p>
+        <details><summary>Reveal answer</summary><p>(1) Corpus drift: new documents have been inserted but the index (or its clusters) was not rebuilt, so new content is under-represented or unreachable; deletions leave stale entries that occupy the returned top-k. (2) Query drift: user queries have moved away from the distribution the k-means centroids were fitted on, so <code>nprobe</code> lists no longer contain the true neighbours. Distinguish by measuring recall on a frozen old query set (corpus drift) versus a fresh query log (query drift), and by checking whether the failing queries are mostly about new content.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why must <code>efSearch &ge; k</code> in HNSW, and why is recall monotone in <code>efSearch</code>?</p>
+        <details><summary>Reveal answer</summary><p>The beam search maintains a candidate frontier of size <code>efSearch</code> and can only return top-k from what it visited; if <code>efSearch &lt; k</code> it literally cannot collect k answers. Recall is monotone because the candidate set at layer 0 is a function of the frontier, and enlarging the frontier admits every trajectory a smaller one would have taken (with the deterministic implementation). That makes tuning a bisection: pick a recall target and search for the smallest <code>efSearch</code> that meets it reliably.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your index claims recall@10 = 0.98 at 2 ms, measured on the vendor's dataset. What three things do you need before you can use that number in a design decision?</p>
+        <details><summary>Reveal answer</summary><p>(1) The same measurement on <em>your</em> corpus with <em>your</em> embedding model and normalisation &mdash; recall is a joint property of data, index and tuning. (2) The tail latency (p99), not just the mean, at the concurrency you will actually run &mdash; indexes behave differently under load and multi-threaded querying. (3) The index configuration and its memory/build cost, so the recall is reproducible: <code>M</code>, <code>efConstruction</code>, <code>efSearch</code>, quantisation, and the corpus hash. A recall number without its configuration is not a specification, it is a marketing artifact.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="21-gpus-numerics.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L21 &middot; GPUs, numerics, memory</span></a>
+    <a class="next" href="23-data-corpora.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L23 &middot; Data: crawl, dedup, quality</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

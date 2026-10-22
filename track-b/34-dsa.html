@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b34">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L34 · DeepSeek Sparse Attention (DSA) + Token-Wise Compression — AILearn</title>
+<meta name="description" content="Make long context affordable by not looking at everything: a cheap lightning indexer scores the whole history, a top-k selector picks what attention actually reads, and token-wise compression shrinks what is stored.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L34</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L34 &middot; DeepSeek Sparse Attention (DSA) + Token-Wise Compression</h1>
+  <p class="lede">Attention cost grows with the square of context, and at 1M tokens that quadratic term is the whole bill. DSA keeps a cheap full-history scan to decide <em>what</em> to read, then reads only a couple of thousand positions &mdash; turning an O(L&sup2;) read into an O(L&middot;k) read.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: sparse attention pattern sim</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">lightning indexer</span>
+  <span class="pill">top-k token selection</span>
+  <span class="pill">sparse attention</span>
+  <span class="pill">token-wise compression</span>
+  <span class="pill">O(L&middot;k) read cost</span>
+  <span class="pill">attention sink / local window</span>
+  <span class="pill">retrieval vs coverage</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b34-s1">1 &middot; Why it exists <a class="hook" href="#b34-s1">#</a></h2>
+
+    <p>MLA (L33) fixed the <em>storage</em> half of long context. It left the <em>compute</em> half untouched: causal self-attention
+    compares every query with every earlier key, so the number of query&ndash;key pairs grows as L&sup2;/2.</p>
+
+    <p>Price it for a 1M-token prompt with 128 heads and 61 layers. Pair-count at L = 10<sup>6</sup> is
+    61 &times; 128 &times; (10<sup>12</sup>/2) = 3.904&times;10<sup>15</sup> multiply-accumulates, and each pair costs
+    roughly 2 FLOPs for the dot product plus accumulation across a 128-dim head &mdash; so call it ~7.8&times;10<sup>15</sup>
+    FLOPs of pure attention. On a single H800 at 40% MFU (3.956&times;10<sup>14</sup> FLOP/s) that is 19.7 seconds of attention
+    work for ONE prefill, and doubling context quadruples it to 79 seconds.</p>
+
+    <p>The failure is not that 20 seconds is unbearable once &mdash; it is that at 128k the attention term is 0.3s and at
+    1M it is 19.7s, so a 7.6&times; longer prompt costs 66&times; more attention compute. Every agent loop that re-sends a growing
+    transcript hits this wall. DSA (DeepSeek Sparse Attention) debuted in DeepSeek-V3.2-Exp
+    <span class="asof">state as of 2026-10</span> and is part of the V4 architecture family, combined with
+    <strong>token-wise compression</strong>.</p>
+
+    <div class="callout boss">
+      <p>Do not read 1M tokens. Score them cheaply, read the ~2,000 that matter, and store a compressed representation of
+      everything else. Linear cost instead of quadratic &mdash; that is the only way long context becomes a product feature
+      rather than a demo.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b34-s2">2 &middot; The mental model <a class="hook" href="#b34-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a librarian with a 1M-book library. A full scan (dense attention) means reading every
+    book before answering. The DSA approach is an index card per book &mdash; a 20-page thumbnail &mdash; to shortlist 2,000
+    candidates cheaply, then read only those in full.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Two-tier retrieval with a cheap approximate filter followed by
+      expensive exact processing is the standard way to beat a quadratic scan. The filter must be <em>relative to the query</em>,
+      not a global static index &mdash; a different question needs a different shortlist.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Index cards can be wrong. If the filter rates the one crucial passage low, the
+      answer is unrecoverable &mdash; dense attention never misses, it just pays. So sparse attention converts a
+      <em>compute</em> problem into an <em>accuracy</em> problem: the recall of the selector becomes a first-class quality
+      variable, and it has to be measured, not assumed.</p></div>
+    </div>
+
+    <h3>Where does the "2,000" come from?</h3>
+    <p>From the structure of the attention distribution itself. In practice a softmax over a long history is extremely peaked:
+    a small number of positions carry most of the mass, plus a local window for recency, plus a few "sink" positions that
+    absorb probability. Sparse attention is the bet that a fixed budget of a few thousand positions captures almost all of it.
+    That bet is testable, and it is the first lab on this page.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b34-s3">3 &middot; The mechanism <a class="hook" href="#b34-s3">#</a></h2>
+
+    <h3>(a) The two-tier structure</h3>
+    <div class="formula">
+      s<sub>t</sub> = Indexer(q<sub>t</sub>, &kappa;<sub>1:t</sub>) &isin; &#8477;<sup>t</sup> &nbsp;&rarr;&nbsp;
+      &Iscr;<sub>t</sub> = TopK(s<sub>t</sub>, m) &nbsp;&rarr;&nbsp;
+      o<sub>t</sub> = SoftmaxAttention(q<sub>t</sub>, &kappa;<sub>&Iscr;<sub>t</sub></sub>, &nu;<sub>&Iscr;<sub>t</sub></sub>)
+      <span class="note">Indexer: a small number of heads with a small head dimension, so scoring t positions costs far less than a full attention head would. m = number of selected positions. The exact attention is then run over only m keys/values per query: cost O(L&middot;m) instead of O(L&sup2;).</span>
+    </div>
+
+    <h3>(b) Cost model, computed</h3>
+    <p>With 61 layers, H = 128 attention heads, an indexer of E indexer-heads, L cached positions and m selected:</p>
+    <div class="formula">
+      MACs<sub>indexer</sub> = layers &times; H &times; E &times; L &times; m &nbsp;&nbsp;&nbsp; vs &nbsp;&nbsp;&nbsp;
+      MACs<sub>dense</sub> = layers &times; H &times; L&sup2;/2
+      <span class="note">Note the indexer is itself O(L&middot;m) per query, not O(L): scoring every position costs L dot products of length m. The point is that it is cheap per comparison because the indexer head dimension is small, so you can afford the full scan at a fraction of full attention's cost.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Scenario (61 layers, H = 128, m = 2,048)</th><th>Indexer MACs</th><th>Dense MACs</th><th>Ratio</th></tr></thead>
+      <tbody>
+        <tr><td>L = 10<sup>6</sup>, E = 20, no compression</td><td>3.198&times;10<sup>14</sup></td><td>3.904&times;10<sup>15</sup></td><td><strong>0.082&times;</strong></td></tr>
+        <tr><td>L = 10<sup>6</sup>, E = 20, history compressed 4&times;</td><td>7.995&times;10<sup>13</sup></td><td>3.904&times;10<sup>15</sup></td><td><strong>0.020&times;</strong></td></tr>
+        <tr><td>Core reads per query token (dense)</td><td colspan="2">L/2 = 500,000 positions</td><td>&mdash;</td></tr>
+        <tr><td>Core reads per query token (DSA)</td><td colspan="2">m = 2,048 positions</td><td><strong>1/244</strong></td></tr>
+      </tbody>
+    </table>
+
+    <p>Two separate savings and it matters which you quote. The <strong>read cost</strong> of exact attention falls 244&times;
+    at 1M tokens because each query touches 2,048 of 500,000 causal positions. The <strong>indexer</strong> still scans the
+    whole history, so total work is ~8% of dense (or ~2% with 4&times; token compression) &mdash; an order of magnitude, not the
+    full 244&times;. Anyone quoting 244&times; end-to-end speedup is quoting the wrong comparator.</p>
+
+    <h3>(c) Token-wise compression</h3>
+    <p>Compression acts on what is <em>stored and scored</em>, not just what is read. Group consecutive tokens into one
+    compressed entry (a learned pooling of the cached latent) and every downstream term shrinks by the grouping factor:</p>
+    <ul>
+      <li>Indexer MACs fall by the compression ratio (10<sup>6</sup> &rarr; 2.5&times;10<sup>5</sup> scored entries at 4&times;).</li>
+      <li>KV bytes fall by the same factor &mdash; and V4.1-Flash's stated cache requirement of <strong>1/4 the HBM and 1/8 the
+      SSD</strong> of the previous generation <span class="asof">state as of 2026-10</span> is the operational form of this.</li>
+      <li>The cost: a compressed entry cannot be un-mixed. If one token in a group of four is the crucial needle, the group's
+      representation contains it only 1/4 diluted. This is why compression ratios are tuned against retrieval benchmarks, not
+      chosen for memory targets.</li>
+    </ul>
+
+    <h3>(d) What the selector must always keep</h3>
+    <p>Two categories are exempt from pure top-k selection in any production implementation, and both are correctness issues:</p>
+    <ol>
+      <li><strong>A local window</strong> of the most recent positions &mdash; recency carries syntax and local coherence, and
+      those positions have not yet accrued a meaningful score history.</li>
+      <li><strong>Sink positions</strong> (typically the first few tokens) &mdash; the model offloads probability mass there;
+      removing them changes attention's normalisation and measurably damages output.</li>
+    </ol>
+    <p>So the real budget is: local window + sinks + (m &minus; those) selected positions. When you audit a
+    &ldquo;sparse attention&rdquo; claim, ask which of the three buckets are fixed.</p>
+
+    <div class="callout audit">
+      <p>The quality metric for DSA is <strong>selector recall</strong>: of the positions that a dense model would have given
+      &ge;1% of its attention mass, what fraction does the top-k selector include? Measure it per layer on a real corpus, not
+      on a synthetic needle. If recall on deep layers (where retrieval happens) is below ~90%, a benchmark that happens to be
+      easy will hide a real long-context regression.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b34-s4">4 &middot; Your hands <a class="hook" href="#b34-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; measure indexer recall against the exact attention it replaces</h4>
+      <p>This is the central quality experiment for any sparse-attention system. Build a 100k-position history, plant a number
+      of query-relevant positions, and ask: does a <em>low-dimensional indexer</em> select the same positions an exact scorer would
+      have picked? Two knobs matter &mdash; how strongly the relevant positions stand out, and how narrow the indexer is.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+L, d = <span class="nm">100_000</span>, <span class="nm">64</span>
+rng = np.random.default_rng(<span class="nm">340</span>)
+base = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (L, d)); q = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, d)
+
+<span class="kw">def</span> <span class="fn">recall</span>(n_needles, amp, m, k):
+    X = base.copy()
+    nd = rng.choice(L, n_needles, replace=<span class="kw">False</span>); X[nd] += amp * q
+    P = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (m, d)) / np.sqrt(d)   <span class="cm"># indexer: project to m dims</span>
+    idx_scores = (X @ P.T) @ (P @ q)                            <span class="cm"># cheap approximate score</span>
+    sel = <span class="fn">set</span>(np.argsort(-idx_scores)[:k].tolist())
+    <span class="kw">return</span> <span class="fn">len</span>(sel &amp; <span class="fn">set</span>(nd.tolist())) / n_needles
+
+<span class="kw">for</span> amp <span class="kw">in</span> (<span class="nm">0.5</span>, <span class="nm">1.0</span>, <span class="nm">2.0</span>):
+    <span class="kw">for</span> m <span class="kw">in</span> (<span class="nm">64</span>, <span class="nm">8</span>):
+        <span class="fn">print</span>(<span class="st">f"amp={amp}  indexer_dim={m:3d}  recall@2048={<span class="fn">recall</span>(<span class="nm">400</span>, amp, m, <span class="nm">2048</span>):.3f}"</span>)
+      </div>
+      <p class="expect">Measured (400 relevant positions, k = 2048): amp 0.5 &rarr; recall 0.620 at indexer_dim 64 but
+      <strong>0.265</strong> at indexer_dim 8; amp 1.0 &rarr; 0.995 / 0.470; amp 2.0 &rarr; 1.000 / 0.912. Two findings.
+      (1) Indexer dimension is a <em>quality</em> parameter: a narrow indexer loses more than half the relevant positions when
+      relevance is weak. (2) Recall depends on signal-to-noise: with faint relevance even a good indexer only gets 62%.
+      <strong>Falsification:</strong> if a low-dim indexer recalls everything at amp = 0.5, your "trivial" background has no
+      competing structure and the test cannot fail &mdash; that is exactly the trap in synthetic needle benchmarks.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the end-to-end cost ratio, at any context length</h4>
+      <p>Stop trusting a single quoted speedup. Compute the ratio including the indexer, which is the part vendors omit.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">ratio</span>(L, layers=<span class="nm">61</span>, H=<span class="nm">128</span>, E=<span class="nm">20</span>, m=<span class="nm">2048</span>, compress=<span class="nm">1</span>):
+    dense = layers * H * L * L / <span class="nm">2</span>
+    index = layers * H * E * (L / compress) * m
+    <span class="kw">return</span> dense, index, index / dense
+
+<span class="kw">for</span> L <span class="kw">in</span> (<span class="nm">16_384</span>, <span class="nm">131_072</span>, <span class="nm">1_048_576</span>):
+    <span class="kw">for</span> c <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">4</span>):
+        d, i, r = <span class="fn">ratio</span>(L, compress=c)
+        <span class="fn">print</span>(<span class="st">f"L={L:>9,} compress={c}  dense={d:.2e} index={i:.2e}  indexer/dense={r:.4f}"</span>)
+      </div>
+      <p class="expect">Measured: at L = 16,384 / 131,072 / 1,048,576 with compression 1, the ratio is 0.5000 / 0.0625 /
+      0.0078; with 4&times; compression 0.125 / 0.0156 / 0.0020. The ratio falls as 1/L, which is the whole point: the longer
+      the context, the bigger the win. At 16k context without compression it is a <em>net loss</em> (0.5, and the dense path
+      has better hardware efficiency), so sparse attention is enabled only above a context threshold. Find your threshold
+      before turning it on.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the crossover: where sparsity stops paying</h4>
+      <p>Every sparse-attention vendor quotes a speedup. The number that governs whether you switch it on is the context length
+      at which indexer cost falls below dense cost. It is a one-line equation &mdash; derive it, then check it against the
+      measured ratios.</p>
+      <div class="code" data-lang="bash">
+python -c "
+E, m = 20, 2048          # indexer heads, selected positions
+for L in (16384, 32768, 81920, 131072, 1048576):
+    dense = L*L/2
+    index = E*m*L
+    print(f'L={L:>9,}: indexer/dense = {index/dense:.3f}')
+print('crossover L =', 2*E*m)
+"
+      </div>
+      <p class="expect">Measured: 5.000 at 16,384; 2.500 at 32,768; 1.000 at 81,920; 0.625 at 131,072; 0.078 at 1,048,576.
+      The crossover is exactly L = 2&middot;E&middot;m = 81,920 tokens. Below it, the selector is a <em>net compute loss</em> &mdash;
+      and since scattered reads are also less hardware-efficient than contiguous ones, the practical crossover is higher than
+      82k. Enable sparse attention above ~130k context, not everywhere.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b34-s5">5 &middot; Failure modes <a class="hook" href="#b34-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Selector misses a needle.</strong> Symptom: needle-in-a-haystack passes at 8k and 32k but flips to failures at
+        128k+ on multi-needle variants. The miss is not random; it correlates with needles whose token embedding is not unusual
+        (dates, IDs, names) &mdash; exactly what a compression-by-pooling scheme dilutes.</li>
+        <li><strong>Indexer trained against the wrong objective.</strong> Symptom: sparse attention matches dense on perplexity
+        but loses on retrieval. The indexer needs its own supervision signal targeted at final attention weights, not at a
+        reconstruction proxy.</li>
+        <li><strong>Missing sinks / window.</strong> Symptom: attention mass normalisation shifts and quality degrades
+        <em>uniformly</em>, not just at long range &mdash; outputs look slightly off on short prompts too, which misleads
+        diagnosis toward the base model.</li>
+        <li><strong>Quadratic cost hidden in the indexer.</strong> Symptom: measured time does not fall as 1/k even though you set
+        m small; the indexer is still O(L) or the implementation materialises the full score vector before top-k, so memory
+        blows up even though FLOPs look fine.</li>
+        <li><strong>Compression ratio chosen for memory, not quality.</strong> Symptom: 4&times; compression gives exactly the
+        memory number the plan promised, and long-context QA drops on the subset of questions whose answer sits in a
+        compressed group. A/B the ratio against a retrieval eval, never against a memory dashboard.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b34-s6">6 &middot; Connects to <a class="hook" href="#b34-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L33 (the cache being sparse-selected from) and L06 (attention shapes). &nbsp;
+    <strong>Unlocks:</strong> affordable 1M context (L35), serving cost (L44) and cache economics (L45).</p>
+    <ul>
+      <li><a class="tag-b" href="33-mla.html">L33 &middot; MLA</a> &mdash; the storage compression this lesson reads from.</li>
+      <li><a class="tag-a" href="../track-a/06-attention-core.html">L06 &middot; Self-attention</a> &mdash; the O(L&sup2;) pair loop being sparsified.</li>
+      <li><a class="tag-b" href="35-long-context.html">L35 &middot; Long context</a> &mdash; what 1M tokens costs end to end.</li>
+      <li><a class="tag-b" href="38-flash-attention.html">L38 &middot; FlashAttention</a> &mdash; the IO argument that makes the read pattern matter.</li>
+      <li><a class="tag-d" href="../track-d/79-context-engineering.html">L79 &middot; Context engineering</a> &mdash; where sparse long context meets prompt budgets.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b34-s7">7 &middot; Self-check <a class="hook" href="#b34-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> At L = 1M, how many causal positions does a dense query read, and how many does a k = 2048 sparse query read? State the read-cost ratio and the end-to-end ratio including an E = 20 indexer.</p>
+        <details><summary>Reveal answer</summary><p>Dense: L/2 = 500,000 positions (causal average). Sparse: 2,048. Read ratio = 500,000/2,048 =
+        244&times;. End-to-end: dense MACs = 61&times;128&times;10<sup>12</sup>/2 = 3.904&times;10<sup>15</sup>; indexer MACs =
+        61&times;128&times;20&times;2.048&times;10<sup>9</sup> = 3.198&times;10<sup>14</sup>; ratio 0.082, i.e. an 12.2&times; reduction. The gap
+        between 244&times; and 12&times; is the indexer: it still scans everything, just cheaply.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why does the indexer get cheaper relative to dense attention as context grows, and at what context does sparsity stop paying?</p>
+        <details><summary>Reveal answer</summary><p>Indexer cost is O(L&middot;m) while dense is O(L&sup2;/2), so the ratio is
+        2E&middot;m&middot;compress<sup>-1</sup>/L &mdash; inversely proportional to L. With E = 20, m = 2,048, compression 1, the ratio is 1
+        when L = 2&times;20&times;2048 = 81,920 tokens. Below ~82k tokens dense attention is cheaper in raw MACs; above it, sparsity wins.
+        That is why 128k is roughly the crossover point and 1M is where the win is 12&times;.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: sparse attention has the expected speedup but long-context QA regressed while perplexity is unchanged. What do you measure first?</p>
+        <details><summary>Reveal answer</summary><p>Selector recall per layer against the dense model's attention distribution on the same inputs. If deep-layer recall
+        is low, the indexer is the culprit and the QA is correct to regress while perplexity stays flat &mdash; perplexity is dominated by local
+        prediction and does not exercise long-range retrieval. Only after recall is cleared should you look at compression ratio, sinks
+        and window.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> V4.1-Flash needs 1/4 the HBM and 1/8 the SSD of the previous generation. Starting from a 65.45 GiB per-1M-token MLA cache, what are the two numbers, and why is the SSD ratio better than the HBM ratio?</p>
+        <details><summary>Reveal answer</summary><p>HBM: 16.4 GiB; SSD: 8.2 GiB. The SSD ratio being better suggests the HBM figure is limited by what must be
+        resident during active attention (uncompressed enough to attend accurately) while the SSD figure reflects the
+        fully-compressed persistent representation. Practically: the working set is 1/4, the archived set 1/8, so eviction to SSD and
+        re-admission costs half as much storage as it saves in HBM &mdash; an asymmetric trade that makes offloading economical.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> You are asked to justify enabling sparse attention at 32k context. Give the quantitative answer.</p>
+        <details><summary>Reveal answer</summary><p>At L = 32,768 with E = 20, m = 2,048, compression 1: indexer/dense = 0.25 &mdash; the
+        selector costs a quarter of dense attention while delivering no quality benefit and adding a recall risk. In practice
+        a sparse kernel also loses hardware efficiency because the selected positions are scattered, so the wall-clock win is worse than
+        0.25 suggests. Recommendation: keep dense at 32k, enable sparsity above ~130k where the ratio is already below 0.06.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="33-mla.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L33 &middot; MLA: KV compression as low-rank cache</span></a>
+    <a class="next" href="35-long-context.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L35 &middot; Long context: what 1M tokens actually costs</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

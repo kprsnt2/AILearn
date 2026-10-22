@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a12">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L12 · Initialisation &amp; Stability: Xavier, He, μP — AILearn</title>
+<meta name="description" content="Variance propagation through depth, the fan-in/fan-out derivation of Xavier and He gains, a measured activation-variance-vs-depth probe, and what μP-style parameterisation changes.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L12</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L12 &middot; Initialisation &amp; Stability: Xavier, He, and μP Intuition</h1>
+  <p class="lede">The first forward pass decides whether training has a chance. Get the initial weight scale wrong by a factor of 2 and a 30-layer stack either fades to zero or saturates in the first few hundred steps &mdash; before any data can correct it. Initialisation is the one hyperparameter you set without evidence from the data.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: activation-variance-vs-depth probe</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">variance propagation</span>
+  <span class="pill">fan-in vs fan-out</span>
+  <span class="pill">Xavier gain</span>
+  <span class="pill">He gain</span>
+  <span class="pill">PyTorch default is not He</span>
+  <span class="pill">zero-init outputs</span>
+  <span class="pill">μP scaling intuition</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a12-s1">1 &middot; Why it exists <a class="hook" href="#a12-s1">#</a></h2>
+
+    <p>A network does not start blank: it starts with random weights. What those random numbers do to the signal as it
+    travels through L layers is a compounding multiplication. If each layer multiplies the activation <em>scale</em> by
+    a factor <em>g</em>, then after 30 layers the scale is <em>g</em><sup>30</sup>. For g = 0.9 that is 4%; for g = 1.1
+    it is 17&times;. Neither is trainable: the first dims the loss to numerical noise, the second saturates every
+    nonlinearity and pushes the softmax into a one-hot corner where gradients are zero.</p>
+
+    <p>Before principled initialisation, the standard workaround was to use saturating activations (sigmoid/tanh) and
+    keep the network shallow. Xavier/Glorot's contribution was to show that you can <em>derive</em> the right scale from
+    variance bookkeeping, making deep stacks trainable. He's extension fixed it for ReLU, whose one-sided activation
+    changes the variance budget by a factor of two. Both are one-line formulas with a two-line derivation, and both are
+    routinely implemented wrong because library defaults are not what their name suggests.</p>
+
+    <div class="callout boss">
+      <p>Initialisation sets the conditioning of the optimisation problem before the first update. A wrong init cannot
+      be fixed by more data or a better scheduler &mdash; it is why the run with "identical hyperparameters" sometimes
+      diverges, and it is the first thing to print when a new architecture will not train.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a12-s2">2 &middot; The mental model <a class="hook" href="#a12-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> Signal power is money travelling along a chain of L currency exchanges. Each exchange
+    charges or credits a random rate. You want the expected money arriving at the far end to be the same as what you
+    sent, and the spread (variance) to be controlled. The right exchange rule depends on how many currencies each hop
+    touches (the fan-in) and on what fraction of the money the nonlinearity throws away.</p>
+
+    <p><strong>Where the analogy breaks.</strong> Two places. (1) Backward propagation is a <em>second</em> chain with
+    different exchange rates: the gradient at layer 1 depends on fan-<em>out</em>, not fan-in. Xavier is the compromise
+    that balances forward and backward scale simultaneously, which is why its formula contains both fans. He's formula
+    optimises the forward path for ReLU and accepts a backward mismatch. (2) Residual connections change the accounting
+    entirely: with a pre-norm residual block, each layer only <em>adds</em> a small contribution to an existing stream,
+    so depth does not compound an initialisation error the way it does in a plain stack. The measured consequence is
+    the reverse of the folk belief: the residual path prevents <em>decay</em> but not <em>growth</em> (Experiment 2
+    below), which is why a transformer needs the norm, not just a good init.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the formulas fix</h4><p>They set the per-layer gain so that the expected squared norm of the activation is preserved from layer to layer. That makes the initial forward pass depth-independent in expectation.</p></div>
+      <div class="card"><h4>What they do not fix</h4><p>Correlations between rows (random rows are near-orthogonal only in high dimension), the tail of "unlucky" seeds, or downstream instability from the loss and the learning rate. A good init is necessary, not sufficient.</p></div>
+      <div class="card"><h4>Why ReLU needs 2x</h4><p>ReLU zeros half of its inputs, so it halves the variance of the layer's output. To keep the output variance equal to the input variance you need input variance 2x larger, i.e. He gain &radic;2 rather than Xavier's roughly-1.</p></div>
+      <div class="card"><h4>What μP adds (intuition)</h4><p>Treat the width as a scaling parameter: choose which quantities must stay width-independent (activations, and updates resolved in a width-independent metric) and fix the per-layer initialisation and learning-rate multipliers to achieve that, so hyperparameters transfer across width.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a12-s3">3 &middot; The mechanism <a class="hook" href="#a12-s3">#</a></h2>
+
+    <div class="formula">
+      Linear layer: y = Wx, W<sub>ij</sub> ~ N(0, &sigma;<sup>2</sup>), x ~ iid variance v  &rArr;  Var(y<sub>i</sub>) = fan<sub>in</sub> &middot; &sigma;<sup>2</sup> &middot; v<br><br>
+      Forward preservation: &nbsp; fan<sub>in</sub>&middot;&sigma;<sup>2</sup> = 1 &nbsp;&rArr;&nbsp; &sigma;<sup>2</sup> = 1/fan<sub>in</sub><br>
+      Backward preservation: &nbsp; fan<sub>out</sub>&middot;&sigma;<sup>2</sup> = 1 &nbsp;&rArr;&nbsp; &sigma;<sup>2</sup> = 1/fan<sub>out</sub><br><br>
+      Xavier/Glorot: &nbsp; &sigma;<sup>2</sup> = 2/(fan<sub>in</sub> + fan<sub>out</sub>) &nbsp;&nbsp;(compromise)<br>
+      He: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&sigma;<sup>2</sup> = 2/fan<sub>in</sub> &nbsp;&nbsp;(forward path with ReLU)<br>
+      Offset term: &nbsp; gain<sup>2</sup> = fan<sub>in</sub> &middot; &sigma;<sup>2</sup> &nbsp;&rArr;&nbsp; Var(y) = (fan<sub>in</sub>/2) &middot; gain<sup>2</sup> &middot; Var(x) &nbsp; for ReLU
+      <span class="note">fan_in = number of input features (d_in), fan_out = d_out. The last line is the one to remember: for ReLU, a layer multiplies variance by (fan_in/2)&middot;gain^2, because the ReLU itself halves it. Setting that product to 1 gives gain^2 = 2/fan_in, the He rule. Setting fan_in = fan_out = d gives the familiar 0.5 probability of survival and gain &asymp; &radic;(2/d).</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># Variance propagation through a plain (non-residual) stack &mdash; stdlib only.</span>
+<span class="kw">import</span> math, random
+random.seed(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">forward_depth</span>(L, d, gain, resid=<span class="kw">False</span>):
+    x = [random.gauss(<span class="nm">0</span>, <span class="nm">1</span>) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)]
+    stds = []
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(L):
+        W = [[random.gauss(<span class="nm">0</span>, gain / math.sqrt(d)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)] <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)]
+        h = [<span class="fn">max</span>(<span class="nm">0.0</span>, <span class="fn">sum</span>(W[i][j] * x[j] <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(d))) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(d)]
+        x = [a + b <span class="kw">for</span> a, b <span class="kw">in</span> <span class="fn">zip</span>(x, h)] <span class="kw">if</span> resid <span class="kw">else</span> h
+        mu = <span class="fn">sum</span>(x) / d
+        stds.append(math.sqrt(<span class="fn">sum</span>((z - mu) ** <span class="nm">2</span> <span class="kw">for</span> z <span class="kw">in</span> x) / d))
+    <span class="kw">return</span> stds
+d = <span class="nm">128</span>
+<span class="kw">for</span> name, g <span class="kw">in</span> [(<span class="st">"gain=1 (Xavier-ish)"</span>, <span class="nm">1.0</span>), (<span class="st">"gain=sqrt2 (He)"</span>, math.sqrt(<span class="nm">2.0</span>))]:
+    s = <span class="fn">forward_depth</span>(<span class="nm">30</span>, d, g)
+    <span class="fn">print</span>(<span class="st">f"  {name:22s} L1={s[0]:.3f} L2={s[1]:.3f} L5={s[4]:.3f} L30={s[-1]:.3f}"</span>)
+<span class="kw">for</span> fan_in, fan_out <span class="kw">in</span> [(<span class="nm">4096</span>, <span class="nm">4096</span>), (<span class="nm">4096</span>, <span class="nm">11008</span>), (<span class="nm">11008</span>, <span class="nm">4096</span>)]:
+    vx = <span class="nm">2.0</span> / (fan_in + fan_out); vh = <span class="nm">2.0</span> / fan_in
+    <span class="fn">print</span>(<span class="st">f"fan_in={fan_in:5d} fan_out={fan_out:5d}: Xavier std={math.sqrt(vx):.5f}  He std={math.sqrt(vh):.5f}"</span>)
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+  gain=1 (Xavier-ish)    L1=0.594 L2=0.421 L5=0.162 L30=0.000
+  gain=sqrt2 (He)        L1=0.715 L2=0.813 L5=0.630 L30=0.483
+fan_in= 4096 fan_out= 4096: Xavier std=0.01562  He std=0.02210
+fan_in= 4096 fan_out=11008: Xavier std=0.01151  He std=0.02210
+fan_in=11008 fan_out= 4096: Xavier std=0.01151  He std=0.01348
+</div>
+
+    <p>Read the two effects. First, <strong>gain = 1 collapses</strong>: the std falls from 0.594 at layer 1 to 0.000
+    by layer 30 &mdash; the signal is gone, and with it the gradient. Second, <strong>gain = &radic;2 is stable</strong>:
+    0.715, 0.813, 0.630, 0.483 across 30 layers. It is not perfectly flat, because a single sample of a random matrix
+    has finite-width noise and the "half the units are killed" approximation is not exact per layer; but the decay is
+    slow and bounded, which is all you need to start training.</p>
+    <p>The three-row table is the other half of the lesson: <strong>Xavier and He differ only in which fan they use.</strong>
+    For a square matrix they differ by &radic;2 (0.01562 vs 0.02210). For an FFN's up-projection (fan_in 4096, fan_out
+    11008) Xavier halves its scale, and for the down-projection it differs again. This is why "use Xavier" on a
+    transformer is a category error: the correct answer depends on the layer you are initialising and the activation
+    that follows it.</p>
+
+    <h3>The two traps in real code</h3>
+    <ul>
+      <li><strong>A library default is not a derivation.</strong> Many frameworks default to a uniform initialisation
+      whose scale corresponds to a gain of 1, not &radic;2. If you call the default constructor and then add a ReLU FFN,
+      you have silently built the collapse case. Always pass the init explicitly for every weight matrix in a new block.</li>
+      <li><strong>Zero-initialising the wrong thing.</strong> Initialising the output projection of a residual branch to
+      zero makes each block start as the identity, which is a real and widely used trick; initialising <em>everything</em>
+      to zero makes every neuron in a layer identical and no symmetry is ever broken, so the model trains to a constant.
+      Zero is a scalpel, not a paintbrush.</li>
+    </ul>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a12-s4">4 &middot; Your hands <a class="hook" href="#a12-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Measure the gain your layer actually has</h4>
+      <p>The theory predicts Var(out) = (fan_in/2)&middot;gain<sup>2</sup>&middot;Var(in) for ReLU. Measure it for one
+      real-width layer instead of trusting the derivation.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math, random
+random.seed(<span class="nm">0</span>)
+d = <span class="nm">4096</span>
+<span class="kw">for</span> gain <span class="kw">in</span> [<span class="nm">1.0</span>, math.sqrt(<span class="nm">2.0</span>)]:
+    outs = []
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">200</span>):
+        x = [random.gauss(<span class="nm">0</span>, <span class="nm">1</span>) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)]
+        row = [random.gauss(<span class="nm">0</span>, gain / math.sqrt(d)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)]
+        outs += [<span class="fn">max</span>(<span class="nm">0.0</span>, <span class="fn">sum</span>(w * xi <span class="kw">for</span> w, xi <span class="kw">in</span> <span class="fn">zip</span>(row, x))) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">200</span>)]
+    var = <span class="fn">sum</span>(z*z <span class="kw">for</span> z <span class="kw">in</span> outs) / <span class="fn">len</span>(outs)
+    <span class="fn">print</span>(<span class="st">f"gain={gain:.4f}: Var(out)={var:.3f}"</span>)
+      </div>
+      <p class="expect">Observed: <strong>Var(out) = 0.502 for gain = 1</strong> and <strong>1.036 for gain = &radic;2</strong>
+      &mdash; exactly what the formula predicts, since the ReLU halves the variance of a unit-variance input and the He gain
+      doubles it back. This is the single most useful diagnostic on this page: run it on any new layer type, and if the
+      output variance is not ~1 for unit-variance input, your init is off by a factor you can quantify.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Depth sweep, and the residual rescue</h4>
+      <p>Watch the collapse as a function of depth, then add a residual connection and confirm that it changes the
+      situation qualitatively. This is why the transformer's residual stream can be forgiving where a plain MLP is not.</p>
+      <div class="code" data-lang="python">
+<span class="kw">for</span> resid <span class="kw">in</span> [<span class="kw">False</span>, <span class="kw">True</span>]:
+    <span class="kw">for</span> g <span class="kw">in</span> [<span class="nm">1.0</span>, math.sqrt(<span class="nm">2.0</span>)]:
+        s = <span class="fn">forward_depth</span>(<span class="nm">20</span>, d=<span class="nm">64</span>, gain=g, resid=resid)
+        <span class="fn">print</span>(<span class="st">f"resid={resid!s:5s} gain={g:.3f}: std at depth 5/10/20 = {s[4]:.3f} / {s[9]:.3f} / {s[19]:.3f}"</span>)
+      </div>
+      <p class="expect">Verified: <code>resid=False gain=1.000: 0.183 / 0.021 / 0.001</code> (collapses);
+      <code>resid=False gain=1.414: 0.842 / 0.812 / 0.803</code> (stable);
+      <code>resid=True gain=1.000: 3.190 / 18.596 / 883.800</code>;
+      <code>resid=True gain=1.414: 8.941 / 119.079 / 25455.021</code>.
+      Read all four lines carefully, because the residual result is the opposite of the folk belief. The residual
+      path prevents <em>decay</em> but does not prevent <em>growth</em>: every layer adds a non-negative ReLU
+      contribution, so with a gain tuned for a plain stack the residual stream's std grows by roughly a factor 6&ndash;7
+      per five layers. That is exactly the problem a pre-norm transformer solves by normalising the branch input
+      (L05) &mdash; the norm, not the init, caps the growth. Falsifier: if the residual case also collapsed to zero,
+      you accidentally overwrote <code>x</code> instead of adding to it &mdash; the same class of bug as L03's missing
+      <code>+=</code>.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Reference scales and a symmetry check</h4>
+      <p>Two cheap structural checks worth running on any new model class before training: are the scales what you think,
+      and is there any symmetry left to break?</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> random, math
+random.seed(<span class="nm">1</span>)
+<span class="kw">def</span> <span class="fn">check</span>(fan_in, fan_out, gain=<span class="nm">1.0</span>):
+    W = [[random.gauss(<span class="nm">0</span>, gain / math.sqrt(fan_in)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(fan_in)] <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(fan_out)]
+    row_norms = [math.sqrt(<span class="fn">sum</span>(w*w <span class="kw">for</span> w <span class="kw">in</span> r)) <span class="kw">for</span> r <span class="kw">in</span> W]
+    <span class="kw">return</span> <span class="fn">sum</span>(row_norms)/<span class="fn">len</span>(row_norms), <span class="fn">max</span>(row_norms)/<span class="fn">min</span>(row_norms)
+<span class="kw">for</span> fi, fo <span class="kw">in</span> [(<span class="nm">4096</span>, <span class="nm">4096</span>), (<span class="nm">4096</span>, <span class="nm">11008</span>)]:
+    m, spread = <span class="fn">check</span>(fi, fo)
+    <span class="fn">print</span>(<span class="st">f"fan_in={fi} fan_out={fo}: mean row norm {m:.3f} (target 1.000), spread {spread:.3f}"</span>)
+z = [[<span class="nm">0.0</span>] * <span class="nm">8</span> <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">8</span>)]
+<span class="fn">print</span>(<span class="st">"all-zero layer: distinct rows?"</span>, <span class="fn">len</span>({<span class="fn">tuple</span>(r) <span class="kw">for</span> r <span class="kw">in</span> z}))
+<span class="fn">print</span>(<span class="st">"all-zero layer: gradient for row i == row j?"</span>, <span class="kw">True</span>, <span class="st">"(identical rows receive identical gradients forever)"</span>)
+      </div>
+      <p class="expect">Observed: mean row norm is <strong>1.000</strong> in both cases &mdash; which is the definition of
+      the init, since each row's norm is &radic;(fan_in &middot; 1/fan_in) = 1 &mdash; with a spread of 1.084 and 1.091
+      (finite-width noise). And the all-zero layer has exactly one distinct row, so all its rows receive identical
+      gradients forever. Two lessons: the init controls <em>row norms</em>, which is exactly the quantity that matters for
+      a dot-product score, and symmetry must be broken by randomness, never by "small but zero".</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a12-s5">5 &middot; Failure modes <a class="hook" href="#a12-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Using Xavier where He is required (or vice versa).</strong> Symptom: loss decreases but plateaus early; per-layer activation std shrinks by ~&radic;2 per layer. Detected by the depth probe, not by the loss curve.</li>
+        <li><strong>Relying on a framework default.</strong> Symptom: a new layer type trains "fine" until you change width, then diverges. The default is not the derivation for your activation; pass the init explicitly.</li>
+        <li><strong>All-zero or all-equal init.</strong> Symptom: loss falls to the marginal entropy of the labels and stops; every unit in a layer has an identical gradient. Any zero-init must be limited to a single output projection of a residual branch.</li>
+        <li><strong>Init in the wrong dtype.</strong> Symptom: fp16 weights at initialisation quantise to a grid where small values become zero, killing a fraction of units before training starts. Initialise in fp32 and cast.</li>
+        <li><strong>Init scale not updated for a gated FFN.</strong> Symptom: SwiGLU block's output variance is half of a ReLU block's (the gate multiplies by SiLU(x) whose mean is positive-but-small), so depth-scaled models start asymmetric. Measure the block's output variance after switching activations (L11).</li>
+        <li><strong>Embedding init too large or too small.</strong> Symptom: the residual stream starts 10&times; the scale the block expects, forcing every layer to spend capacity rescaling; or embeddings start near 0 and the first layers see near-constant input. The initial embedding std should be chosen so the residual stream's RMS is comparable to the norm layer's expected output.</li>
+        <li><strong>MuP assumptions violated.</strong> Symptom: hyperparameters that were tuned at one width do not transfer to another &mdash; the classic "the recipe only works at the width we tried". Check that every layer's init and LR multiplier follows the width-scaling rule before concluding the recipe generalises.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a12-s6">6 &middot; Connects to <a class="hook" href="#a12-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="04-gradient-descent.html">L04</a>, <a class="tag-a" href="05-layernorm-rmsnorm.html">L05</a>, <a class="tag-a" href="11-activations.html">L11</a>. &nbsp;
+    <strong>Unlocks:</strong> stable deep training, and hyperparameter transfer.</p>
+    <ul>
+      <li><a class="tag-a" href="14-lr-schedules.html">L14 &middot; LR schedules</a> &mdash; warmup and max LR are chosen against the init's early dynamics; a changed init silently moves the stable LR window.</li>
+      <li><a class="tag-a" href="19-full-transformer.html">L19 &middot; Full transformer</a> &mdash; embeddings, block linears, norms and head all need explicit init policies.</li>
+      <li><a class="tag-a" href="21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; init in fp32, and why tiny values disappear in bf16/fp16.</li>
+      <li><a class="tag-b" href="../track-b/43-training-cost.html">L43 &middot; Training cost</a> &mdash; init quality shows up as "did the run get deep enough"; failed inits waste whole runs.</li>
+      <li><a class="tag-b" href="../track-b/40-precision-quant.html">L40 &middot; Quantisation</a> &mdash; activation outlier structure is shaped by the init and the norm; it determines what can be quantised later.</li>
+      <li><a class="tag-a" href="20-training-loop.html">L20 &middot; Training loop</a> &mdash; per-layer logging of RMS is the cheap way to detect an init problem in the first 100 steps instead of at step 10,000.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: log the first forward pass's per-layer activation RMS and the first backward pass's per-layer
+      gradient norm. A healthy init gives an approximately flat profile of RMS across depth. Storing this artefact for
+      a reference run turns "this run never converged" into "layer 17's RMS was 100&times; its neighbours at init".</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a12-s7">7 &middot; Self-check <a class="hook" href="#a12-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Derive the He rule from the variance propagation identity.</p>
+        <details><summary>Reveal answer</summary><p>For y = Wx with W<sub>ij</sub> ~ N(0,&sigma;<sup>2</sup>) and x components iid with variance v: Var(y<sub>i</sub>) = &sum;<sub>j</sub> Var(W<sub>ij</sub>x<sub>j</sub>) = fan_in&middot;&sigma;<sup>2</sup>&middot;v. ReLU then multiplies the variance by ~1/2 (it zeroes half the mass, and for a zero-mean symmetric input E[max(0,z)<sup>2</sup>] = v/2). So after one layer Var = (fan_in/2)&middot;&sigma;<sup>2</sup>&middot;v. Requiring that to equal v gives &sigma;<sup>2</sup> = 2/fan_in. Verified numerically: unit input variance, d = 4096, gain = &radic;2 gives output variance 1.036.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> For d = 4096, what std does He prescribe, and what std does Xavier prescribe if fan_out = 11008?</p>
+        <details><summary>Reveal answer</summary><p>He: &sigma; = &radic;(2/4096) = &radic;0.000488 &asymp; <strong>0.02210</strong> (verified). Xavier with fan_in = 4096, fan_out = 11008: &sigma; = &radic;(2/15104) = &radic;0.0001324 &asymp; <strong>0.01151</strong> (verified). So on the up-projection of a SwiGLU FFN, Xavier gives a std roughly half of He &mdash; a factor of 4 in variance, which is exactly the kind of discrepancy that turns into a collapse over 30 layers.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a new 24-layer model's loss starts at the value you expect and then flatlines while all layers show near-zero gradient norm. What do you check first?</p>
+        <details><summary>Reveal answer</summary><p>Initialisation scale. Run the variance probe: if the per-layer activation std decays with depth, the init is too small (gain < &radic;2 with ReLU, or a default init). Confirm the gradient: a forward signal that decays by 0.5 per layer is squared in the backward pass, so gradients vanish long before the loss looks obviously broken. Second check: whether the output projection is zero-initialised where it should not be, or whether embeddings are so small that the first layer sees a near-constant input.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does a residual connection change the depth-scaling problem, and what does that imply about init for transformers?</p>
+        <details><summary>Reveal answer</summary><p>In a plain stack, every layer's scale multiplies the running total, so an error compounds exponentially in depth. With a residual, the output is the sum of the identity path and a branch: the identity carries the input forward unchanged no matter what the branch's scale is, so the signal cannot decay to zero unless the branch actively cancels it. Consequently a transformer's init mainly controls the branch contribution and does not need per-depth rescaling to keep activations alive; it still matters for the branch's own variance and for the growth of the residual stream's norm (L05).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What is the one-line intuition for μP, and what observable would tell you a recipe has failed to be width-transferable?</p>
+        <details><summary>Reveal answer</summary><p>μP fixes a width-independent parameterisation (per-layer init scale and per-layer LR multiplier) so that the same tuned hyperparameters work at every width. Observable: tune at width W, retrain at 4W, and if the optimal LR or the loss curve shifts materially, the recipe is not width-transferable (a "non-μP" parameterisation). The check is cheap: two widths, one LR sweep each, compare the argmin. Note that many published recipes are simply not μP; the assumption must be tested, not assumed.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="11-activations.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L11 &middot; Activations: ReLU &rarr; SwiGLU</span></a>
+    <a class="next" href="13-regularization.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L13 &middot; Overfitting, dropout, weight decay</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

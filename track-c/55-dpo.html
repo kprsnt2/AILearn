@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c55">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L55 &middot; DPO: RLHF without RL, with the gradient checked numerically &mdash; AILearn</title>
+<meta name="description" content="Derive DPO from the closed-form KL-regularised optimum, verify its gradient against finite differences, and watch the off-policy collapse it is known for.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L55</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L55 &middot; DPO: RLHF without RL, with the gradient checked numerically</h1>
+  <p class="lede">DPO deletes the reward model by inverting a closed form &mdash; and in doing so deletes the constraint on anything the pairs never mentioned. This page derives it, checks the gradient to 1e-9, and then breaks it deliberately.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: DPO loss + gradient in pure Python</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">closed-form optimum</span>
+  <span class="pill">implicit reward</span>
+  <span class="pill">log-ratio margin</span>
+  <span class="pill">beta as KL price</span>
+  <span class="pill">reference policy</span>
+  <span class="pill">off-policy collapse</span>
+  <span class="pill">IPO margin bound</span>
+  <span class="pill">ORPO</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c55-s1">1 &middot; Why it exists <a class="hook" href="#c55-s1">#</a></h2>
+
+    <p>RLHF worked and was miserable to run. The InstructGPT recipe (arXiv:2203.02155) needs four models in
+    memory &mdash; policy, reference, reward model, value model &mdash; plus a sampling loop, plus a reward model
+    that you must train and then trust. DPO (arXiv:2305.18290) removes the reward model and the sampling loop
+    by noticing that the RLHF objective has a <em>closed-form optimal policy</em>, and that policy can be
+    inverted to recover the reward.</p>
+
+    <p>The failure DPO was invented to stop is therefore operational, not scientific: <strong>the reward model is
+    a second, unaccountable model that silently redefines your objective</strong>. If it is mis-calibrated, the
+    policy optimises the miscalibration, and you find out weeks later. DPO deletes that model, and in doing so
+    deletes an entire class of failure &mdash; while introducing a different one, which is the subject of
+    experiment 3.</p>
+
+    <div class="callout boss">
+      <p>DPO is not "preference learning without RL" in the sense of avoiding a tradeoff. It is what you get when
+      you substitute the closed-form optimum of the KL-regularised objective into a Bradley&ndash;Terry likelihood.
+      The two models in memory are the policy and a frozen reference; the pairs are the only data; and the
+      optimisation is ordinary supervised learning on a contrast.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c55-s2">2 &middot; The mental model <a class="hook" href="#c55-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> the KL-regularised objective from lesson 51 has an exact maximum</p>
+
+    <div class="formula">
+      &pi;<sup>*</sup>(y|x) = (1/Z(x)) &middot; &pi;<sub>ref</sub>(y|x) &middot; exp( r(x,y) / &beta; )
+      <span class="note">Z(x) is a normaliser that depends only on the prompt. Solve for r and it becomes r(x,y) = &beta; log(&pi;*/&pi;ref) + &beta; log Z(x).</span>
+    </div>
+
+    <p>Now put that reward into a Bradley&ndash;Terry comparison of two responses y<sub>w</sub> (chosen) and
+    y<sub>l</sub> (rejected) to the same prompt. The prompt-only term &beta; log Z(x) appears on both sides and
+    cancels. What is left contains no reward model at all &mdash; only the policy and the reference:</p>
+
+    <div class="formula">
+      P(y<sub>w</sub> &#8811; y<sub>l</sub>) = &sigma;( &beta; [ log(&pi;<sub>&theta;</sub>(y<sub>w</sub>|x)/&pi;<sub>ref</sub>(y<sub>w</sub>|x)) &minus; log(&pi;<sub>&theta;</sub>(y<sub>l</sub>|x)/&pi;<sub>ref</sub>(y<sub>l</sub>|x)) ] )
+      <span class="note">Two implicit rewards, each a log-ratio to the reference. Their difference is the margin, and the loss is &minus;log &sigma;(&beta; &middot; margin).</span>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><h4>What "the policy is the reward" gets right</h4><p>There is one model to train and one
+      frozen copy to compare against. The constraint (don't move too far from &pi;<sub>ref</sub>) is built into the
+      loss, not enforced by a penalty the optimiser can trade off badly.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Offline pairs only constrain the comparisons they contain. A
+      behaviour no pair mentions is unconstrained except by the reference term, which only <em>slows</em> drift; it
+      does not stop it. DPO cannot explore, so it cannot discover a better answer than the better of the two it
+      was shown.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c55-s3">3 &middot; The mechanism <a class="hook" href="#c55-s3">#</a></h2>
+
+    <p>Write the loss once, correctly, with log-probabilities summed over tokens:</p>
+
+    <div class="formula">
+      L<sub>DPO</sub>(&theta;) = &minus; E<sub>(x,y<sub>w</sub>,y<sub>l</sub>)</sub> [ log &sigma;( &beta; log(&pi;<sub>&theta;</sub>(y<sub>w</sub>|x)/&pi;<sub>ref</sub>(y<sub>w</sub>|x)) &minus; &beta; log(&pi;<sub>&theta;</sub>(y<sub>l</sub>|x)/&pi;<sub>ref</sub>(y<sub>l</sub>|x)) ) ]
+      <span class="note">log &pi;(y|x) = &Sigma;<sub>t</sub> log &pi;(y<sub>t</sub>|x,y<sub>&lt;t</sub>). Sum, never multiply: sequence probabilities underflow immediately.</span>
+    </div>
+
+    <p>Its gradient has a shape worth memorising, because every sibling method changes one piece of it:</p>
+
+    <div class="formula">
+      &nabla;<sub>&theta;</sub>L = &minus;&beta; &middot; &sigma;(&minus;&beta;&middot;margin) &middot; [ &nabla;log&pi;<sub>&theta;</sub>(y<sub>w</sub>|x) &minus; &nabla;log&pi;<sub>&theta;</sub>(y<sub>l</sub>|x) ]
+      <span class="note">The weight &sigma;(&minus;&beta;&middot;margin) is the model's current probability of getting the pair WRONG. Pairs already won contribute almost nothing.</span>
+    </div>
+
+    <p>Two files below: <code>dpo.py</code> is the objective plus a hand-derived gradient, <code>main.py</code> checks the
+    gradient against finite differences and then trains. Run them in the same directory with plain <code>python main.py</code>.</p>
+<div class="code" data-lang="python">
+<span class="cm"># dpo.py from L55 -- the objective and its gradient, five lines each.</span>
+<span class="kw">import</span> math
+
+BETA = <span class="nm">0.1</span>
+
+
+<span class="kw">def</span> sig(z):
+    <span class="kw">if</span> z &gt;= <span class="nm">0</span>:
+        <span class="kw">return</span> <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z))
+    e = math.exp(max(z, -<span class="nm">700</span>))
+    <span class="kw">return</span> e / (<span class="nm">1</span> + e)
+
+
+<span class="kw">def</span> logp(z, k):
+    m = max(z)
+    <span class="kw">return</span> z[k] - m - math.log(sum(math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z))
+
+
+<span class="kw">def</span> dpo_parts(z, ref, ch=<span class="nm">0</span>, rj=<span class="nm">1</span>, beta=BETA):
+    margin = (logp(z, ch) - logp(ref, ch)) - (logp(z, rj) - logp(ref, rj))
+    <span class="kw">return</span> -math.log(sig(beta * margin)), margin
+
+
+<span class="kw">def</span> dpo_grad(z, ref, ch=<span class="nm">0</span>, rj=<span class="nm">1</span>, beta=BETA):
+    _, margin = dpo_parts(z, ref, ch, rj, beta)
+    g = -beta * sig(-beta * margin)                        <span class="cm"># dL/dmargin</span>
+    p = [math.exp(logp(z, k)) <span class="kw">for</span> k <span class="kw">in</span> range(len(z))]
+    dlogp = <span class="kw">lambda</span> a, b: (<span class="nm">1.0</span> <span class="kw">if</span> a == b <span class="kw">else</span> <span class="nm">0.0</span>) - p[b]   <span class="cm"># d logp(a)/d z_b</span>
+    <span class="kw">return</span> [g * (dlogp(ch, b) - dlogp(rj, b)) <span class="kw">for</span> b <span class="kw">in</span> range(len(z))]
+</div><div class="code" data-lang="python">
+<span class="cm"># main.py: gradient check (analytic vs finite difference), then DPO on a pair dataset</span>
+<span class="cm"># where one behaviour never appears. Run: python main.py</span>
+<span class="kw">import</span> math
+<span class="kw">from</span> dpo <span class="kw">import</span> dpo_grad, dpo_parts, logp, BETA
+
+z = [<span class="nm">0.2</span>, -<span class="nm">0.1</span>, <span class="nm">0.5</span>]        <span class="cm"># policy logits over [chosen, rejected, unmentioned]</span>
+ref = [<span class="nm">0.0</span>, -<span class="nm">0.4</span>, <span class="nm">0.9</span>]      <span class="cm"># frozen SFT reference, which likes 'unmentioned'</span>
+
+L, margin = dpo_parts(z, ref)
+<span class="kw">print</span>(f<span class="st">"margin={margin:+.4f}   beta*margin={BETA * margin:+.4f}   loss={L:.4f}"</span>)
+
+g = dpo_grad(z, ref)
+h, fd = <span class="nm">1e-6</span>, []
+<span class="kw">for</span> b <span class="kw">in</span> range(<span class="nm">3</span>):
+    zp = list(z)
+    zp[b] += h
+    fd.append((dpo_parts(zp, ref)[<span class="nm">0</span>] - L) / h)
+<span class="kw">print</span>(<span class="st">"analytic grad :"</span>, [round(x, <span class="nm">6</span>) <span class="kw">for</span> x <span class="kw">in</span> g])
+<span class="kw">print</span>(<span class="st">"finite diff   :"</span>, [round(x, <span class="nm">6</span>) <span class="kw">for</span> x <span class="kw">in</span> fd])
+<span class="kw">print</span>(<span class="st">"max abs error :"</span>, round(max(abs(a - b) <span class="kw">for</span> a, b <span class="kw">in</span> zip(g, fd)), <span class="nm">9</span>))
+
+p = [math.exp(logp(z, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+pr = [math.exp(logp(ref, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+<span class="kw">print</span>(<span class="st">"policy P      :"</span>, [round(x, <span class="nm">3</span>) <span class="kw">for</span> x <span class="kw">in</span> p])
+<span class="kw">print</span>(<span class="st">"reference P   :"</span>, [round(x, <span class="nm">3</span>) <span class="kw">for</span> x <span class="kw">in</span> pr])
+<span class="kw">print</span>(<span class="st">"implicit reward beta*log(p/ref):"</span>, [round(BETA * math.log(a / b), <span class="nm">4</span>) <span class="kw">for</span> a, b <span class="kw">in</span> zip(p, pr)])
+
+<span class="cm"># ---- now train: same pair type, 300 steps, and watch the unmentioned behaviour ----</span>
+w = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">300</span>):
+    grad = dpo_grad(w, ref)
+    w = [wi - <span class="nm">0.5</span> * gi <span class="kw">for</span> wi, gi <span class="kw">in</span> zip(w, grad)]
+pw = [math.exp(logp(w, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+kl = sum(a * (math.log(a) - math.log(b)) <span class="kw">for</span> a, b <span class="kw">in</span> zip(pw, pr))
+<span class="kw">print</span>(<span class="st">"\nafter 300 DPO steps on pairs that never mention behaviour 2:"</span>)
+<span class="kw">print</span>(f<span class="st">"  P(chosen)={pw[0]:.3f}  P(rejected)={pw[1]:.3f}  P(unmentioned)={pw[2]:.3f}"</span>)
+<span class="kw">print</span>(f<span class="st">"  KL(policy || SFT reference) = {kl:.3f} nats"</span>)
+</div><div class="code out-block" data-lang="output">
+margin=-0.1000   beta*margin=-0.0100   loss=0.6982
+analytic grad : [-0.05025, 0.05025, -0.0]
+finite diff   : [-0.05025, 0.05025, 0.0]
+max abs error : 1e-09
+policy P      : [0.324, 0.24, 0.437]
+reference P   : [0.242, 0.162, 0.596]
+implicit reward beta*log(p/ref): [0.029, 0.039, -0.031]
+
+after 300 DPO steps on pairs that never mention behaviour 2:
+  P(chosen)=0.996  P(rejected)=0.000  P(unmentioned)=0.004
+  KL(policy || SFT reference) = 1.387 nats
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c55-s4">4 &middot; Your hands <a class="hook" href="#c55-s4">#</a></h2>
+
+    <p>Three labs: verify the gradient, read what the margin is made of, and reproduce the failure DPO is famous for.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; verify the DPO gradient against finite differences</h4>
+      <p>One pair, three candidate responses. The analytic gradient includes the softmax coupling: each log-probability depends on all three logits, not just its own.</p>
+<div class="code" data-lang="python">
+<span class="cm"># main.py: gradient check (analytic vs finite difference), then DPO on a pair dataset</span>
+<span class="cm"># where one behaviour never appears. Run: python main.py</span>
+<span class="kw">import</span> math
+<span class="kw">from</span> dpo <span class="kw">import</span> dpo_grad, dpo_parts, logp, BETA
+
+z = [<span class="nm">0.2</span>, -<span class="nm">0.1</span>, <span class="nm">0.5</span>]        <span class="cm"># policy logits over [chosen, rejected, unmentioned]</span>
+ref = [<span class="nm">0.0</span>, -<span class="nm">0.4</span>, <span class="nm">0.9</span>]      <span class="cm"># frozen SFT reference, which likes 'unmentioned'</span>
+
+L, margin = dpo_parts(z, ref)
+<span class="kw">print</span>(f<span class="st">"margin={margin:+.4f}   beta*margin={BETA * margin:+.4f}   loss={L:.4f}"</span>)
+
+g = dpo_grad(z, ref)
+h, fd = <span class="nm">1e-6</span>, []
+<span class="kw">for</span> b <span class="kw">in</span> range(<span class="nm">3</span>):
+    zp = list(z)
+    zp[b] += h
+    fd.append((dpo_parts(zp, ref)[<span class="nm">0</span>] - L) / h)
+<span class="kw">print</span>(<span class="st">"analytic grad :"</span>, [round(x, <span class="nm">6</span>) <span class="kw">for</span> x <span class="kw">in</span> g])
+<span class="kw">print</span>(<span class="st">"finite diff   :"</span>, [round(x, <span class="nm">6</span>) <span class="kw">for</span> x <span class="kw">in</span> fd])
+<span class="kw">print</span>(<span class="st">"max abs error :"</span>, round(max(abs(a - b) <span class="kw">for</span> a, b <span class="kw">in</span> zip(g, fd)), <span class="nm">9</span>))
+
+p = [math.exp(logp(z, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+pr = [math.exp(logp(ref, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+<span class="kw">print</span>(<span class="st">"policy P      :"</span>, [round(x, <span class="nm">3</span>) <span class="kw">for</span> x <span class="kw">in</span> p])
+<span class="kw">print</span>(<span class="st">"reference P   :"</span>, [round(x, <span class="nm">3</span>) <span class="kw">for</span> x <span class="kw">in</span> pr])
+<span class="kw">print</span>(<span class="st">"implicit reward beta*log(p/ref):"</span>, [round(BETA * math.log(a / b), <span class="nm">4</span>) <span class="kw">for</span> a, b <span class="kw">in</span> zip(p, pr)])
+
+<span class="cm"># ---- now train: same pair type, 300 steps, and watch the unmentioned behaviour ----</span>
+w = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">300</span>):
+    grad = dpo_grad(w, ref)
+    w = [wi - <span class="nm">0.5</span> * gi <span class="kw">for</span> wi, gi <span class="kw">in</span> zip(w, grad)]
+pw = [math.exp(logp(w, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+kl = sum(a * (math.log(a) - math.log(b)) <span class="kw">for</span> a, b <span class="kw">in</span> zip(pw, pr))
+<span class="kw">print</span>(<span class="st">"\nafter 300 DPO steps on pairs that never mention behaviour 2:"</span>)
+<span class="kw">print</span>(f<span class="st">"  P(chosen)={pw[0]:.3f}  P(rejected)={pw[1]:.3f}  P(unmentioned)={pw[2]:.3f}"</span>)
+<span class="kw">print</span>(f<span class="st">"  KL(policy || SFT reference) = {kl:.3f} nats"</span>)
+</div><div class="code out-block" data-lang="output">
+margin=-0.1000   beta*margin=-0.0100   loss=0.6982
+analytic grad : [-0.05025, 0.05025, -0.0]
+finite diff   : [-0.05025, 0.05025, 0.0]
+max abs error : 1e-09
+policy P      : [0.324, 0.24, 0.437]
+reference P   : [0.242, 0.162, 0.596]
+implicit reward beta*log(p/ref): [0.029, 0.039, -0.031]
+
+after 300 DPO steps on pairs that never mention behaviour 2:
+  P(chosen)=0.996  P(rejected)=0.000  P(unmentioned)=0.004
+  KL(policy || SFT reference) = 1.387 nats
+</div>
+      <p class="expect">The first block prints a max absolute error near 1e-9, which is what a correctly hand-derived gradient looks like. An error around 1e-2 means the coupling term was dropped and the log-probs were treated as independent.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; read what the margin is made of</h4>
+      <p>The same output prints the implicit reward &beta;&middot;log(&pi;/&pi;<sub>ref</sub>) for each response before training.</p>
+<div class="code" data-lang="text">
+P(chosen)   = <span class="nm">0.324</span>   reference <span class="nm">0.242</span>   implicit reward = +<span class="nm">0.029</span>
+P(rejected) = <span class="nm">0.240</span>   reference <span class="nm">0.162</span>   implicit reward = +<span class="nm">0.039</span>
+
+margin = <span class="nm">0.029</span> - <span class="nm">0.039</span> = -<span class="nm">0.010</span>   -&gt;  beta*margin = -<span class="nm">0.010</span>  -&gt;  loss = <span class="nm">0.6982</span>
+
+the rejected answer has the HIGHER implicit reward. the pair asks <span class="kw">for</span> the GAP to flip,
+<span class="kw">not</span> <span class="kw">for</span> either absolute reward to rise. log <span class="nm">2</span> = <span class="nm">0.693</span> <span class="kw">is</span> the neutral starting point.
+</div>
+      <p class="expect">The rejected response outranks the chosen one on the implicit reward. DPO pushes on the difference of differences, so a loss near log 2 means the policy and reference order the pair the same way &mdash; not that the model is at chance, and not that anything is broken.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; reproduce the off-policy collapse</h4>
+      <p>The script finishes by training 300 steps on pairs in which a third behaviour never appears, from a reference that likes it.</p>
+<div class="code" data-lang="python">
+<span class="cm"># main.py: gradient check (analytic vs finite difference), then DPO on a pair dataset</span>
+<span class="cm"># where one behaviour never appears. Run: python main.py</span>
+<span class="kw">import</span> math
+<span class="kw">from</span> dpo <span class="kw">import</span> dpo_grad, dpo_parts, logp, BETA
+
+z = [<span class="nm">0.2</span>, -<span class="nm">0.1</span>, <span class="nm">0.5</span>]        <span class="cm"># policy logits over [chosen, rejected, unmentioned]</span>
+ref = [<span class="nm">0.0</span>, -<span class="nm">0.4</span>, <span class="nm">0.9</span>]      <span class="cm"># frozen SFT reference, which likes 'unmentioned'</span>
+
+L, margin = dpo_parts(z, ref)
+<span class="kw">print</span>(f<span class="st">"margin={margin:+.4f}   beta*margin={BETA * margin:+.4f}   loss={L:.4f}"</span>)
+
+g = dpo_grad(z, ref)
+h, fd = <span class="nm">1e-6</span>, []
+<span class="kw">for</span> b <span class="kw">in</span> range(<span class="nm">3</span>):
+    zp = list(z)
+    zp[b] += h
+    fd.append((dpo_parts(zp, ref)[<span class="nm">0</span>] - L) / h)
+<span class="kw">print</span>(<span class="st">"analytic grad :"</span>, [round(x, <span class="nm">6</span>) <span class="kw">for</span> x <span class="kw">in</span> g])
+<span class="kw">print</span>(<span class="st">"finite diff   :"</span>, [round(x, <span class="nm">6</span>) <span class="kw">for</span> x <span class="kw">in</span> fd])
+<span class="kw">print</span>(<span class="st">"max abs error :"</span>, round(max(abs(a - b) <span class="kw">for</span> a, b <span class="kw">in</span> zip(g, fd)), <span class="nm">9</span>))
+
+p = [math.exp(logp(z, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+pr = [math.exp(logp(ref, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+<span class="kw">print</span>(<span class="st">"policy P      :"</span>, [round(x, <span class="nm">3</span>) <span class="kw">for</span> x <span class="kw">in</span> p])
+<span class="kw">print</span>(<span class="st">"reference P   :"</span>, [round(x, <span class="nm">3</span>) <span class="kw">for</span> x <span class="kw">in</span> pr])
+<span class="kw">print</span>(<span class="st">"implicit reward beta*log(p/ref):"</span>, [round(BETA * math.log(a / b), <span class="nm">4</span>) <span class="kw">for</span> a, b <span class="kw">in</span> zip(p, pr)])
+
+<span class="cm"># ---- now train: same pair type, 300 steps, and watch the unmentioned behaviour ----</span>
+w = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">300</span>):
+    grad = dpo_grad(w, ref)
+    w = [wi - <span class="nm">0.5</span> * gi <span class="kw">for</span> wi, gi <span class="kw">in</span> zip(w, grad)]
+pw = [math.exp(logp(w, k)) <span class="kw">for</span> k <span class="kw">in</span> range(<span class="nm">3</span>)]
+kl = sum(a * (math.log(a) - math.log(b)) <span class="kw">for</span> a, b <span class="kw">in</span> zip(pw, pr))
+<span class="kw">print</span>(<span class="st">"\nafter 300 DPO steps on pairs that never mention behaviour 2:"</span>)
+<span class="kw">print</span>(f<span class="st">"  P(chosen)={pw[0]:.3f}  P(rejected)={pw[1]:.3f}  P(unmentioned)={pw[2]:.3f}"</span>)
+<span class="kw">print</span>(f<span class="st">"  KL(policy || SFT reference) = {kl:.3f} nats"</span>)
+</div><div class="code out-block" data-lang="output">
+margin=-0.1000   beta*margin=-0.0100   loss=0.6982
+analytic grad : [-0.05025, 0.05025, -0.0]
+finite diff   : [-0.05025, 0.05025, 0.0]
+max abs error : 1e-09
+policy P      : [0.324, 0.24, 0.437]
+reference P   : [0.242, 0.162, 0.596]
+implicit reward beta*log(p/ref): [0.029, 0.039, -0.031]
+
+after 300 DPO steps on pairs that never mention behaviour 2:
+  P(chosen)=0.996  P(rejected)=0.000  P(unmentioned)=0.004
+  KL(policy || SFT reference) = 1.387 nats
+</div>
+      <p class="expect">P(unmentioned) falls from the reference's 0.596 to about 0.004 and KL reaches about 1.39 nats, with zero pairs mentioning that behaviour. The reference term slows the drift; it does not bound it. If a capability disappeared after a DPO run, this is the mechanism, and the falsifier is simple: re-run with pairs that mention the behaviour. If it stops collapsing, coverage was the issue.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c55-s5">5 &middot; Failure modes <a class="hook" href="#c55-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Off-policy collapse.</strong> Symptom: held-out graded accuracy falls while pairwise preference accuracy on the training distribution rises; KL to the reference grows without a matching capability gain. The pairs never covered a behaviour the model used to have.</li>
+        <li><strong>&beta; not written down.</strong> Symptom: nobody in the room can say what KL budget the run was allowed. &beta; prices nats of drift in reward units; if it is a hyperparameter chosen by vibe, every comparison across runs is meaningless.</li>
+        <li><strong>Reference not frozen (or not identical to SFT).</strong> Symptom: reference log-probs drift during training, the margin becomes self-referential, and loss collapses toward zero while behaviour does not improve. Check: reference log-probs must be bitwise identical at step 0 and step N.</li>
+        <li><strong>Wrong reference: base instead of SFT.</strong> Symptom: the policy is pushed back toward pretrained behaviour and the formatting you paid SFT for degrades. The reference must be the checkpoint that already satisfies your format gate.</li>
+        <li><strong>Length asymmetry in pairs.</strong> Symptom: chosen responses are systematically longer and the DPO model gets longer over training. The margin between log-probs is length-sensitive; balance pair lengths or add a length-normalised variant and measure both.</li>
+        <li><strong>IPO / KTO / ORPO substituted without changing the diagnostics.</strong> Symptom: you swapped the loss and kept the gates that were designed for DPO's margin scale. IPO bounds the margin, KTO drops the pairing assumption, ORPO folds it into SFT &mdash; each changes what a "good loss" looks like.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Three immutable checks per DPO run: reference hashes equal at start and end; held-out pair accuracy
+      <em>and</em> an independent graded eval both reported; and a KL-to-reference curve. Without the third you
+      cannot tell a successful alignment run from a slow off-policy collapse.</p>
+    </div>
+
+    <h3>Siblings in one table</h3>
+    <table class="table">
+      <thead><tr><th>Method</th><th>Change to the objective</th><th>What it buys</th><th>What it costs</th></tr></thead>
+      <tbody>
+        <tr><td><strong>DPO</strong></td><td>&minus;log &sigma;(&beta;&middot;margin)</td><td>No reward model</td><td>Only the pairs it sees; drift outside them</td></tr>
+        <tr><td><strong>IPO</strong></td><td>Squared loss on the margin: (margin &minus; 1/(2&beta;))&sup2;</td><td>Bounded margin, less over-fitting to deterministic labels</td><td>Cannot exceed the margin bound; slower separation</td></tr>
+        <tr><td><strong>KTO</strong></td><td>Per-example binary signal, no pairs required</td><td>Uses unpaired thumbs-up/down you already have</td><td>Loses the comparison; needs a defined "desirable" reference point</td></tr>
+        <tr><td><strong>ORPO</strong></td><td>Odds-ratio penalty added to SFT loss in one stage</td><td>No reference model at all</td><td>Couples the two objectives; format and preference trade off directly</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c55-s6">6 &middot; Connects to <a class="hook" href="#c55-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="52-sft.html">L52 &middot; SFT</a> (the reference),
+    <a class="tag-c" href="54-preference-learning.html">L54 &middot; Preference data</a> (the pairs and their biases),
+    <a class="tag-c" href="51-post-training.html">L51 &middot; Post-training map</a> (the closed form used here).</p>
+    <p><strong>Unlocks:</strong> reward modelling and on-policy RL.</p>
+
+    <ul>
+      <li><a class="tag-c" href="56-grpo.html">L56 &middot; GRPO</a> &mdash; the on-policy alternative: sample, score, no reference reward model either.</li>
+      <li><a class="tag-c" href="57-ppo.html">L57 &middot; PPO</a> &mdash; what DPO replaced, and when you still need it.</li>
+      <li><a class="tag-c" href="58-reward-modeling.html">L58 &middot; Reward modelling</a> &mdash; the model DPO made optional, and when it is still necessary.</li>
+      <li><a class="tag-c" href="64-rlvr-vs-rlhf.html">L64 &middot; RLVR vs RLHF</a> &mdash; why preference methods cannot teach reasoning from scratch.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c55-s7">7 &middot; Self-check <a class="hook" href="#c55-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Starting from &pi;* &prop; &pi;ref&middot;exp(r/&beta;), show where the Z(x) term goes in the DPO loss.</p>
+        <details><summary>Reveal answer</summary><p>Solving gives r(x,y) = &beta;log(&pi;*/&pi;ref) + &beta;log Z(x). In Bradley-Terry the comparison is r(x,y<sub>w</sub>) &minus; r(x,y<sub>l</sub>);the &beta;log Z(x) term is identical for both responses to the same prompt, so it cancels exactly. This is also why DPOrequires both responses to share the prompt &mdash; cross-prompt pairs would leave an un-cancelled Z term.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: &beta;=0.1, policy log-ratio for chosen is +0.3, for rejected is &minus;0.2. Give the margin, &beta;&middot;margin, and the loss.</p>
+        <details><summary>Reveal answer</summary><p>margin = 0.3 &minus; (&minus;0.2) = 0.5. &beta;&middot;margin = 0.05. &sigma;(0.05) = 0.5125, so loss = &minus;log(0.5125) = 0.669.Note the scale: with &beta;=0.1 a log-ratio gap of half a nat only produces a 0.05 margin, i.e. the loss is only slightlybelow log 2 &mdash; DPO is a very gentle objective per pair.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why does the gradient weight &sigma;(&minus;&beta;&middot;margin) matter for dataset curation?</p>
+        <details><summary>Reveal answer</summary><p>It is the probability that the pair is currently being predicted wrong. Once a pair is comfortably won, its weight goes tozero and it stops teaching. So a dataset that is 80% easy pairs is 80% wasted compute; the marginal value of a pair ishighest where the model is uncertain. Curate toward hard, close pairs, and re-run hard-pair mining after each checkpoint.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: DPO loss falls from 0.69 to 0.42 over 1000 steps, held-out pair accuracy is 0.88, and the graded eval dropped 3 points. What happened and what is the check?</p>
+        <details><summary>Reveal answer</summary><p>Off-policy drift: the policy got better at the comparisons it was shown while losing behaviour the pairs never covered.Check: KL to reference at the final step. If it is above the budget implied by &beta;, the run overshot; also measure thegraded eval restricted to prompts NOT in the pair dataset. If the drop is only on uncovered prompts, it is drift ratherthan a global regression, and the fix is coverage (more diverse pairs) or a smaller effective &beta;.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why must the reference be the SFT checkpoint rather than the base model, and what is the symptom of getting this wrong?</p>
+        <details><summary>Reveal answer</summary><p>The reference defines both the constraint and the implicit reward's zero point. Using the base model pulls the policy backtoward pretrained behaviour &mdash; you fight SFT for the rest of training. Symptom: instruction-following and format compliancedegrade while preference accuracy improves, and short prompts show a sudden reappearance of the model's pretrained stylistic quirks.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="54-preference-learning.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L54 &middot; Preference data: pairwise comparisons and annotator bias</span></a>
+    <a class="next" href="56-grpo.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L56 &middot; GRPO: group-relative policy optimization</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

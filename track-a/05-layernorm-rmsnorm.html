@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a05">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L05 · LayerNorm, RMSNorm, the Residual Stream — AILearn</title>
+<meta name="description" content="Normalisation as a conditioning fix: activation variance across depth, the exact LN/RMSNorm backward pass, pre-norm vs post-norm, and how norm placement controls the residual stream scale.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L05</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L05 &middot; Normalization: LayerNorm, RMSNorm, and the Residual Stream</h1>
+  <p class="lede">Stack 24 layers without normalisation and each layer either shrinks its input toward zero or blows it up, depending on its weight scale &mdash; so the learning rate that works for layer 1 is wrong for layer 24. Normalisation pins the scale of the signal at every point in the network. It is the cheapest stability mechanism in deep learning and the most commonly mis-engineered.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: depth-variance probe + exact LN/RMS backward</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">LayerNorm</span>
+  <span class="pill">RMSNorm</span>
+  <span class="pill">pre-norm vs post-norm</span>
+  <span class="pill">residual stream scale</span>
+  <span class="pill">gain parameter</span>
+  <span class="pill">closed-form backward</span>
+  <span class="pill">eps placement</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a05-s1">1 &middot; Why it exists <a class="hook" href="#a05-s1">#</a></h2>
+
+    <p>Consider what a deep stack does to scale. Each layer computes <code>h = Wx</code>; if W has entries of variance
+    &sigma;<sup>2</sup> and x has unit variance in d dimensions, then each output has variance
+    d&sigma;<sup>2</sup>. If d&sigma;<sup>2</sup> is 0.9, then after 30 layers the signal is 0.9<sup>30</sup> &asymp; 4%
+    of its original size; if it is 1.1, it is 1.1<sup>30</sup> &asymp; 17&times;. The network's behaviour is a
+    30th power of a number you cannot control, because the weights move during training. The gradient is subject to
+    the same compounding, in the opposite direction, which is why deep pre-normalisation-era networks needed
+    long warmup and were hard to train past a few layers.</p>
+
+    <p>BatchNorm solved this in vision by normalising across the batch, but its statistics depend on the batch
+    &mdash; catastrophic for sequence models where batch composition varies and dangerous at inference where you must
+    use frozen running statistics. LayerNorm (Trans&shy;former, 2017) normalises across the <em>feature</em> axis of each
+    token independently: no batch statistic, no train/eval mismatch, well-defined for a batch of one.</p>
+
+    <div class="callout boss">
+      <p>Normalisation is a preconditioner, not a regulariser. It makes the optimisation problem well-conditioned so
+      one learning rate works for all layers. Removing it does not make the model "more expressive" &mdash; it makes the
+      loss landscape too curved to walk with a fixed step size.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a05-s2">2 &middot; The mental model <a class="hook" href="#a05-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> Every signal path in a factory is re-metered at each station: whatever came in, it
+    leaves at exactly 1.0 volts. The <em>gain</em> knob (the learnable &gamma;) lets each station choose a different
+    voltage deliberately, so information about magnitude is not lost &mdash; it is re-learned expressively rather than
+    accidentally.</p>
+
+    <p><strong>Where the analogy breaks.</strong> A voltage regulator has a measurable distortion cost; LayerNorm has
+    an <em>information</em> cost that is exact: it removes two directions from every token vector. Subtracting the mean
+    kills the "all features equal" direction; dividing by the std kills the "overall magnitude" direction. The layer
+    can re-introduce both through &beta; and &gamma;, but only at a per-token cost that a following linear layer might
+    need. RMSNorm removes only <em>one</em> direction (magnitude) because it never subtracts the mean &mdash; that is the
+    entire difference, and it is why RMSNorm can be cheaper <em>and</em> as good or better in transformers.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What LayerNorm does</h4><p>Per token: subtract the feature mean, divide by the feature std, then scale by &gamma; and shift by &beta;. Output has zero mean, unit variance per token, before &gamma;.</p></div>
+      <div class="card"><h4>What RMSNorm does</h4><p>Per token: divide by RMS = &radic;(mean(x<sup>2</sup>) + &epsilon;), then scale by &gamma;. No mean subtraction, no &beta;. Cheaper by one reduction and one elementwise pass.</p></div>
+      <div class="card"><h4>What "pre-norm" means</h4><p>Normalise the <em>input</em> to each sublayer: <code>x = x + f(norm(x))</code>. The residual path is a clean unnormalised highway from input to output. This is what makes deep stacks trainable without warmup tricks.</p></div>
+      <div class="card"><h4>Why the residual stream grows</h4><p>Each block <em>adds</em> to x, so &#8214;x&#8214; grows roughly as &radic;depth with random additions. With pre-norm, the final norm absorbs this; without a final norm, logits grow with depth.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a05-s3">3 &middot; The mechanism <a class="hook" href="#a05-s3">#</a></h2>
+
+    <div class="formula">
+      LayerNorm: &nbsp; &mu; = (1/d)&sum;x<sub>i</sub>, &nbsp; &sigma;<sup>2</sup> = (1/d)&sum;(x<sub>i</sub> &minus; &mu;)<sup>2</sup>, &nbsp;
+      x&#770;<sub>i</sub> = (x<sub>i</sub> &minus; &mu;)/&radic;(&sigma;<sup>2</sup> + &epsilon;), &nbsp; y<sub>i</sub> = &gamma;<sub>i</sub>x&#770;<sub>i</sub> + &beta;<sub>i</sub><br><br>
+      RMSNorm: &nbsp; r = &radic;( (1/d)&sum;x<sub>i</sub><sup>2</sup> + &epsilon; ), &nbsp; y<sub>i</sub> = &gamma;<sub>i</sub> x<sub>i</sub>/r
+      <span class="note">Pre-norm block: x' = x + Attn(LN(x)), then x'' = x' + MLP(LN(x')). Post-norm block: x'' = LN(x + Attn(x)) and then LN again around the MLP. Note: LN and RMSNorm reduce over the FEATURE axis (each token independently), never over the batch or sequence &mdash; that is what makes them usable at inference on a single token.</span>
+    </div>
+
+    <h3>The backward pass, closed form</h3>
+    <p>This is the derivation that appears in every implementation and is copied wrong about as often. Let
+    g<sub>i</sub> = dy<sub>i</sub>&gamma;<sub>i</sub> be the incoming adjoint through the scale, and
+    h<sub>i</sub> = x&#770;<sub>i</sub>.</p>
+    <div class="formula">
+      dx<sub>i</sub> = (1/(d&middot;&sigma;)) [ d&middot;g<sub>i</sub> &minus; &sum;<sub>j</sub>g<sub>j</sub> &minus; h<sub>i</sub> &sum;<sub>j</sub>g<sub>j</sub>h<sub>j</sub> ]<br>
+      d&gamma;<sub>i</sub> = dy<sub>i</sub>h<sub>i</sub>, &nbsp; d&beta;<sub>i</sub> = dy<sub>i</sub>
+      <span class="note">with &sigma; = &radic;(&sigma;<sup>2</sup>+&epsilon;). Three terms: propagate the gradient, remove the component along the constant direction, remove the component along h itself. Sanity check: &sum;<sub>i</sub> dx<sub>i</sub> = 0 exactly, because LN output cannot change if you add a constant to all inputs.</span>
+    </div>
+    <div class="formula">
+      dx<sub>i</sub> = (1/r)[ g<sub>i</sub> &minus; (x<sub>i</sub>/r<sup>2</sup>)&middot;(1/d)&sum;<sub>j</sub>g<sub>j</sub>x<sub>j</sub> ] &nbsp;&nbsp;where g<sub>i</sub> = dy<sub>i</sub>&gamma;<sub>i</sub><br>
+      d&gamma;<sub>i</sub> = dy<sub>i</sub>x<sub>i</sub>/r
+      <span class="note">One projection instead of two. RMSNorm's gradient is not mean-free, because RMSNorm output is not invariant to adding a constant to the inputs &mdash; only to a global positive rescaling, which is the property that actually matters for optimisation condition.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># LayerNorm and RMSNorm: forward + closed-form backward, verified against finite differences.</span>
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">ln_fwd</span>(x, g, b, eps=<span class="nm">1e-5</span>):
+    n = <span class="fn">len</span>(x); mu = <span class="fn">sum</span>(x) / n; var = <span class="fn">sum</span>((xi - mu) ** <span class="nm">2</span> <span class="kw">for</span> xi <span class="kw">in</span> x) / n
+    inv = <span class="nm">1</span> / math.sqrt(var + eps); xh = [(xi - mu) * inv <span class="kw">for</span> xi <span class="kw">in</span> x]
+    <span class="kw">return</span> [xh[i] * g[i] + b[i] <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(n)]
+<span class="kw">def</span> <span class="fn">ln_bwd</span>(x, g, dy, eps=<span class="nm">1e-5</span>):
+    n = <span class="fn">len</span>(x); mu = <span class="fn">sum</span>(x) / n; var = <span class="fn">sum</span>((xi - mu) ** <span class="nm">2</span> <span class="kw">for</span> xi <span class="kw">in</span> x) / n
+    inv = <span class="nm">1</span> / math.sqrt(var + eps); xh = [(xi - mu) * inv <span class="kw">for</span> xi <span class="kw">in</span> x]
+    dxh = [dy[i] * g[i] <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(n)]
+    dx = [inv / n * (n * dxh[i] - <span class="fn">sum</span>(dxh) - xh[i] * <span class="fn">sum</span>(dxh[j] * xh[j] <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(n)))
+          <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(n)]
+    <span class="kw">return</span> dx, [dy[i] * xh[i] <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(n)]
+x = [<span class="nm">0.4</span>, -<span class="nm">1.2</span>, <span class="nm">0.9</span>, <span class="nm">2.1</span>, -<span class="nm">0.3</span>]; g = [<span class="nm">1.0</span>]*<span class="nm">5</span>; b = [<span class="nm">0.0</span>]*<span class="nm">5</span>
+dy = [<span class="nm">0.5</span>, -<span class="nm">0.2</span>, <span class="nm">1.0</span>, <span class="nm">0.0</span>, <span class="nm">0.7</span>]
+dx, dg = <span class="fn">ln_bwd</span>(x, g, dy)
+fd = []
+<span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">5</span>):
+    xp, xm = <span class="fn">list</span>(x), <span class="fn">list</span>(x); xp[i] += <span class="nm">1e-6</span>; xm[i] -= <span class="nm">1e-6</span>
+    fd.append((<span class="fn">sum</span>(v*w <span class="kw">for</span> v, w <span class="kw">in</span> <span class="fn">zip</span>(<span class="fn">ln_fwd</span>(xp, g, b), dy)) - <span class="fn">sum</span>(v*w <span class="kw">for</span> v, w <span class="kw">in</span> <span class="fn">zip</span>(<span class="fn">ln_fwd</span>(xm, g, b), dy))) / <span class="nm">2e-6</span>)
+<span class="fn">print</span>(<span class="st">"LN dx analytic:"</span>, [<span class="fn">round</span>(v, <span class="nm">6</span>) <span class="kw">for</span> v <span class="kw">in</span> dx])
+<span class="fn">print</span>(<span class="st">"LN dx finite  :"</span>, [<span class="fn">round</span>(v, <span class="nm">6</span>) <span class="kw">for</span> v <span class="kw">in</span> fd])
+<span class="fn">print</span>(<span class="st">"sum dx = "</span>, <span class="fn">sum</span>(dx), <span class="st">"  &lt;- must be ~0"</span>)
+    </div>
+
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+LN dx analytic: [0.088814, -0.454415, 0.511387, -0.452002, 0.306216]
+LN dx finite  : [0.088814, -0.454415, 0.511387, -0.452002, 0.306216]
+sum dx = 2.7755575615628914e-17   &lt;- must be ~0
+    </div>
+
+    <p>The finite differences agree to all six printed decimals and the sum is zero to float64 precision. That is the
+    proof that the three-term formula is right; if you omit the middle term (&minus;&sum;g<sub>j</sub>) it fails, and the
+    failure is invisible in training except as a slightly worse loss curve. This is why L03's oracle test belongs in CI.</p>
+
+    <h3>Why pre-norm, and what the residual stream costs</h3>
+    <p>In pre-norm, every sublayer's output is added to an unnormalised running sum. After L blocks, the residual
+    stream is the sum of the token embedding plus L contributions. Two consequences:</p>
+    <ul>
+      <li><strong>The identity path is clean.</strong> Gradient flows from the loss to the embedding through the
+      additions with no normalisation derivative in the way, so vanishing gradients are not the limiting factor for
+      depth. That is why pre-norm made 100+ layer transformers routine.</li>
+      <li><strong>Magnitude grows with depth.</strong> If each added contribution has RMS ~c, the stream's RMS grows
+      roughly as c&radic;L (uncorrelated sums add in quadrature). Pre-norm therefore needs a <em>final</em> norm before the
+      output head; post-norm bakes normalisation into every block and needs no final norm but has a much harder
+      optimisation problem, with the residual path passing through the normaliser each time.</li>
+    </ul>
+    <p>One more property worth knowing because it is used everywhere later: because LN's output has fixed
+    variance regardless of input scale, the composition LN(&gamma;&middot;x) is <em>invariant</em> to the overall scale
+    of x. So a weight matrix feeding into a norm can be rescaled arbitrarily without changing the function &mdash;
+    which is exactly the degree of freedom that weight decay and &mu;P-style parameterisation exploit
+    (<a class="tag-a" href="12-init.html">L12</a>, <a class="tag-b" href="../track-b/43-training-cost.html">L43</a>).</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a05-s4">4 &middot; Your hands <a class="hook" href="#a05-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Watch activation scale die with depth, and watch norm stop it</h4>
+      <p>This is the failure that forced normalisation into existence, reproduced in 30 lines with no framework.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math, random
+random.seed(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">layer_stats</span>(norm, depth, d=<span class="nm">64</span>):
+    x = [random.gauss(<span class="nm">0</span>, <span class="nm">1</span>) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)]
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(depth):
+        W = [[random.gauss(<span class="nm">0</span>, <span class="nm">1</span> / math.sqrt(d)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)] <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)]
+        h = [<span class="fn">max</span>(<span class="nm">0.0</span>, <span class="fn">sum</span>(W[i][j] * x[j] <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(d))) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(d)]
+        <span class="kw">if</span> norm == <span class="st">"layernorm"</span>:
+            mu = <span class="fn">sum</span>(h)/d; var = <span class="fn">sum</span>((z-mu)**<span class="nm">2</span> <span class="kw">for</span> z <span class="kw">in</span> h)/d
+            h = [(z-mu)/math.sqrt(var + <span class="nm">1e-5</span>) <span class="kw">for</span> z <span class="kw">in</span> h]
+        <span class="kw">elif</span> norm == <span class="st">"rmsnorm"</span>:
+            rms = math.sqrt(<span class="fn">sum</span>(z*z <span class="kw">for</span> z <span class="kw">in</span> h)/d)
+            h = [z/(rms + <span class="nm">1e-6</span>) <span class="kw">for</span> z <span class="kw">in</span> h]
+        x = h
+    <span class="kw">return</span> <span class="fn">round</span>(<span class="fn">sum</span>(x)/d, <span class="nm">5</span>), <span class="fn">round</span>(math.sqrt(<span class="fn">sum</span>(z*z <span class="kw">for</span> z <span class="kw">in</span> x)/d), <span class="nm">5</span>)
+<span class="kw">for</span> mode <span class="kw">in</span> [<span class="st">"none"</span>, <span class="st">"layernorm"</span>, <span class="st">"rmsnorm"</span>]:
+    <span class="fn">print</span>(mode, <span class="st">"(mean, rms) at depth 12:"</span>, <span class="fn">layer_stats</span>(mode, <span class="nm">12</span>))
+<span class="kw">for</span> mode <span class="kw">in</span> [<span class="st">"none"</span>, <span class="st">"rmsnorm"</span>]:
+    <span class="fn">print</span>(mode, <span class="st">"rms by depth 1..10:"</span>, [<span class="fn">layer_stats</span>(mode, D)[<span class="nm">1</span>] <span class="kw">for</span> D <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">1</span>, <span class="nm">11</span>)])
+      </div>
+      <p class="expect">Verified: no norm gives <code>(0.00756, 0.01401)</code> at depth 12 &mdash; the signal is 70&times;
+      smaller than it started &mdash; while LayerNorm gives <code>(-0.0, 0.99999)</code> and RMSNorm gives
+      <code>(0.60002, 1.0)</code>. Across depth the unnormalised RMS reads
+      <code>[0.7622, 0.4479, 0.3447, 0.3311, 0.1944, 0.124, 0.1072, 0.0409, 0.0438, 0.0218]</code> while RMSNorm reads
+      <code>[1.0]</code> ten times. Note RMSNorm's mean is <em>not</em> zero (0.6) &mdash; that is the visible difference
+      from LayerNorm, and it is harmless because the following linear layer can learn it.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Prove the scale-invariance claim</h4>
+      <p>The degree of freedom that weight decay exploits. Take any vector, scale it by 1000, normalise, compare.</p>
+      <div class="code" data-lang="bash">
+python -c "x=[0.4,-1.2,0.9,2.1]; n=lambda v:[(a-sum(v)/len(v)) for a in v]; import math; z=n(x); print('LN(x)  ', [round(a/math.sqrt(sum(b*b for b in z)/4+1e-5),6) for a in z]); z2=n([1000*a for a in x]); print('LN(1000x)', [round(a/math.sqrt(sum(b*b for b in z2)/4+1e-5),6) for a in z2])"
+      </div>
+      <p class="expect">Observed: <code>LN(x)    [-0.12666, -1.477696, 0.295539, 1.308816]</code> and
+      <code>LN(1000x) [-0.12666, -1.477701, 0.29554, 1.308821]</code> &mdash; equal to five decimals, differing only in
+      the sixth because &epsilon; = 1e-5 sits inside the sqrt and the bigger variance dilutes it. Normalising erases the
+      input scale (up to &epsilon;), so multiplying a weight matrix by c and its successor by 1/c changes the function
+      not at all. Consequence: (a) weight decay on a matrix feeding a norm is <em>not</em> shrinking the function &mdash;
+      it walks along a zero-effect direction, which is why its interaction with training dynamics is subtle, and (b) any
+      attempt to control "activation magnitude" by penalising weights before a norm has no effect on activations.
+      This is also why &epsilon; is not free: it makes the layer slightly scale-dependent, and in fp16 an &epsilon;
+      that is too large relative to the variance visibly changes behaviour.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Price the normaliser</h4>
+      <p>RMSNorm is cheap; the question is whether the difference matters at your scale. Count elements touched per
+      token and per layer for a 4096-wide model.</p>
+      <div class="code" data-lang="python">
+d, L, T = <span class="nm">4096</span>, <span class="nm">32</span>, <span class="nm">8192</span>
+<span class="kw">def</span> <span class="fn">touches</span>(kind):
+    per_token = {<span class="st">"layernorm"</span>: d + d, <span class="st">"rmsnorm"</span>: d + d, <span class="st">"layernorm+beta"</span>: d + d + d}[kind]
+    <span class="kw">return</span> per_token * T * L * <span class="nm">2</span>          <span class="cm"># 2 norms per block</span>
+<span class="kw">for</span> kind <span class="kw">in</span> [<span class="st">"rmsnorm"</span>, <span class="st">"layernorm"</span>, <span class="st">"layernorm+beta"</span>]:
+    <span class="fn">print</span>(kind, <span class="st">"-&gt;"</span>, <span class="fn">touches</span>(kind) / <span class="nm">1e9</span>, <span class="st">"G element-touches for the whole forward pass"</span>)
+<span class="fn">print</span>(<span class="st">"matmul FLOPs per token ~ 2*N_params; at 7e9 params and 8192 tokens:"</span>, <span class="fn">round</span>(<span class="nm">2</span>*<span class="nm">7e9</span>*<span class="nm">8192</span>/<span class="nm">1e12</span>, <span class="nm">2</span>), <span class="st">"TFLOP"</span>)
+      </div>
+      <p class="expect">Observed: 4.3 G, 4.3 G and 6.4 G element-touches respectively &mdash; <strong>pennies next to
+      the ~115 TFLOP of matmuls</strong>. So the reason RMSNorm dominates modern architectures is not raw FLOPs; it is
+      (a) fewer memory reads at inference where you are bandwidth-bound (L09) and (b) a slightly simpler gradient path,
+      which matters in low precision. Do not justify an architecture choice with a FLOP count that is 0.004% of the
+      total &mdash; that is a red flag in a design review.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a05-s5">5 &middot; Failure modes <a class="hook" href="#a05-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Normalising over the wrong axis.</strong> Symptom: everything runs, loss is stuck near ln(V); the model behaves like a bag of words. When tokens are in a batch and you reduce over the sequence dimension, you mix documents together. Assert shapes: LN over the last dimension only.</li>
+        <li><strong>eps in the wrong place.</strong> Symptom: training fine, inference with a batch of one produces different logits &mdash; or NaN on all-zero rows. &epsilon; must be added <em>before</em> the sqrt, inside the variance: &radic;(&sigma;<sup>2</sup> + &epsilon;), not &radic;&sigma;<sup>2</sup> + &epsilon;.</li>
+        <li><strong>Missing final norm with pre-norm.</strong> Symptom: logits (and therefore initial loss) grow with depth; a deep model with the same LR behaves worse than a shallow one. Pre-norm needs a final LayerNorm/RMSNorm before the output head.</li>
+        <li><strong>Norm statistics computed in low precision.</strong> Symptom: loss spikes correlated with sequences containing large activations; happens when the variance sum is accumulated in fp16 and overflows. Accumulate the reduction in fp32.</li>
+        <li><strong>Post-norm with a high LR and no warmup.</strong> Symptom: divergence in the first few hundred steps, recovering only with warmup. That is the historical reason warmup and post-norm were coupled; pre-norm removes most of this sensitivity.</li>
+        <li><strong>1-D norm parameters included in weight decay.</strong> Symptom: gain parameters drift toward zero over long runs, suppressing whole feature directions. Symptom is subtle: slightly worse loss, worse long-context behaviour. Exclude 1-D params from decay (L04).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a05-s6">6 &middot; Connects to <a class="hook" href="#a05-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="03-backprop-autograd.html">L03</a>, <a class="tag-a" href="04-gradient-descent.html">L04</a>. &nbsp;
+    <strong>Unlocks:</strong> stable transformer assembly, residual-stream analysis.</p>
+    <ul>
+      <li><a class="tag-a" href="11-activations.html">L11 &middot; Activations</a> &mdash; the MLP's nonlinearity interacts with the norm: GeLU/SwiGLU have different variance profiles than ReLU.</li>
+      <li><a class="tag-a" href="12-init.html">L12 &middot; Initialisation</a> &mdash; the variance propagation argument behind Xavier/He, and why &mu;P rescales the readout instead of the residual.</li>
+      <li><a class="tag-a" href="19-full-transformer.html">L19 &middot; Full transformer</a> &mdash; where pre-norm sits in the block diagram, and the final norm before the head.</li>
+      <li><a class="tag-a" href="21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; fp32 accumulation for the variance and why fp16 LayerNorm overflows.</li>
+      <li><a class="tag-b" href="../track-b/48-residual-stream.html">L48 &middot; Residual stream</a> &mdash; the mechanistic reading: the residual stream as a shared bus every head reads and writes.</li>
+      <li><a class="tag-b" href="../track-b/33-mla.html">L33 &middot; MLA</a> and <a class="tag-b" href="../track-b/40-precision-quant.html">L40 &middot; Quantisation</a> &mdash; norm parameters are sensitive outliers; quantisation recipes treat them specially.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: log per-layer activation RMS (and norm gain RMS) at a fixed interval. A healthy run has a flat
+      profile of RMS across depth; a run with a broken norm shows a monotonic decline or a single layer with 100&times;
+      the neighbours. Two lines of logging turn "the model did not learn" into a located defect.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a05-s7">7 &middot; Self-check <a class="hook" href="#a05-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is LayerNorm preferred over BatchNorm for sequence models?</p>
+        <details><summary>Reveal answer</summary><p>BN normalises each feature across the batch, so its statistics depend on batch composition and on which other sequences are in the batch; at inference you must freeze running statistics, creating a train/eval mismatch. Sequence lengths vary, so per-feature statistics over a batch of padded sequences are biased. LN normalises each token independently over its own features: no batch dependence, identical behaviour at train and inference, well defined for a single token &mdash; the exact requirement for autoregressive decoding.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> How many directions of variation does LN remove per token, and how many does RMSNorm remove? What information is lost in each case?</p>
+        <details><summary>Reveal answer</summary><p>LN removes two: the mean direction (1,1,&hellip;,1) and the radial direction (magnitude). RMSNorm removes only the radial direction. Lost information under LN: overall offset and overall scale, both recoverable only via &beta; and &gamma;. Under RMSNorm: overall scale only. Neither loses relative information between coordinates, and both are invariant enough that a following linear layer can undo either &mdash; but RMSNorm leaves the mean channel intact for free, which is part of why it works well with no &beta;.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Quantitative: a 12-layer stack, no norm, per-layer variance multiplier 0.98. What fraction of the input RMS survives to layer 12? What if it is 1.02?</p>
+        <details><summary>Reveal answer</summary><p>RMS scales as the square root of the variance multiplier to the power L: &radic;(0.98<sup>12</sup>) = 0.98<sup>6</sup> &asymp; <strong>0.886</strong> (11% loss). For 1.02: 1.02<sup>6</sup> &asymp; <strong>1.126</strong> (13% growth). At 32 layers the same 2% error becomes 0.98<sup>16</sup> &asymp; 0.72 and 1.02<sup>16</sup> &asymp; 1.37 &mdash; exponential in depth, hence unmanageable without normalisation.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: your model's initial loss is close to ln(V) and improves, but a 48-layer version trains visibly worse than a 24-layer one at the same LR. What do you check first?</p>
+        <details><summary>Reveal answer</summary><p>Whether the final norm before the output head is present (pre-norm without a final norm grows logits with depth), then the per-layer activation RMS profile to look for a decline or blow-up, then whether warmup is long enough for the depth. Also check the residual add's scaling (some implementations use 1/&radic;2 on both branches) and that eps is inside the sqrt. A depth-dependent degradation with a fixed LR is almost always a residual-scale issue.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> The backward rule for LN includes a term &minus;h<sub>i</sub>&sum;<sub>j</sub>g<sub>j</sub>h<sub>j</sub>. Which test would catch a missing term, and why would training merely look "slightly worse" rather than crash?</p>
+        <details><summary>Reveal answer</summary><p>The finite-difference oracle from L03/Experiment here: compare analytic dx against central differences on random inputs and assert relative error &lt; 1e-5. Omitting the h-projection term leaves a gradient that still points generally downhill (it is a projection of the true gradient onto a subspace), so the loss still decreases &mdash; just with a biased direction and typically a worse final loss and worse stability. That is exactly why silently-wrong gradients survive for weeks without a crash signal and why the oracle test is mandatory.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="04-gradient-descent.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L04 &middot; Gradient descent</span></a>
+    <a class="next" href="06-attention-core.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L06 &middot; Attention from first principles</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

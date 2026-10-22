@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b29">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L29 · Emergence, and Why It Is Partly a Metric Artifact — AILearn</title>
+<meta name="description" content="Why discontinuous capabilities appear at scale, and how much of the discontinuity belongs to the model versus to the metric you chose to measure it with.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L29</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L29 &middot; Emergence, and Why It Is Partly a Metric Artifact</h1>
+  <p class="lede">A capability that is 0% at 10B parameters and 60% at 100B looks like a phase transition, and labs have built safety policy on that picture. Much of it is your metric throwing a step function onto a smooth curve &mdash; and knowing which part is real changes how you forecast and how you gate.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: discontinuity vs metric study</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">emergent abilities</span>
+  <span class="pill">metric discontinuity</span>
+  <span class="pill">exact match vs token-level</span>
+  <span class="pill">smooth underlying loss</span>
+  <span class="pill">threshold effects</span>
+  <span class="pill">all-or-nothing scoring</span>
+  <span class="pill">capability forecasting</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b29-s1">1 &middot; Why it exists <a class="hook" href="#b29-s1">#</a></h2>
+
+    <p>Between 2022 and 2023 the field observed a pattern that looked like physics: benchmark accuracy on some tasks sat at
+    near-zero for small models, then rose steeply past a size threshold. Papers catalogued dozens of &ldquo;emergent
+    abilities&rdquo; and the framing entered policy: capabilities appear suddenly, so you cannot predict them from small-model
+    results, so you must evaluate every scale.</p>
+
+    <p>That framing has a concrete production cost. If capability curves are genuinely discontinuous, every scaling decision
+    requires a full ladder of large runs before you know what you get, and forecasting is impossible. But there was a
+    suspicious detail: the discontinuity usually appeared in <em>exact-match</em> and all-or-nothing metrics, and usually
+    vanished in token-level log-likelihood metrics. Same models, same checkpoints, different scoring rule.</p>
+
+    <p>The failure to avoid: treating a metric's threshold as a property of the model, and therefore either
+    (a) believing a capability is impossibly far away when it is 0.03 nats from arriving, or
+    (b) shipping a model because it crossed a numeric threshold on a task that was nearly working already and
+    quietly breaks on the long tail.</p>
+
+    <div class="callout boss">
+      <p>Capability almost always improves smoothly in log-loss. <span class="asof">state as of 2026-10</span> What jumps is your <em>scoring rule</em>, because a
+      multiple-choice or exact-match metric converts a continuous probability into a step. Predict capability with
+      per-token loss; report it with the metric your business actually pays for.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b29-s2">2 &middot; The mental model <a class="hook" href="#b29-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a dam in a river. Water level rises smoothly; the downstream riverbed goes from dry
+    to flowing the moment the level crosses the lip. Nothing discontinuous happened in the water &mdash; the discontinuity is
+    in the geometry of the boundary.</p>
+
+    <p>The precise version: exact-match accuracy is P(all tokens correct). If each of k answer tokens is correct with
+    probability p, then accuracy = p<sup>k</sup>. That is a smooth function of p, but it has a power-law steepness in log p:
+    at p = 0.5 and k = 10, accuracy is 0.00098; at p = 0.9, it is 0.349. Small changes in per-token quality near the top
+    produce enormous changes in all-or-nothing accuracy. Meanwhile the log-loss curve is a near-straight line.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>The underlying variable is continuous and predictable; the
+      observed jump is produced by a threshold in how you measure. Forecast on the continuous variable.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Some capabilities really are threshold-shaped in the model, not the metric:
+      a task that requires composing <em>k</em> independent operations has a natural k-way conjunction, and skills like
+      multi-step tool use may not decompose linearly. So: check the metric&rsquo;s shape before concluding, but do not
+      conclude &ldquo;it&rsquo;s all the metric.&rdquo;</p></div>
+    </div>
+
+    <h3>The decisive experiment (and what it shows)</h3>
+    <p>For each scale, measure both: (1) exact-match accuracy, (2) token-level accuracy or bits-per-byte on the same items.
+    If the underlying metric is smooth while exact match steps, you are looking at a metric artifact. If the underlying
+    metric also steps, you have a genuine threshold and you should treat the capability as unpredictable from smaller scales.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b29-s3">3 &middot; The mechanism <a class="hook" href="#b29-s3">#</a></h2>
+
+    <div class="formula">
+      Acc<sub>EM</sub> &asymp; p<sup>k</sup> &nbsp;&nbsp;and&nbsp;&nbsp; &part; ln Acc / &part; ln p = k
+      <span class="note">p = per-answer-token probability of being right, k = tokens in the answer. The elasticity of exact-match accuracy to per-token quality is exactly k &mdash; so long answers (k = 50) amplify a 2% per-token change into a ~2.7&times; change in pass rate, and short answers barely move.</span>
+    </div>
+
+    <p>That single line is the whole mechanism, and it also predicts <em>where</em> emergence will be reported: in
+    benchmarks with long answers or many independent sub-parts, at low absolute accuracy, on all-or-nothing metrics.
+    Let us price it:</p>
+
+    <table class="table">
+      <thead><tr><th>Per-token p</th><th>k = 1</th><th>k = 4</th><th>k = 10</th><th>k = 30</th></tr></thead>
+      <tbody>
+        <tr><td>0.50</td><td>0.500</td><td>0.0625</td><td>0.000977</td><td>9.31&times;10<sup>-10</sup></td></tr>
+        <tr><td>0.70</td><td>0.700</td><td>0.240</td><td>0.02825</td><td>2.3&times;10<sup>-5</sup></td></tr>
+        <tr><td>0.90</td><td>0.900</td><td>0.656</td><td>0.3487</td><td>0.04239</td></tr>
+        <tr><td>0.95</td><td>0.950</td><td>0.815</td><td>0.5987</td><td>0.2146</td></tr>
+      </tbody>
+    </table>
+
+    <p>Between p = 0.70 and p = 0.95 &mdash; a smooth 36% relative improvement in per-token quality &mdash; the k = 30 exact-match
+    score moves from 2.3&times;10<sup>-3</sup>% to 21.5%. Plotted against parameter count, that is indistinguishable from a phase transition.
+    The model improved smoothly the whole time.</p>
+
+    <h3>Where the threshold is genuinely real</h3>
+    <p>Two mechanisms produce real discontinuity:</p>
+    <ol>
+      <li><strong>Conjunction over independent subskills.</strong> A task needing <em>k</em> independent skills, each with
+      success probability s, succeeds with s<sup>k</sup>. If the skills arrive at different scales, the product is zero until
+      the last one arrives &mdash; a true step, driven by &ldquo;the weakest link.&rdquo;</li>
+      <li><strong>Greedy decoding commitment.</strong> If the model must emit a token before it has enough evidence, and the
+      first token choices are unrecoverable, small probability differences can flip an entire trajectory. Sampled decoding
+      and chain-of-thought (which defers the commitment) both reduce this.</li>
+    </ol>
+
+    <div class="callout audit">
+      <p>The audit question is not &ldquo;did accuracy jump?&rdquo; but &ldquo;did the jump survive a metric change?&rdquo;
+      Report each capability with at minimum three numbers: exact-match, token-level accuracy, and bits-per-byte; at each
+      scale. A capability claim backed by one metric on one ladder of runs is unfalsifiable in practice. This is exactly the
+      seam as your hash-chained ledger: the artifact must be re-derivable under a different measurement, or it is a story.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b29-s4">4 &middot; Your hands <a class="hook" href="#b29-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; manufacture an &ldquo;emergent ability&rdquo; out of a smooth curve</h4>
+      <p>Generate a smooth per-token quality curve against scale, then score it with exact match. You will produce a textbook
+      emergence plot from a model that never had a discontinuity. If your plot does not reproduce, the metric transform is
+      not the one being tested.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+scale = np.logspace(<span class="nm">8</span>, <span class="nm">11</span>, <span class="nm">10</span>)          <span class="cm"># 0.1B .. 100B params</span>
+<span class="cm"># SMOOTH per-token quality: logistic in log scale, no threshold anywhere</span>
+p = <span class="nm">1</span> / (<span class="nm">1</span> + np.exp(-(np.log10(scale) - <span class="nm">9.4</span>) / <span class="nm">0.35</span>))
+<span class="fn">print</span>(<span class="st">"N(B)   p(per-token)   EM_k=4    EM_k=10   EM_k=30"</span>)
+<span class="kw">for</span> s, pi <span class="kw">in</span> <span class="kw">zip</span>(scale, p):
+    <span class="fn">print</span>(<span class="st">f"{s/1e9:6.2f} {pi:12.4f} {pi**4:9.4f} {pi**10:9.4f} {pi**30:9.4f}"</span>)
+      </div>
+      <p class="expect">The p column is a smooth sigmoid and shows no transition. The EM_k=30 column stays ~0 for the first
+      five scales and then climbs to a large value &mdash; a shape colloquially called emergence, generated with no
+      discontinuity in the model. <strong>Falsification:</strong> if the per-token column also steps, then this particular
+      toy has a real threshold and the metric is not the culprit &mdash; a useful result, not a failed lab.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the elasticities, in one table</h4>
+      <p>The number a forecaster needs: how much does the reported benchmark move per unit of real improvement?</p>
+      <div class="code" data-lang="bash">
+python -c "
+for k in (1,4,10,30):
+    for p in (0.80,0.90):
+        r=(0.90**k)/(0.80**k)
+        print(f'k={k:2d} p 0.80->0.90: EM {0.80**k:.4f} -> {0.90**k:.4f}  ratio {r:.2f}x')
+"
+      </div>
+      <p class="expect">For k = 1 the ratio is 1.125&times;; for k = 30 it is (1.125)<sup>30</sup> = 34.4&times;. Same underlying
+      improvement, 30&times; different apparent magnitude. Quote this whenever someone reads a benchmark jump as a capability
+      jump.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; simulate a real conjunction</h4>
+      <p>Build a task with five independent subskills arriving at staggered scales. Show that conjunction produces a genuine
+      step even though each subskill is smooth. This is the case where emergence is not a metric artifact.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+xs = np.logspace(<span class="nm">8</span>, <span class="nm">11</span>, <span class="nm">10</span>)
+centres = [<span class="nm">8.6</span>, <span class="nm">9.0</span>, <span class="nm">9.4</span>, <span class="nm">9.8</span>, <span class="nm">10.1</span>]   <span class="cm"># each skill arrives at its own scale</span>
+skills = [(<span class="nm">1</span> / (<span class="nm">1</span> + np.exp(-(np.log10(xs) - c) / <span class="nm">0.3</span>))) <span class="kw">for</span> c <span class="kw">in</span> centres]
+task = np.prod(np.array(skills), axis=<span class="nm">0</span>)
+<span class="kw">for</span> x, t <span class="kw">in</span> <span class="kw">zip</span>(xs, task):
+    <span class="fn">print</span>(<span class="st">f"N={x/1e9:7.2f}B  conjunction success={t:.4f}"</span>)
+      </div>
+      <p class="expect">Success stays near zero long after the first three skills are available, then rises sharply once the
+      fifth arrives. That step is <em>real</em>, and it is the one to plan for: it means capability is gated by the weakest
+      subskill, so a diagnostic that isolates subskills predicts far better than end-to-end accuracy.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b29-s5">5 &middot; Failure modes <a class="hook" href="#b29-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Forecasting off exact match.</strong> Symptom: your model-size projections say a capability is 5 years away;
+        the next model shows it working. The token-level metric had been climbing all along and you plotted the wrong series.</li>
+        <li><strong>Dismissing a real threshold.</strong> Symptom: you raise a model 10&times; and a multi-step agent task still
+        fails at step 4 &mdash; the conjunction over skills means adding overall quality does nothing until the specific missing
+        subskill is fixed. Tell: end-to-end accuracy is flat while per-subskill accuracy is already high.</li>
+        <li><strong>Small-benchmark noise read as emergence.</strong> Symptom: the &ldquo;emergent&rdquo; point moves when you change
+        the random seed or the prompt template. At n = 200 items, a 5-point accuracy swing is about &plusmn;1.5 percentage points
+        of standard error; anything smaller is noise wearing a trend line.</li>
+        <li><strong>Contamination manufactures the knee.</strong> Symptom: the jump appears on the one benchmark you did not
+        canary-check, and per-item analysis shows high memorisation on exactly the items that jumped (see L74).</li>
+        <li><strong>Metric swap mid-ladder.</strong> Symptom: an apparent step at the scale where the eval harness changed
+        (e.g. switched from log-likelihood to generative scoring, or added a parser). Version-lock the scorer with the model.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b29-s6">6 &middot; Connects to <a class="hook" href="#b29-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L26&ndash;L28 (the smooth curves) and L16 (loss and bits-per-byte). &nbsp;
+    <strong>Unlocks:</strong> credible eval design, and the reasoning-budget thinking of L60&ndash;L61.</p>
+    <ul>
+      <li><a class="tag-b" href="26-scaling-laws.html">L26 &middot; Kaplan scaling laws</a> &mdash; the smooth curve underneath the metric.</li>
+      <li><a class="tag-a" href="../track-a/16-loss-perplexity.html">L16 &middot; Loss, perplexity, bits-per-byte</a> &mdash; the metric that does not throw a step.</li>
+      <li><a class="tag-d" href="../track-d/88-evals.html">L88 &middot; Evals: power, pass@k vs pass^k</a> &mdash; how to put error bars on the jump.</li>
+      <li><a class="tag-d" href="../track-c/74-eval-contamination.html">L74 &middot; Contamination and gaming</a> &mdash; the other reason a curve can knee.</li>
+      <li><a class="tag-c" href="../track-c/61-test-time-compute.html">L61 &middot; Test-time compute</a> &mdash; sampling and verification change where the threshold sits.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b29-s7">7 &middot; Self-check <a class="hook" href="#b29-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A benchmark answer is 8 tokens and per-token accuracy goes from 0.85 to 0.95. What happens to exact-match accuracy, and how elastic is it?</p>
+        <details><summary>Reveal answer</summary><p>EM = p<sup>8</sup>. Before: 0.85<sup>8</sup> = 0.2725; after: 0.95<sup>8</sup> = 0.6634. So a 11.8%
+        relative improvement in per-token quality produced a 143% increase in pass rate. Elasticity = k = 8: roughly an 8&times; multiplier on the relative
+        change. This is why long-answer benchmarks &ldquo;emerge&rdquo; and single-token benchmarks do not.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> You have three scales (7B, 30B, 70B) showing 0%, 4%, 61% on a task. Name the two measurements that decide whether this is a real threshold, and what each outcome implies.</p>
+        <details><summary>Reveal answer</summary><p>(1) Token-level accuracy or bits-per-byte on the same items, per scale. (2) Per-subskill accuracy broken out by
+        subskill. If token-level is smooth and rising throughout &mdash; metric artifact, forecast on the log-loss line. If
+        token-level is also flat then rising sharply &mdash; real threshold. If the subskill breakdown shows one skill stuck at
+        chance until 70B while others are fine &mdash; a conjunction over a missing subskill, and raising the scale is the
+        expensive way to fix it.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your benchmark shows a jump precisely at the run where you changed the eval harness. What do you do first?</p>
+        <details><summary>Reveal answer</summary><p>Re-score the <em>previous</em> checkpoints with the new harness (and the new ones with the old harness). If the jump
+        disappears or moves, it was a scorer change. This is a two-hour job that prevents a five-month wrong conclusion, and it is the
+        same discipline as re-running a hash chain against two implementations before trusting a ledger.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> A task requires 4 independent skills each succeeding 0.9 of the time. What is task success, and what is it if one skill is 0.6?</p>
+        <details><summary>Reveal answer</summary><p>0.9<sup>4</sup> = 0.6561. With one skill at 0.6: 0.6 &times; 0.9<sup>3</sup> = 0.4374, a 33% drop from
+        improving everything else. The weakest subskill dominates: a model at 0.99 on three skills and 0.5 on the fourth scores
+        0.485 &mdash; worse than a model at 0.85 everywhere (0.522). Diagnostic implication: per-subskill evals beat end-to-end
+        benchmarks for finding what to fix.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does sampled decoding (or a chain of thought) tend to move a threshold down rather than raise the maximum?</p>
+        <details><summary>Reveal answer</summary><p>Both defer commitment: a chain of thought puts the answer token later, after more evidence has been
+        conditioned in, and sampling explores alternative token choices instead of locking the greedy path. So tasks that failed
+        because the model committed to a wrong early token now succeed &mdash; the threshold (where success becomes reliable) drops.
+        The maximum accuracy on tasks where the model already had the evidence is roughly unchanged. That is why
+        &ldquo;emergence&rdquo; is partly a property of <em>how you decode</em>, not just how big the model is (L60&ndash;L61).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="28-over-training.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L28 &middot; Over-training &amp; inference-aware scaling</span></a>
+    <a class="next" href="30-moe.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L30 &middot; Mixture of Experts: sparse activation</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

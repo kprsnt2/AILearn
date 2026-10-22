@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a09">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L09 · KV Cache: The True Cost of Memory — AILearn</title>
+<meta name="description" content="Prefill vs decode, why the KV cache turns quadratic attention into linear generation, the bytes-per-token formula, and a throughput model for batch size and context length.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L09</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L09 &middot; KV Cache: The True Cost of Memory</h1>
+  <p class="lede">Generation is not one expensive computation, it is thousands of cheap ones, and each one re-reads every weight plus the whole conversation so far. The KV cache is what makes that affordable &mdash; and it is also what limits your batch size, your context window, and therefore your gross margin per GPU.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: prefill vs decode throughput model</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">prefill vs decode</span>
+  <span class="pill">KV cache bytes/token</span>
+  <span class="pill">arithmetic intensity</span>
+  <span class="pill">memory-bound decoding</span>
+  <span class="pill">batch size ceiling</span>
+  <span class="pill">time-to-first-token</span>
+  <span class="pill">context-cost model</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a09-s1">1 &middot; Why it exists <a class="hook" href="#a09-s1">#</a></h2>
+
+    <p>Autoregressive generation emits one token at a time. Without any caching, generating token number
+    <code>t</code> means running the full forward pass over <code>t</code> tokens &mdash; and attention over t tokens
+    already costs O(t<sup>2</sup>) &mdash; so generating a 4,000-token answer would reprocess 1+2+&hellip;+4000
+    &asymp; 8 million token-positions of attention work. Almost all of that work is recomputation of keys and values
+    that did not change.</p>
+
+    <p>There is nothing in the causal transformer that requires recomputation: token <code>j</code>'s key and value
+    depend only on token <code>j</code> and everything before it, so once computed they are fixed forever. The KV cache
+    stores them. At step <code>t</code> you compute K and V for the <em>one</em> new token and concatenate, then
+    attend against the stored matrix. Generation goes from O(n<sup>2</sup>) total to O(n) per step and O(n<sup>2</sup>)
+    in aggregate only for the attention part, with the weight matmuls done once per token instead of once per token
+    per prefix.</p>
+
+    <div class="callout boss">
+      <p>The KV cache is a memory-for-compute trade with a brutal exchange rate: for a 32-layer, 4096-wide model in
+      fp16 it is <strong>512 KiB per token</strong>. At 128k context, one request needs 68.7 GB of cache before you have
+      loaded a single weight. That number, not the parameter count, usually decides your server configuration.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a09-s2">2 &middot; The mental model <a class="hook" href="#a09-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> Prefill is reading a whole document into notes (one expensive pass). Decode is
+    annotating one new line at a time while consulting the notes you already took. The notes are the cache: you never
+    re-read the document, but the notes grow with every line and you must keep them on a desk that has a fixed area.</p>
+
+    <p><strong>Where the analogy breaks.</strong> Two ways. (1) The notes are not a summary &mdash; they are exact and
+    <em>double</em> the model's per-token memory footprint, so they grow linearly and never compress by themselves.
+    (2) The bottleneck is not reading speed but <em>arithmetic intensity</em>: at decode, each token's forward pass does
+    only ~2&middot;N FLOPs while touching ~2&middot;N bytes of weights, an intensity near 1 FLOP/byte, far below the
+    several-hundred FLOP/byte a modern accelerator delivers per byte of HBM bandwidth. So decode runs at a small
+    fraction of peak compute, and <em>batching is the only way to raise intensity</em>: 32 concurrent requests read the
+    same weights once for 32 tokens' worth of work.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Prefill: compute-bound</h4><p>All n prompt tokens at once. FLOPs &asymp; 2&middot;N&middot;n. The GPU is busy; latency is set by FLOPs/peak. This is the <em>time-to-first-token</em> (TTFT) phase.</p></div>
+      <div class="card"><h4>Decode: memory-bound</h4><p>One token at a time, FLOPs &asymp; 2&middot;N. Time per step is set by reading weights plus KV cache. This is the <em>inter-token latency</em> phase, and it governs tokens/second.</p></div>
+      <div class="card"><h4>What the cache buys</h4><p>Per decode step, attention reads only the new token's K,V plus the stored ones (O(n) bytes) instead of recomputing all n projections (O(n&middot;d<sup>2</sup>) FLOPs).</p></div>
+      <div class="card"><h4>What the cache costs</h4><p>2&middot;L&middot;H&middot;d<sub>head</sub>&middot;bytes per token, contiguous and unbounded. It is the reason "long context" is a memory product, not just a model capability.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a09-s3">3 &middot; The mechanism <a class="hook" href="#a09-s3">#</a></h2>
+
+    <div class="formula">
+      KV bytes per token = 2 &nbsp;(K and V) &nbsp;&times; L &nbsp;(layers) &nbsp;&times; H<sub>kv</sub> &nbsp;(KV heads) &nbsp;&times; d<sub>head</sub> &times; bytes_per_element<br><br>
+      cache bytes per request = tokens &times; KV bytes per token &nbsp;&nbsp;&nbsp;(grows every step)<br>
+      cache bytes for a batch = batch_size &times; tokens &times; KV bytes per token<br><br>
+      weight bytes &asymp; N<sub>params</sub> &times; bytes_per_element &nbsp;&nbsp;(read once per decode step)
+      <span class="note">For naive multi-head attention H<sub>kv</sub>&middot;d<sub>head</sub> = d<sub>model</sub>, so the cache is 2&middot;L&middot;d<sub>model</sub> elements per token regardless of head count (verified in L07). L10 replaces H<sub>kv</sub> with a smaller number; L33 replaces the whole thing with a latent.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># KV cache and decode cost model &mdash; stdlib only, runs as-is.</span>
+n, H, dh, L = <span class="nm">8192</span>, <span class="nm">32</span>, <span class="nm">128</span>, <span class="nm">32</span>
+bpe = <span class="nm">2</span>                                     <span class="cm"># fp16</span>
+kv_per_tok = <span class="nm">2</span> * H * dh * bpe * L
+<span class="fn">print</span>(<span class="st">"KV bytes/token:"</span>, kv_per_tok, <span class="st">"="</span>, kv_per_tok / <span class="nm">1024</span>, <span class="st">"KiB"</span>)
+<span class="fn">print</span>(<span class="st">"8k ctx, batch 1 : %.2f GB"</span> % (kv_per_tok * <span class="nm">8192</span> / <span class="nm">1e9</span>))
+<span class="fn">print</span>(<span class="st">"128k ctx, batch 1: %.2f GB"</span> % (kv_per_tok * <span class="nm">131072</span> / <span class="nm">1e9</span>))
+<span class="fn">print</span>(<span class="st">"128k ctx, batch 8: %.2f GB"</span> % (kv_per_tok * <span class="nm">131072</span> * <span class="nm">8</span> / <span class="nm">1e9</span>))
+
+d_model = H * dh
+params_layer = <span class="nm">3</span>*d_model*d_model + d_model*d_model + <span class="nm">8</span>*d_model*d_model + <span class="nm">2</span>*d_model
+P = params_layer * L
+<span class="fn">print</span>(<span class="st">"approx params:"</span>, <span class="fn">round</span>(P / <span class="nm">1e6</span>), <span class="st">"M"</span>, <span class="st">"weight bytes fp16: %.2f GB"</span> % (P * <span class="nm">2</span> / <span class="nm">1e9</span>))
+<span class="fn">print</span>(<span class="st">"prefill n=8192 FLOPs: %.3e"</span> % (<span class="nm">2</span> * P * <span class="nm">8192</span>))
+<span class="fn">print</span>(<span class="st">"decode one token FLOPs: %.3e"</span> % (<span class="nm">2</span> * P))
+attn_prefill = <span class="nm">4</span> * <span class="nm">8192</span>**<span class="nm">2</span> * d_model * L
+<span class="fn">print</span>(<span class="st">"attention share of prefill: %.1f%%"</span> % (<span class="nm">100</span> * attn_prefill / (<span class="nm">2</span> * P * <span class="nm">8192</span>)))
+<span class="fn">print</span>(<span class="st">"decode tokens/s at 3.5 TB/s, tile 256: %.0f"</span> % (<span class="nm">3.5e12</span> / (P * <span class="nm">2</span> / <span class="nm">256</span>)))
+<span class="fn">print</span>(<span class="st">"prefill tokens/s at 400 TFLOP/s fp16, 50%% MFU: %.0f"</span> % (<span class="nm">400e12</span> * <span class="nm">0.5</span> / (<span class="nm">2</span> * P)))
+    </div>
+
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+KV bytes/token: 524288 = 512.0 KiB
+8k ctx, batch 1 : 4.29 GB
+128k ctx, batch 1: 68.72 GB
+128k ctx, batch 8: 549.76 GB
+approx params: 6443 M weight bytes fp16: 12.89 GB
+prefill n=8192 FLOPs: 1.056e+14
+decode one token FLOPs: 1.289e+10
+attention share of prefill: 33.3%
+decode tokens/s at 3.5 TB/s, tile 256: 69536
+prefill tokens/s at 400 TFLOP/s fp16, 50% MFU: 15521
+    </div>
+
+    <p>Five readings, each with a decision attached:</p>
+    <ol>
+      <li><strong>512 KiB/token.</strong> A 100k-token conversation is 51.2 GB of cache for one user. This is why
+      long-context pricing is not linear in tokens &mdash; the provider is paying rent on a growing resident buffer.</li>
+      <li><strong>128k &times; batch 8 = 549.76 GB of cache.</strong> No single accelerator holds that. Concurrency at
+      long context is a cluster-level, not device-level, question (<a class="tag-b" href="../track-b/44-inference-serving.html">L44</a>).</li>
+      <li><strong>Attention is 33.3% of prefill FLOPs at n=8192.</strong> Not the majority, but far from negligible:
+      at n=32768 it becomes the dominant term (the 4n<sup>2</sup>d<sub>model</sub> term grows quadratically while the
+      2Pn term grows linearly). Compute that crossover before choosing a tile size.</li>
+      <li><strong>Decode is one twelfth of prefill per token at n=8192</strong> (1.29e10 vs 1.06e14 FLOPs) &mdash; yet
+      it is often <em>slower</em> per token, because its arithmetic intensity is ~256&times; lower.</li>
+      <li><strong>69,536 vs 15,521 tokens/s</strong> for decode-when-bandwidth-bound versus prefill-when-compute-bound
+      (both optimistic, with a tile factor of 256 folded into the weight read). These are the same order of magnitude
+      only by construction; the real point is that decode's ceiling is set by HBM bandwidth, so a faster GPU
+      with more FLOPs but the same bandwidth will not make generation faster.</li>
+    </ol>
+
+    <h3>Why batching is the only lever on decode throughput</h3>
+    <div class="formula">
+      intensity(prefill) &asymp; 2&middot;N&middot;n / (2&middot;N) = n FLOP/byte &nbsp;&nbsp;&nbsp;<span style="font-size:.7em">(amortised over the whole weight read)</span><br>
+      intensity(decode, batch B) &asymp; B FLOP/byte per byte of weights read<br>
+      time per decode step &asymp; max( bytes_read / bandwidth , FLOPs / peak ) &nbsp;&rarr;&nbsp; read-bound when B &lt; peak/bandwidth
+      <span class="note">With peak &asymp; 400 TFLOP/s and bandwidth &asymp; 3.5 TB/s, the ridge point is &asymp; 114 FLOP/byte. Decode with batch B has intensity B, so you need B &asymp; 114 to become compute-bound. Below that, every extra request in the batch is nearly free throughput-wise &mdash; until the KV cache fills memory.</span>
+    </div>
+    <p>That gives the two-sided constraint every serving system lives inside:</p>
+    <div class="formula">
+      B<sub>max</sub> &asymp; (HBM &minus; weights &minus; activations) / (context_length &times; KV bytes/token)<br>
+      throughput &asymp; min( B<sub>max</sub>, B<sub>ridge</sub> ) / time_per_step
+      <span class="note">Raise B<sub>max</sub> and throughput rises until you hit B<sub>ridge</sub>; past that, more concurrency only adds latency. Cutting KV bytes per token (GQA, MLA, quantised cache) raises B<sub>max</sub> directly &mdash; that is the economic case for L10 and L33.</span>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a09-s4">4 &middot; Your hands <a class="hook" href="#a09-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Fit your own GPU: how many concurrent 8k requests?</h4>
+      <p>The number an infrastructure conversation should start from. Change the constants to your actual deployment.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">fits</span>(hbm_gb, params_b, bytes_per_param, L, Hkv, dh, ctx, bpe=<span class="nm">2</span>, overhead=<span class="nm">0.15</span>):
+    weights = params_b * <span class="nm">1e9</span> * bytes_per_param
+    kv_tok = <span class="nm">2</span> * L * Hkv * dh * bpe
+    free = hbm_gb * <span class="nm">1e9</span> * (<span class="nm">1</span> - overhead) - weights
+    <span class="kw">return</span> weights / <span class="nm">1e9</span>, kv_tok / <span class="nm">1024</span>, free / (ctx * kv_tok)
+<span class="kw">for</span> name, kw <span class="kw">in</span> {<span class="st">"MHA H_kv=32"</span>: <span class="fn">dict</span>(L=<span class="nm">32</span>, Hkv=<span class="nm">32</span>, dh=<span class="nm">128</span>), <span class="st">"GQA H_kv=8"</span>: <span class="fn">dict</span>(L=<span class="nm">32</span>, Hkv=<span class="nm">8</span>, dh=<span class="nm">128</span>)}.items():
+    w, kv, n_req = <span class="fn">fits</span>(hbm_gb=<span class="nm">80</span>, params_b=<span class="nm">7</span>, bytes_per_param=<span class="nm">2</span>, ctx=<span class="nm">8192</span>, **kw)
+    <span class="fn">print</span>(<span class="st">f"{name}: weights {w:5.2f} GB, KV {kv:6.1f} KiB/token -&gt; {n_req:5.1f} concurrent 8k requests"</span>)
+      </div>
+      <p class="expect">Observed: <code>MHA H_kv=32: weights 14.00 GB, KV 512.0 KiB/token -&gt; 12.6 concurrent
+      8k requests</code> and <code>GQA H_kv=8: weights 14.00 GB, KV 128.0 KiB/token -&gt; 50.3 concurrent 8k
+      requests</code>. The decisive result is the <em>ratio</em> &mdash; 50.3 / 12.6 &asymp; 4.0, exactly the group size,
+      because nothing in the weights changed. Falsifier: if the two rows came out equal you used H instead of
+      H<sub>kv</sub>, which is the commonest bookkeeping error in capacity planning. Note also that 12.6 concurrent
+      long requests is a small number for an 80 GB device &mdash; this is the real shape of the problem.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Costs the same, latency does not</h4>
+      <p>Two requests, 8,000 prompt tokens and 200 output tokens. Compare how the time splits, and note which term you
+      cannot fix with a bigger GPU but with a smaller <em>cached prefix</em>.</p>
+      <div class="code" data-lang="python">
+n, P, bw, peak, mfu = <span class="nm">8000</span>, <span class="nm">6443e6</span>, <span class="nm">3.5e12</span>, <span class="nm">400e12</span>, <span class="nm">0.5</span>
+ttft = <span class="nm">2</span> * P * n / (peak * mfu)
+per_tok = (P * <span class="nm">2</span>) / bw                    <span class="cm"># read all weights once per decode step</span>
+<span class="fn">print</span>(<span class="st">"TTFT  %.1f ms"</span> % (ttft * <span class="nm">1e3</span>))
+<span class="fn">print</span>(<span class="st">"per decode token %.2f ms -&gt; 200 tokens = %.2f s"</span> % (per_tok * <span class="nm">1e3</span>, per_tok * <span class="nm">200</span>))
+<span class="fn">print</span>(<span class="st">"if 90%% of the prompt is a cached prefix: prefill FLOPs drop to %.2f%% of full"</span> % (<span class="nm">100</span> * (n * <span class="nm">0.1</span>) / n))
+      </div>
+      <p class="expect">Observed: TTFT <strong>515.4 ms</strong> and 200 decode steps <strong>0.74 s</strong> &mdash;
+      decode is <strong>58.8%</strong> of total latency, and it is a function of weight bytes, not of the prompt.
+      That is why prefix caching (<a class="tag-b" href="../track-b/45-caching.html">L45</a>) attacks TTFT while
+      KV-compression (<a class="tag-a" href="10-gqa-mqa.html">L10</a>) attacks memory and concurrency, and why neither
+      makes the weights read any faster. Both figures ignore attention reads over the growing cache; at 128k context
+      the cache-read term is the one that starts to dominate decode latency.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; The cost of a context window in dollars</h4>
+      <p>Convert the memory model into money. Pick a price per token from your current provider and see which share of
+      it is plausibly KV-cache rent.</p>
+      <div class="code" data-lang="python">
+kv_tok_bytes = <span class="nm">524288</span>
+ctx = <span class="nm">131072</span>
+gpu_hour = <span class="nm">2.0</span>                     <span class="cm"># your own number, not a fact</span>
+req_per_gpu_hour = <span class="nm">0.5</span>               <span class="cm"># a full-length request takes 2 h of occupancy</span>
+gb_needed = kv_tok_bytes * ctx / <span class="nm">1e9</span>
+<span class="fn">print</span>(<span class="st">"GB of cache for one 128k request: %.1f"</span> % gb_needed)
+<span class="fn">print</span>(<span class="st">"cache bytes per output-100 token completion: %.1f MB"</span> % (kv_tok_bytes * <span class="nm">100</span> / <span class="nm">1e6</span>))
+<span class="fn">print</span>(<span class="st">"rent per 1M cached tokens at that occupancy: $%.2f"</span> % (gpu_hour / (req_per_gpu_hour * ctx / <span class="nm">1e6</span>)))
+      </div>
+      <p class="expect">The exact outputs depend on your inputs, and that is the point: the model makes the dependency
+      explicit. The OBSERVE that matters is structural &mdash; cache cost is proportional to <em>context length
+      &times; concurrency &times; bytes/token</em>, so a provider that halves bytes/token can serve the same traffic on
+      half the memory, which is exactly the DeepSeek-V4.1-Flash claim of KV cache at 1/4 HBM and 1/8 SSD versus the
+      prior generation <span class="asof">state as of 2026-09</span>. Treat your own numbers as a hypothesis to measure,
+      never as a quote.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a09-s5">5 &middot; Failure modes <a class="hook" href="#a09-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Unbounded cache growth per session.</strong> Symptom: a chat server is fast for the first minute and OOMs requests after an hour; memory correlates with session age, not with load. Fix: hard context cap plus summarisation/compaction (L79).</li>
+        <li><strong>KV cache undercounted in capacity planning.</strong> Symptom: "we fit 7B in 16 GB" is true for weights alone (14 GB fp16) but leaves 2 GB for cache &mdash; two 4k requests. Always compute cache, not just weights.</li>
+        <li><strong>Cache not invalidated when the prompt changes.</strong> Symptom: editing the system prompt mid-conversation produces answers that ignore the edit. Any token change invalidates the suffix after it (L45).</li>
+        <li><strong>Head-count assumption in the cache layout.</strong> Symptom: correct with MHA, wrong after switching to GQA &mdash; concurrency silently drops or rises. The layout must be derived from H<sub>kv</sub>, never hard-coded from d<sub>model</sub>.</li>
+        <li><strong>Fragmentation across varying lengths.</strong> Symptom: utilisation below 60% while requests are rejected; per-request contiguous allocations waste memory at the tail. This is precisely what paged allocation solves (L44).</li>
+        <li><strong>Cache in the wrong precision.</strong> Symptom: storing fp32 doubles memory for no measurable quality gain, or storing fp8 without per-channel scales degrades long-context recall. Quantise the cache deliberately and evaluate (L40).</li>
+        <li><strong>Prefill and decode mixed in the same batch at long context.</strong> Symptom: TTFT spikes when a long prompt arrives while streaming requests are in flight (head-of-line blocking). Needs chunked prefill or separate pools (L44).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a09-s6">6 &middot; Connects to <a class="hook" href="#a09-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="06-attention-core.html">L06</a>, <a class="tag-a" href="07-multihead.html">L07</a>. &nbsp;
+    <strong>Unlocks:</strong> every serving and architecture decision in Track B.</p>
+    <ul>
+      <li><a class="tag-a" href="10-gqa-mqa.html">L10 &middot; MQA / GQA</a> &mdash; reduce H<sub>kv</sub>; the simplest multiplier on this page's numbers.</li>
+      <li><a class="tag-a" href="21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; where "3.5 TB/s" and "400 TFLOP/s" come from, and why the ratio matters more than either number.</li>
+      <li><a class="tag-b" href="../track-b/33-mla.html">L33 &middot; MLA</a> &mdash; store a compressed latent instead of per-head K/V.</li>
+      <li><a class="tag-b" href="../track-b/34-dsa.html">L34 &middot; Sparse attention</a> &mdash; attend to fewer cached entries; caching still needed, but reads shrink.</li>
+      <li><a class="tag-b" href="../track-b/35-long-context.html">L35 &middot; Long context</a> &mdash; the same arithmetic taken to 1M tokens, in GB and dollars.</li>
+      <li><a class="tag-b" href="../track-b/44-inference-serving.html">L44 &middot; Serving</a> &mdash; continuous batching and paged memory: the operational answers to the two constraints derived here.</li>
+      <li><a class="tag-b" href="../track-b/45-caching.html">L45 &middot; Prefix caching</a> &mdash; reuse the cache across requests with a shared prefix, i.e. attack TTFT instead of memory.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: log per request <code>(prompt_tokens, completion_tokens, peak_kv_bytes, batch_size_at_step)</code>.
+      Peak KV bytes is the single number that explains both your memory OOMs and your p99 inter-token latency, and it
+      is derivable exactly from the formula on this page &mdash; so any discrepancy between predicted and observed is a
+      configuration bug, not noise.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a09-s7">7 &middot; Self-check <a class="hook" href="#a09-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Compute the KV cache size per token for a 40-layer model with d<sub>model</sub> = 5120 in fp16, under MHA and under MQA.</p>
+        <details><summary>Reveal answer</summary><p>MHA: 2 (K,V) &times; 40 layers &times; 5120 elements &times; 2 bytes = <strong>819,200 bytes = 800 KiB/token</strong>. MQA (H<sub>kv</sub> = 1, d<sub>head</sub> = 5120 with one head, or 1 shared head): the KV side is 2 &times; 40 &times; d<sub>head</sub>. Under the standard MQA formulation H<sub>kv</sub>&middot;d<sub>head</sub> = d<sub>model</sub>/H only if you keep the head dim; the clean statement is that MQA stores one K and one V head of width d<sub>head</sub> &mdash; with d<sub>head</sub> = 128 and H = 40, that is 2 &times; 40 &times; 1 &times; 128 &times; 2 = 20,480 bytes = <strong>20 KiB/token</strong>, a 40&times; reduction.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A 14 GB-weight model runs on an 80 GB GPU with 15% overhead for activations and framework. How many concurrent 32k-token requests fit if the cache is 512 KiB/token?</p>
+        <details><summary>Reveal answer</summary><p>Usable = 80 &times; 0.85 = 68 GB. Minus 14 GB weights = 54 GB for cache. Per request: 32,768 &times; 512 KiB = 32,768 &times; 524,288 B = 1.72 &times; 10<sup>10</sup> B = <strong>17.18 GB</strong>. 54 / 17.18 = <strong>3.1</strong>, so 3 concurrent requests (and the third is tight). This is why long context forces either smaller batches, more GPUs, or KV compression.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: tokens/second drops by 4&times; when average prompt length goes from 1k to 40k, while GPU utilisation stays near 100% and batch size stays constant. What is happening?</p>
+        <details><summary>Reveal answer</summary><p>Decode is reading the KV cache in addition to the weights. At 512 KiB/token, a 40k-token context means ~21 GB of cache read per decode step versus ~13 GB of weights &mdash; more than doubling bytes moved, and worse once batching means N different caches. The bandwidth is saturated, hence ~100% utilisation with low FLOP efficiency. Confirm by measuring achieved HBM bandwidth and by computing predicted bytes/step = weights + batch&times;ctx&times;KV/token. The fix is KV compression, shorter context, or paged/quantised cache.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does prefix caching reduce TTFT but barely change inter-token latency?</p>
+        <details><summary>Reveal answer</summary><p>TTFT is dominated by prefill: 2&middot;N&middot;n FLOPs over the prompt. If a k-token prefix is already cached, prefill only processes n &minus; k new tokens, so FLOPs and TTFT fall roughly proportionally. Inter-token latency is set by reading weights plus the full KV cache each step &mdash; and the cache now includes the cached prefix, so the bytes read per step are unchanged (or slightly larger). Prefix caching buys latency-to-first-token and some compute, not steady-state throughput.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What exactly is "<em>arithmetic intensity</em>" here, and why does it decide whether more batching helps?</p>
+        <details><summary>Reveal answer</summary><p>Arithmetic intensity = FLOPs performed per byte of memory traffic. A machine has a ridge point = peak FLOP/s &divide; bandwidth &mdash; about 114 FLOP/byte for 400 TFLOP/s and 3.5 TB/s. If a kernel's intensity is below the ridge, it is bandwidth-bound and extra FLOPs are wasted; above it, compute-bound. Decode with batch B reads the weights ~once and does ~B tokens of work, so its intensity is ~B. Increasing B from 1 toward 114 converts wasted bandwidth into throughput; past 114 the batch is compute-bound and additional requests strictly add latency. That is the entire rationale for continuous batching.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="08-positional.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L08 &middot; Positional encoding &rarr; RoPE</span></a>
+    <a class="next" href="10-gqa-mqa.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L10 &middot; MQA / GQA / MLA</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

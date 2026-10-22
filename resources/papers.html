@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="papers">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Papers · The Canon — AILearn</title>
+<meta name="description" content="The 45-paper canon behind AILearn, graded by difficulty, with a verdict for each, the ten you must actually read, and a 6-week reading order.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  /* page-local only: reading-list specific widgets */
+  .rl-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:6px 0 10px; }
+  .dots { font-family:var(--mono); font-size:.8rem; color:var(--cyan); letter-spacing:2px; }
+  .dots i { color:var(--txt-3); font-style:normal; opacity:.35; letter-spacing:2px; }
+  .verdict { font-family:var(--mono); font-size:.64rem; font-weight:700; letter-spacing:1.2px; padding:2px 8px; border-radius:4px; }
+  .v-read { color:var(--emerald); background:rgba(16,185,129,.1); border:1px solid rgba(16,185,129,.35); }
+  .v-skim { color:var(--cyan); background:rgba(56,189,248,.1); border:1px solid rgba(56,189,248,.35); }
+  .v-skip { color:var(--amber); background:rgba(245,158,11,.1); border:1px solid rgba(245,158,11,.35); }
+  .v-sup  { color:var(--red);   background:rgba(239,68,68,.1);  border:1px solid rgba(239,68,68,.35); }
+  .rl-card { background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:16px 20px; margin:16px 0; }
+  .rl-card h3 { margin:0 0 2px !important; font-size:1.02rem; }
+  .rl-card h3 a { border-bottom:0; }
+  .rl-by { font-family:var(--mono); font-size:.7rem; color:var(--txt-3); }
+  .rl-card p { font-size:.93rem; margin:8px 0 0; }
+  .rl-first { border-left:2px solid var(--indigo); padding-left:12px; font-size:.88rem; color:var(--txt-2); margin-top:10px; }
+  .rl-first::before { content:"READ FIRST ▸ "; font-family:var(--mono); font-size:.64rem; letter-spacing:1px; color:var(--indigo); font-weight:700; }
+  .note2026 { border:1px dashed rgba(245,158,11,.4); background:rgba(245,158,11,.05); border-radius:8px; padding:9px 14px; margin-top:11px; font-size:.86rem; color:var(--txt-2); }
+  .note2026::before { content:"2026 NOTE ▸ "; font-family:var(--mono); font-size:.64rem; letter-spacing:1px; color:var(--amber); font-weight:700; }
+  .top10 { counter-reset:t10; display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; margin:20px 0; }
+  .top10 .rl-card { margin:0; }
+  .top10 .rl-card h3::before { counter-increment:t10; content:counter(t10) ". "; color:var(--amber); font-family:var(--mono); }
+  .week { border:1px solid var(--line); border-radius:var(--r); background:var(--card-2); padding:14px 18px; margin:14px 0; }
+  .week h4 { margin:0 0 8px !important; color:var(--txt) !important; text-transform:none; letter-spacing:0; font-size:.98rem; }
+  .week .why { font-size:.86rem; color:var(--txt-3); margin:0 0 8px; }
+  .arrow { text-align:center; color:var(--txt-3); font-family:var(--mono); font-size:.8rem; letter-spacing:2px; margin:2px 0; }
+  .honest { font-size:.9rem; color:var(--txt-2); }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../track-a/index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <span>Resources</span> <span>/</span> <span>Papers</span></div>
+  <div class="track-tag">RESOURCES &middot; PAPER CANON</div>
+  <h1>The Paper Canon &mdash; 60 papers, graded</h1>
+  <p class="lede">You cannot audit a system you cannot cite. This is the set of primary sources the
+  other 100 lessons are built on, each with a verdict, a difficulty, and &mdash; where the field has since
+  changed its mind &mdash; a 2026 note. Reading without building is entertainment; the 6-week order at the
+  bottom is the only part of this page that matters operationally.</p>
+  <div class="chips">
+    <span class="chip">60 papers</span>
+    <span class="chip">10 must-read</span>
+    <span class="chip">6-week order</span>
+    <span class="chip">links verified 2026-10</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">scaling laws</span>
+  <span class="pill">MoE routing</span>
+  <span class="pill">KV compression</span>
+  <span class="pill">GRPO</span>
+  <span class="pill">DPO</span>
+  <span class="pill">agent evals</span>
+  <span class="pill">retrieval</span>
+  <span class="pill">reasoning traces</span>
+</div>
+
+<p class="honest"><strong>Link policy on this page.</strong> Every arXiv identifier here returned HTTP 200
+from arxiv.org at build time (Oct 2026). Where a canonical artifact is a weights release or a GitHub repo
+rather than a paper, the link points at the repo &mdash; a paper index page that lies about a model is worse
+than no link. Verdicts are editorial: <span class="verdict v-read">READ</span> means read it end to end once in
+your life, <span class="verdict v-skim">SKIM</span> means figures, tables, and the abstract,
+<span class="verdict v-skip">SKIP-UNLESS</span> means read only when a specific lesson sends you there.
+<span class="verdict v-sup">SUPERSEDED</span> marks a paper whose central claim did not survive contact with
+later work &mdash; read it to understand the mistake, not to use the number.</p>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="The 10 you must actually read">
+    <h2 id="papers-s1">1 &middot; The 10 you must actually read <a class="hook" href="#papers-s1">#</a></h2>
+
+    <p>If you read only this section of the whole course, you would still be ahead of most people shipping
+    agents in 2026. These ten are ordered by dependency, not by fame. Each carries the instruction that
+    matters more than the abstract: <em>where inside the paper the load-bearing claim lives</em>.</p>
+
+    <div class="top10">
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/1706.03762">Attention Is All You Need</a></h3>
+        <div class="rl-by">Vaswani et al. &middot; Google Brain / Google Research &middot; 2017</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~90 min</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field that attention alone, without recurrence, is enough to model sequences &mdash; and
+        that the whole thing is one matmul-shaped pipeline that a GPU can saturate. Every later efficiency
+        paper is a footnote arguing about which of its three matmuls to skip.</p>
+        <div class="rl-first">Read &sect;3.2.1 (scaled dot-product) line by line, then &sect;3.5 (positional encoding), then Table 3's
+        row for <code>head=8, d_k=d_v=d_model/64</code>. Skip &sect;5.3 unless you train on translation data.
+        Skim &sect;4 (training) &mdash; the schedule is obsolete but the warmup idea is not.</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2005.14165">GPT-3: Language Models are Few-Shot Learners</a></h3>
+        <div class="rl-by">Brown et al. &middot; OpenAI &middot; 2020</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~60 min</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field that capability bought with scale can be spent through the prompt instead of through
+        gradients. It is also the origin of the eval hygiene problem: the paper is careful about train/test
+        contamination in ways most later papers stopped being.</p>
+        <div class="rl-first">Read &sect;2.1 (&ldquo;In-context learning&rdquo;) and &sect;3 (the 42 tasks) &mdash; specifically the
+        contamination discussion in &sect;3.x. Then figure 1.1's few-shot curve: performance is flat until it
+        isn't. That knee is what the entire next five years of scaling work tried to explain.</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2001.08361">Scaling Laws for Neural Language Models</a></h3>
+        <div class="rl-by">Kaplan et al. &middot; OpenAI &middot; 2020</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~60 min</span><span class="verdict v-sup">SUPERSEDED</span></div>
+        <p>Taught the field that loss is a power law in params, data, and compute &mdash; so you can size a run
+        before you run it. Also the source of the most expensive correction in the field's history (see Chinchilla below).</p>
+        <div class="rl-first">Read &sect;3 (power-law form) and figure 1. Then read only the appendix on fitting
+        procedure &mdash; the fitting discipline is still correct; the exponent for data is not.</div>
+        <div class="note2026">2026 note: the practical recipe here &mdash; &ldquo;scale parameters fastest,
+        data second&rdquo; &mdash; was overturned by Chinchilla for compute-optimal pretraining. But the newer
+        regime has quietly re-validated parts of Kaplan from the other side: if you are willing to pay more
+        training compute to get a cheaper model forever, over-training small models on far too many tokens is
+        now standard, so the <em>exponents</em> still matter, just with a different objective (cost per query,
+        not loss per FLOP).</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2203.15556">Training Compute-Optimal Large Language Models (Chinchilla)</a></h3>
+        <div class="rl-by">Hoffmann et al. &middot; DeepMind &middot; 2022</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~70 min</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field that almost everyone had been training models that were too large on too little
+        data, and that tokens and parameters should scale together. It converted &ldquo;bigger&rdquo; into a
+        solvable optimisation problem with a budget line.</p>
+        <div class="rl-first">Read the abstract, then &sect;3's three independent estimation methods (fixed-model,
+        IsoFLOP, parametric) &mdash; the fact that three different methods agree is the actual contribution.
+        Then the table that shows a smaller model trained longer beating a larger one at the same compute.</div>
+        <div class="note2026">2026 note: the &ldquo;~20 tokens per parameter&rdquo; rule of thumb was a
+        compute-optimal snapshot, not a law. Inference-aware economics pushed production models far past it,
+        and the 2026 open-model generations routinely train on orders of magnitude more tokens per parameter
+        than Chinchilla would prescribe. Quote the rule with its assumptions or not at all.</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2101.03961">Switch Transformers</a></h3>
+        <div class="rl-by">Fedus, Zoph, Shazeer &middot; Google Brain &middot; 2021</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~50 min</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field that you can decouple parameter count from FLOPs per token, and then taught it the
+        tax: routing instability, load imbalance, and the auxiliary loss you bolt on to make experts share work.</p>
+        <div class="rl-first">Read &sect;2.1 (the routing equation) then the auxiliary-loss definition, then the
+        stability tricks (&sect;2.5: selective precision, smaller init, dropout on the router). Those three tricks are
+        the difference between a MoE that trains and one that collapses to one expert.</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2405.04434">DeepSeek-V2 (Multi-head Latent Attention)</a></h3>
+        <div class="rl-by">DeepSeek-AI &middot; 2024</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~80 min</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field that the KV cache &mdash; not the weights &mdash; is the binding constraint on long
+        context, and that you can cache a low-rank latent instead of per-head keys and values. This is the
+        paper that made &ldquo;how many bytes per token in cache&rdquo; a first-class engineering question.</p>
+        <div class="rl-first">Read &sect;2.1's MLA formulation and the cache-size table next to GQA and MQA.
+        Skip the pretraining data section entirely. Then go do the memory arithmetic in
+        <a href="../track-b/33-mla.html">L33</a> &mdash; the paper's argument only lands when you compute it yourself.</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a></h3>
+        <div class="rl-by">DeepSeek-AI &middot; 2024</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~2 h</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field that a frontier-class model could be trained for a number worth publishing, and that
+        the training-time savings live in specific mechanisms: auxiliary-loss-free load balancing, multi-token
+        prediction, and FP8 mixed precision. It is the most reproducible systems paper of the decade.</p>
+        <div class="rl-first">Read &sect;2.1.1 (auxiliary-loss-free balancing with the bias term) and &sect;2.2 (MTP) first &mdash;
+        those two sections are the transferable ideas. Then the FP8 training section, then the cost table in &sect;3.
+        The pretraining-curve appendix is worth ten minutes for the shape alone.</div>
+        <div class="note2026">2026 note: V3's auxiliary-loss-free balancing (bias offsets instead of an aux loss)
+        has become the default for new sparse models; papers that still describe a classic Switch-style aux loss
+        are describing a paper-generation-older design. Also: V3's architecture has since been succeeded
+        twice inside the same lab (V3.2's sparse attention, then the V4 family) &mdash; read V3 as the
+        <em>training recipe</em>, not as the current architecture.</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2501.12948">DeepSeek-R1: Incentivizing Reasoning via RL</a></h3>
+        <div class="rl-by">DeepSeek-AI &middot; 2025</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~90 min</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field that long reasoning chains can be grown by RL against a purely verifiable reward &mdash;
+        the R1-Zero result &mdash; and that the resulting model needs a second, SFT-shaped pass to be usable. Both
+        halves of that sentence are load-bearing.</p>
+        <div class="rl-first">Read &sect;2.2 (R1-Zero, GRPO with rule-based rewards), then &sect;2.3.1's cold-start data
+        and the language-mixing failure it fixes, then &sect;4 on distillation into smaller dense models. Note that
+        distillation beat small-model RL from scratch &mdash; that is an operational lesson, not a footnote.</div>
+        <div class="note2026">2026 note: the pure-RL-from-base-model path (R1-Zero) is a research landmark but
+        not the production path; every practical pipeline in this course follows the R1 shape &mdash; cold-start SFT,
+        RL against verifiable rewards, then a final alignment pass. See <a href="../track-c/62-long-cot-r1.html">L62</a>
+        and <a href="../track-c/66-distilling-reasoning.html">L66</a>.</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2210.03629">ReAct: Synergizing Reasoning and Acting</a></h3>
+        <div class="rl-by">Yao et al. &middot; Princeton / Google &middot; 2022</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~40 min</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field the actual shape of an agent: interleaved thought &mdash; action &mdash; observation, where
+        the observation is the only ground truth. Everything you have built as a loop-and-budget harness is a
+        ReAct loop with better instrumentation.</p>
+        <div class="rl-first">Read &sect;2 (the ReAct formulation) and the HotpotQA / Fever sections. Then read the
+        failure analysis &mdash; specifically the reasoning loops and the hallucinated observations. That is the
+        page that predicts your production incidents.</div>
+      </div>
+
+      <div class="rl-card">
+        <h3><a href="https://arxiv.org/abs/2005.11401">Retrieval-Augmented Generation for Knowledge-Intensive NLP</a></h3>
+        <div class="rl-by">Lewis et al. &middot; Facebook AI Research &middot; 2020</div>
+        <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~50 min</span><span class="verdict v-read">READ</span></div>
+        <p>Taught the field that a parametric model plus a non-parametric index is a different object than a
+        bigger model &mdash; updateable, attributable, and auditable. The attribution part is why your moat is
+        retrieval, not fine-tuning.</p>
+        <div class="rl-first">Read &sect;2 (RAG-Sequence vs RAG-Token) and the passage-retrieval setup. Then read
+        &sect;5's ablation on retrieval quality, because it is the first honest statement that a RAG system is a
+        retrieval system with a generator attached.</div>
+      </div>
+
+    </div>
+
+    <div class="callout boss">
+      <p>Ten papers, one afternoon each, and you can walk into any architecture review in 2026 and say
+      which knob each of the last five years of optimisations turned.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="Track A &mdash; Foundations">
+    <h2 id="papers-s2">2 &middot; Track A &mdash; Foundations <a class="hook" href="#papers-s2">#</a></h2>
+
+    <p>What these teach, collectively: the transformer is a stack of linear maps with one pairwise-interaction
+    op, and every stability and speed property of the thing comes from the handful of non-matmul choices around
+    it &mdash; the normaliser, the initialiser, the positional scheme, the optimiser.</p>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1801.06146">ULMFiT: Universal Language Model Fine-tuning</a></h3>
+      <div class="rl-by">Howard &amp; Ruder &middot; fast.ai / DeepMind &middot; 2018</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that pretrain-then-fine-tune beats task-specific training even on small data, and gave
+      it two tricks still in every fine-tuning script: discriminative learning rates and gradual unfreezing.</p>
+      <div class="rl-first">Read &sect;3.2 (slanted triangular LR, discriminative LRs). Ignore the ULMFiT
+      architecture &mdash; nothing here is about the LSTM.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1810.04805">BERT: Pre-training of Deep Bidirectional Transformers</a></h3>
+      <div class="rl-by">Devlin et al. &middot; Google AI &middot; 2018</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~40 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that masked-token prediction could build representations good enough to retarget at any
+      classification task &mdash; the decade's first mass-adoption pre-training recipe, and the origin of the
+      encoder half of every encoder-decoder system still shipped.</p>
+      <div class="rl-first">Read &sect;3.1 (masked LM, and the 80/10/10 corruption rule specifically) and the
+      fine-tuning table. Skip the GLUE-era leaderboard chasing.</div>
+      <div class="note2026">2026 note: BERT-style encoder-only models are the right answer for classification and
+      embedding/retrieval work at small scale, and the wrong answer for generation. The 2026 encoder-decoder
+      comeback (asymmetric prefill/decode splits) is a different argument, not a BERT revival.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1910.10683">T5: Exploring the Limits of Transfer Learning</a></h3>
+      <div class="rl-by">Raffel et al. &middot; Google Research &middot; 2019</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~50 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field text-to-text framing, the C4 cleaning pipeline that most modern corpora are descended
+      from, and a discipline: run the ablation matrix before you write the ablation paragraph.</p>
+      <div class="rl-first">Read &sect;3.1 (C4 construction, and the sentences-with-curse-words filter that
+      becomes a fairness problem) and the ablation in &sect;3.7. Everything else is a 2020 leaderboard.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1607.06450">Layer Normalization</a></h3>
+      <div class="rl-by">Ba, Kiros, Hinton &middot; Toronto / Google Brain &middot; 2016</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~25 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that normalising across features instead of across the batch removes the dependence on
+      batch size &mdash; which is the only reason sequence models could be batched by token instead of by example.</p>
+      <div class="rl-first">Read &sect;C's proof sketch of the invariance properties and the section on why the
+      mean/variance statistics cannot be over-fitted. Then read what RMSNorm keeps from it in
+      <a href="../track-a/05-layernorm-rmsnorm.html">L05</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1412.6980">Adam: A Method for Stochastic Optimization</a></h3>
+      <div class="rl-by">Kingma &amp; Ba &middot; Amsterdam / Toronto &middot; 2014</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~30 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that per-parameter adaptive moments remove most of the learning-rate intuiting &mdash;
+      and that a bad epsilon choice can blow up an entire run, which is exactly the failure you will see in a
+      bf16 training log at 3 a.m.</p>
+      <div class="rl-first">Read &sect;2's update rules and the bias-correction paragraph. Read &sect;3 for the
+      worse-than-SGD convergence counterexample &mdash; that is the honest part.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1710.03740">Mixed Precision Training</a></h3>
+      <div class="rl-by">Micikevicius et al. &middot; NVIDIA / Baidu &middot; 2017</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field why half-precision training silently produces nothing without FP32 master weights,
+      loss scaling, and a few ops pinned to FP32. Every NaN you will ever debug in a mixed-precision run is one
+      of those three.</p>
+      <div class="rl-first">Read the three techniques in isolation (&sect;3.1&ndash;3.3), then the section on which ops
+      stay FP32 and why. Pair with <a href="../track-a/21-gpus-numerics.html">L21</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1910.14599">Mixout: Effective Regularization to Finetune Large-scale Pretrained Language Models</a></h3>
+      <div class="rl-by">Lee et al. &middot; NAVER &middot; 2019</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~30 min</span><span class="verdict v-skip">SKIP-UNLESS</span></div>
+      <p>Taught the field that fine-tuning degrades because you are leaving the pretrained basin, and that
+      stochastically anchoring to the pretrained weights (not the initial ones) is what keeps you in it. It is the
+      ancestor of the low-rank preference finetuning family that arrives two years later.</p>
+      <div class="rl-first">Read &sect;3.1 (the mixout operator) and the comparison against dropout. Only worth it
+      if you are actually fine-tuning on small data.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1904.09751">The Curious Case of Neural Text Degeneration</a></h3>
+      <div class="rl-by">Holtzman et al. &middot; UW / Allen AI &middot; 2019</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~30 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that maximum-likelihood training + beam search produces degenerate text, and that
+      nucleus (top-p) sampling is the fix. It is also the clearest available explanation of why &ldquo;just take
+      the most likely token&rdquo; is a bad operating point for any system whose output you will read.</p>
+      <div class="rl-first">Read &sect;3 and figure 2 (probability-mass shape), then &sect;4 (top-p). Two pages tell
+      you more about sampler choice than any 2026 blog post.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1601.06759">Pixel Recurrent Neural Networks</a></h3>
+      <div class="rl-by">van den Oord et al. &middot; DeepMind &middot; 2016</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~40 min</span><span class="verdict v-skip">SKIP-UNLESS</span></div>
+      <p>Taught the field autoregressive factorisation applied to tensors rather than tokens, including
+      masked convolutions &mdash; the idea that later reappears in every image and audio generator you will use.
+      Read it if you touch multimodal generation; otherwise it is history.</p>
+      <div class="rl-first">Read the masked-convolution figure in &sect;3.2. Nothing else is required for this course.</div>
+    </div>
+
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="Track B &mdash; Scaling &amp; Architecture">
+    <h2 id="papers-s3">3 &middot; Track B &mdash; Scaling &amp; Architecture <a class="hook" href="#papers-s3">#</a></h2>
+
+    <p>Collectively: the cost of a token is now a design variable. Sparsity buys parameters without FLOPs,
+    latent caches buy context without bytes, and IO-awareness buys speed without either. Every one of these
+    papers is an argument about which resource to spend.</p>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2006.16668">GShard: Scaling Giant Models with Conditional Computation</a></h3>
+      <div class="rl-by">Lepikhin et al. &middot; Google Research &middot; 2020</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~50 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field how to actually run a sparse model across accelerators: top-2 gating, capacity factor,
+      auxiliary loss on expert load, and the sharding annotations that make it trainable. It is the engineering
+      ancestor of every production MoE.</p>
+      <div class="rl-first">Read &sect;2.2 (the auxiliary loss and the capacity-factor equation) and the load
+      statistics. Skip the translation results.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2112.04426">GLaM: Efficient Scaling with Mixture-of-Experts</a></h3>
+      <div class="rl-by">Du et al. &middot; Google Research &middot; 2021</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~30 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field to price a model by FLOPs per inference and energy, not parameter count &mdash; the
+      first paper to make &ldquo;cost per token&rdquo; the headline metric instead of a footnote.</p>
+      <div class="rl-first">Read the energy/FLOPs comparison table and the ablation on the number of experts.
+      The training-recipe chapters are skippable.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2304.10592">DeepSeekMoE: Towards Ultimate Expert Specialization</a></h3>
+      <div class="rl-by">Dai et al. &middot; DeepSeek-AI &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~55 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field to split experts finer (many small experts, top-k of them) and pin a set of shared
+      experts that always run. It solves two different failures at once: experts that never specialise, and
+      common knowledge that gets redundantly copied into every routed expert.</p>
+      <div class="rl-first">Read &sect;2's two ideas (fine-grained expert segmentation, shared expert isolation)
+      and the ablation that adds them cumulatively. This is the correct mental model for every DeepSeek model
+      since, including the V4 family in <a href="../track-b/32-deepseek-moe.html">L32</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2512.02556">DeepSeek-V3.2: Pushing the Frontier of Open Large Language Models</a></h3>
+      <div class="rl-by">DeepSeek-AI &middot; 2025</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~90 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that the capability gap on long-horizon agentic tasks closes by synthesising agent
+      trajectories at scale rather than by scaling the base model: mass data synthesis over environments, plus
+      thinking <em>in</em> tool-use rather than thinking then acting.</p>
+      <div class="rl-first">Read the data-synthesis section first &mdash; how tasks and environment feedback are
+      generated &mdash; then the reasoning/tool-use section. The DSA (sparse attention) material lives in the
+      V3.2-Exp release notes: <a href="https://github.com/deepseek-ai/DeepSeek-V3.2-Exp">github.com/deepseek-ai/DeepSeek-V3.2-Exp</a>.
+      Pair with <a href="../track-c/67-data-synthesis.html">L67</a>.</div>
+      <div class="note2026">2026 note: this is the paper to read if you are building agents, because it is
+      mostly an <em>agent data</em> paper wearing an architecture paper's costume. It has since been superseded
+      on architecture by the V4 family, but the environment-synthesis method is the part you can actually copy.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2606.19348">DeepSeek-V4: Towards Highly Efficient Million-Token Context Intelligence</a></h3>
+      <div class="rl-by">DeepSeek-AI &middot; 2026</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9679;<i></i></span><span class="chip">~2 h</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that a million-token context is a compression problem, not a memory problem: token-wise
+      compression plus sparse attention, with active-parameter counts far below total parameter counts. This is
+      the report the 2026 cost models of <a href="../track-b/43-training-cost.html">L43</a> and
+      <a href="../track-b/35-long-context.html">L35</a> are built on.</p>
+      <div class="rl-first">Read the architecture section on compression and sparse attention first, then the
+      efficiency/cost tables &mdash; specifically the per-token serving cost against the previous generation.
+      Read the pretraining section last.</div>
+      <div class="note2026">2026 note: <span class="asof">state as of 2026-10</span> the family has already moved
+      again: <a href="https://arxiv.org/abs/2609.19969">V4.1-Flash</a> (Sep 2026) documents a causal
+      encoder&ndash;decoder split with asymmetric active parameters for input and output, aimed squarely at the
+      prefill-versus-decode cost asymmetry. Read V4 for the compression argument, V4.1 for the
+      encoder-decoder economics.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2609.19969">DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression</a></h3>
+      <div class="rl-by">DeepSeek-AI &middot; 2026</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~60 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that the prefill phase and the decode phase want different architectures. An
+      encoder&ndash;decoder split where the encoder side has far fewer active parameters for input and the decoder
+      side has more for output, with KV cache pressure cut by roughly a factor of four in HBM and eight on SSD
+      versus the prior generation <span class="asof">state as of 2026-10</span>.</p>
+      <div class="rl-first">Read the cache-compression accounting first, then the asymmetric active-parameter
+      split. This is the primary source for <a href="../track-b/37-encoder-decoder.html">L37</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2104.09864">RoFormer: Rotary Position Embedding</a></h3>
+      <div class="rl-by">Su et al. &middot; Zhuiyi / Jianlin Su &middot; 2021</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field to encode position by rotating query and key vectors, so that attention score depends
+      only on relative offset &mdash; and, critically, so that extending context is a frequency-scaling problem
+      (you retune the base) rather than a retraining problem.</p>
+      <div class="rl-first">Read &sect;3.2.2 (the rotation derivation), then the invariance argument. Then
+      implement the rotation yourself in <a href="../track-a/08-positional.html">L08</a>; nothing else makes this
+      concrete.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2305.13245">GQA: Training Generalized Multi-Query Transformer Models</a></h3>
+      <div class="rl-by">Ainslie et al. &middot; Google Research &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that you do not have to choose between multi-head quality and multi-query cache size:
+      interpolate, and also uptrain an existing multi-head checkpoint into the cheaper shape for a small fraction
+      of pretraining compute.</p>
+      <div class="rl-first">Read &sect;3 (the mean-pooling uptraining recipe) and figure 2's cache-vs-quality
+      curve. Then compute the cache sizes by hand for 8 groups in <a href="../track-a/10-gqa-mqa.html">L10</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2205.14135">FlashAttention: Memory-Efficient Exact Attention with IO-Awareness</a></h3>
+      <div class="rl-by">Dao et al. &middot; Stanford &middot; 2022</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~60 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that the bottleneck in attention is HBM read/write traffic, not FLOPs, and that tiling
+      plus online softmax gives you exact attention in a fraction of the memory. This is the paper that made
+      &ldquo;memory bandwidth&rdquo; a phrase every LLM engineer can define.</p>
+      <div class="rl-first">Read &sect;3.1 (the tiling loop) and &sect;3.2 (recomputation). Then read the
+      IO-complexity table &mdash; that table is the entire argument. Pair with <a href="../track-b/38-flash-attention.html">L38</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2307.08691">FlashAttention-2: Faster Attention with Better Parallelism</a></h3>
+      <div class="rl-by">Tri Dao &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field where the remaining waste was: non-matmul FLOPs, poor warp partitioning, and early
+      softmax rescaling. A paper about the difference between a correct kernel and a saturated one.</p>
+      <div class="rl-first">Read the list of specific inefficiencies (&sect;2&ndash;3) and the forward-pass pseudocode.
+      Skip the benchmarks unless you are writing kernels.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2407.08608">FlashAttention-3: Fast and Accurate Attention with Asynchrony</a></h3>
+      <div class="rl-by">Shah et al. &middot; Colfax / NVIDIA / Together &middot; 2024</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~40 min</span><span class="verdict v-skip">SKIP-UNLESS</span></div>
+      <p>Taught the field to overlap the tensor core work with the softmax work via warp specialisation and
+      hardware asynchrony, and how to do FP8 attention without losing accuracy. Read it only if you are actually
+      targeting Hopper-class hardware.</p>
+      <div class="rl-first">Read the warp-specialisation diagram and the FP8 section. Everything else requires the
+      hardware in front of you.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2312.00752">Mamba: Linear-Time Sequence Modeling with Selective State Spaces</a></h3>
+      <div class="rl-by">Gu &amp; Dao &middot; CMU / Princeton &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~70 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that a recurrence with input-dependent (selective) state transitions can match attention
+      on many sequence tasks with linear scaling &mdash; and, more usefully, that its fixed-size state is bad at
+      exact recall, which is why hybrid architectures exist rather than pure replacements.</p>
+      <div class="rl-first">Read &sect;3.2 (the selection mechanism) and the recall-vs-throughput discussion. The
+      hardware-aware scan implementation is optional for <a href="../track-b/46-ssm-hybrids.html">L46</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2302.13971">LLaMA: Open and Efficient Foundation Language Models</a></h3>
+      <div class="rl-by">Touvron et al. &middot; Meta AI &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~45 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that a model trained far past compute-optimal on public data could beat much larger
+      models &mdash; the first widely circulated proof that inference cost, not training cost, sets the useful
+      frontier. It also put an efficient open-weight architecture (RMSNorm, SwiGLU, RoPE) into everyone's hands.</p>
+      <div class="rl-first">Read &sect;2's architecture deltas versus the transformer baseline and the
+      over-training argument in the introduction. Skip the evaluation tables.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2307.09288">Llama 2: Open Foundation and Fine-Tuned Chat Models</a></h3>
+      <div class="rl-by">Touvron et al. &middot; Meta AI &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~60 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field the full post-training assembly line as an industrial artifact &mdash; iterative RLHF
+      with two reward models, and the ghost-attention discussion of reward-model drift &mdash; and it is unusually
+      explicit about its safety evaluation and red-teaming. The best-documented RLHF system description available.</p>
+      <div class="rl-first">Read &sect;3 (fine-tuning: SFT, reward model, iterative RLHF, the rejection-sampling
+      step) and &sect;4.2 (safety). Skim the benchmark tables.</div>
+    </div>
+
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="Track C &mdash; Post-training &amp; Reasoning">
+    <h2 id="papers-s4">4 &middot; Track C &mdash; Post-training &amp; Reasoning <a class="hook" href="#papers-s4">#</a></h2>
+
+    <p>Collectively: behaviour is manufactured, not discovered. Imitation sets the format, preferences set the
+    disposition, verifiable RL sets the depth. Almost every 2026 production gain sits in the third slot.</p>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2203.02155">InstructGPT: Training Language Models to Follow Instructions</a></h3>
+      <div class="rl-by">Ouyang et al. &middot; OpenAI &middot; 2022</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~55 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that a small amount of preference data beats a lot of raw capability for perceived
+      usefulness, and formalised the three-stage pipeline the industry still uses. It is also the clearest
+      statement of the alignment tax and of the annotator-disagreement problem.</p>
+      <div class="rl-first">Read &sect;3 (SFT, RM, PPO, with the KL penalty term) and the human-eval methodology
+      in &sect;4 &mdash; the methodology is the part that did not age. The &ldquo;Show me a bigger model is not
+      automatically better behaved&rdquo; discussion is worth the read.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/1707.06347">Proximal Policy Optimization</a></h3>
+      <div class="rl-by">Schulman et al. &middot; OpenAI &middot; 2017</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9679;&#9675;<i>&#9675;</i></span><span class="chip">~50 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field the clipped surrogate objective &mdash; a trust region you can implement in nine lines
+      and tune with one number. Every RLHF recipe up to and including the value-model-based families is PPO
+      applied to tokens.</p>
+      <div class="rl-first">Read &sect;3's clipped objective and the table of hyperparameter cards. Then read the
+      discussion of what the clip actually bounds &mdash; the divergence it permits is per-ratio, not per-sequence,
+      which is exactly the gap GRPO exploits later.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2402.03300">DeepSeekMath (introduces GRPO)</a></h3>
+      <div class="rl-by">Shao et al. &middot; DeepSeek-AI &middot; 2024</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~70 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field to drop the value network: sample a group of answers to the same prompt, use the group's
+      own score statistics as the baseline, and normalise the advantage within the group. Fewer models to hold in
+      memory, and no critic to be wrong about credit assignment.</p>
+      <div class="rl-first">Read &sect;4.1's GRPO objective (the group-normalised advantage) and the comparison
+      against PPO-with-critic. Then implement it on a bandit in <a href="../track-c/56-grpo.html">L56</a> &mdash;
+      the estimator only becomes obvious when the group size's effect on variance is visible.</div>
+      <div class="note2026">2026 note: GRPO is the default family for verifiable-reward training, and the shape
+      in production has shifted toward group-relative methods with rule-based rewards; the value-model-heavy PPO
+      pipeline is now mostly used where a dense, learnable reward model exists (see
+      <a href="../track-c/64-rlvr-vs-rlhf.html">L64</a> for where each fails).</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2305.18290">DPO: Direct Preference Optimization</a></h3>
+      <div class="rl-by">Rafailov et al. &middot; Stanford &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~45 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that the RLHF optimum has a closed form, which means preference alignment collapses to a
+      classification loss on pairs with no sampling loop, no reward model at inference, no critic. It moved
+      alignment from a research lab activity to a script in every trainer&rsquo;s toolbox.</p>
+      <div class="rl-first">Read &sect;4's derivation from the KL-constrained objective to the implicit reward
+      &mdash; specifically the step where the partition function cancels. Then &sect;5's failure discussion:
+      DPO optimises a proxy, and out-of-distribution preference data is where it drifts.</div>
+      <div class="note2026">2026 note: DPO remains the cheap, stable default for style and disposition, but it
+      cannot grow new reasoning depth the way verifiable-reward RL can. The practical 2026 stack uses both, in
+      sequence, not as alternatives. See <a href="../track-c/55-dpo.html">L55</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2106.09685">LoRA: Low-Rank Adaptation</a></h3>
+      <div class="rl-by">Hu et al. &middot; Microsoft &middot; 2021</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that fine-tuning changes the weights by a low-rank delta, so you can train two small
+      matrices and merge them back &mdash; and, more importantly, that you can keep many adapters and swap the
+      behaviour at serving time. The economics of fine-tuning collapsed overnight.</p>
+      <div class="rl-first">Read &sect;4.1's decomposition and the &ldquo;which layers to adapt&rdquo; ablation.
+      Then read the merging discussion &mdash; it is where serving-time costs hide. Pair with
+      <a href="../track-b/41-distillation.html">L41</a> when you decide fine-tune versus distil.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2305.14314">QLoRA: Efficient Finetuning of Quantized LLMs</a></h3>
+      <div class="rl-by">Dettmers et al. &middot; UW &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~50 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that you can backprop into frozen 4-bit weights and still match 16-bit fine-tuning, if
+      you add double quantisation and paged optimiser states to survive memory spikes. It is the recipe that made
+      single-GPU fine-tuning of 30B+ models routine.</p>
+      <div class="rl-first">Read &sect;3's three contributions (NF4, double quantisation, paging) and the
+      memory arithmetic table. Then watch what a small rank does to quality when the task needs facts, not style.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2201.11903">Chain-of-Thought Prompting Elicits Reasoning</a></h3>
+      <div class="rl-by">Wei et al. &middot; Google Research &middot; 2022</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that intermediate tokens are compute: a model that writes its steps can solve problems
+      it cannot answer in one pass. Every reasoning model, every scratchpad, and every token-budget argument
+      descends from this observation.</p>
+      <div class="rl-first">Read &sect;2 (the prompting format) and figure 3's scaling curves &mdash; the crossover
+      where CoT only helps past a model-size threshold is the paper's real finding. Then read
+      <a href="../track-c/60-chain-of-thought.html">L60</a> for the part the paper understates: which tasks CoT
+      cannot touch at all.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2203.11171">Self-Consistency Improves Chain-of-Thought Reasoning</a></h3>
+      <div class="rl-by">Wang et al. &middot; Google Research &middot; 2022</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~30 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that sampling many reasoning paths and taking a majority vote beats greedy decoding by
+      a large margin on tasks with extractable answers &mdash; buying accuracy with test-time compute. The
+      ancestor of every best-of-n and vote-based verifier strategy.</p>
+      <div class="rl-first">Read &sect;2 and the accuracy-vs-sample-count curves. Then read &sect;4's limits: with
+      no extractable terminal answer, or with correlated errors, majority vote is decoration. Pair with
+      <a href="../track-c/61-test-time-compute.html">L61</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2305.10601">Tree of Thoughts: Deliberate Problem Solving</a></h3>
+      <div class="rl-by">Yao et al. &middot; Princeton / DeepMind &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field to treat reasoning as search over partial states with an explicit evaluator and
+      backtracking &mdash; the right frame when the cost of being wrong is high and you have a cheap way to score
+      partial work.</p>
+      <div class="rl-first">Read &sect;3 (the thought-generation / state-evaluation / search-loop abstract
+      definition) and the Game of 24 results. Then read the failure case honestly: this only pays off with a
+      reliable evaluator, and hallucinated evaluators turn search into confident wandering.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2212.08073">Constitutional AI: Harmlessness from AI Feedback</a></h3>
+      <div class="rl-by">Bai et al. &middot; Anthropic &middot; 2022</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~45 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that you can replace a large part of human labelling with a model critiquing itself
+      against a written list of principles, then train on the preference data that falls out. It is the origin of
+      rubric-based judging, and of the audit question this course keeps asking: who wrote the rubric, and how do
+      you verify the judge applied it?</p>
+      <div class="rl-first">Read &sect;2 (the critique-revise loop) and &sect;3's RL-from-AI-feedback stage. The
+      eval table's refusal-vs-helpfulness tradeoff is the part you will re-measure yourself in
+      <a href="../track-c/72-constitutional.html">L72</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2306.05685">Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena</a></h3>
+      <div class="rl-by">Zheng et al. &middot; LMSYS / UC Berkeley &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~45 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that a strong model is an acceptably consistent judge at scale, and then documented the
+      three ways it is not: position bias, verbosity bias, and self-enhancement. That failure catalogue is the
+      checklist for anything you ship that grades its own output.</p>
+      <div class="rl-first">Read &sect;3.2 (the bias taxonomy) and the agreement-with-humans numbers in &sect;3.1.
+      Then build the swap-augmented judge test in <a href="../track-d/89-llm-as-judge.html">L89</a> &mdash; it is the
+      cheapest possible protection.</div>
+    </div>
+
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="Track D &mdash; Agents, Evals, Systems">
+    <h2 id="papers-s5">5 &middot; Track D &mdash; Agents, Evals, Systems <a class="hook" href="#papers-s5">#</a></h2>
+
+    <p>Collectively: an agent is a loop with a budget, and the literature&rsquo;s real contribution is the
+    <em>benchmarks</em>, because they encode the definition of the task. Read the evals section of these papers
+    more carefully than the method section &mdash; the method is what they could do, the eval is what the claim
+    means.</p>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2302.04761">Toolformer: Language Models Can Teach Themselves to Use Tools</a></h3>
+      <div class="rl-by">Schick et al. &middot; Meta AI Research &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~40 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that tool-use annotations can be generated by the model itself: insert an API call,
+      keep it only if the loss on the following tokens drops. Crude by 2026 standards, and still the cleanest
+      demonstration of self-labelled tool training.</p>
+      <div class="rl-first">Read &sect;2.2 (the self-supervision filter) and the sampling decision rule. Then note
+      what it cannot do: no multi-step, no recovery from a failed call. That gap is
+      <a href="../track-c/70-tool-use-training.html">L70</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2303.11366">Reflexion: Verbal Reinforcement Learning</a></h3>
+      <div class="rl-by">Shinn et al. &middot; Northeastern / MIT / Princeton &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that a failed trial plus a written reflection carried into the next trial is a
+      reinforcement signal without gradients. It is the cheapest self-improvement loop there is, and its
+      failure mode &mdash; confabulated lessons that make the next attempt worse &mdash; is the one to instrument.</p>
+      <div class="rl-first">Read &sect;3 (actor / evaluator / self-reflection memory) and the ablation showing
+      which component actually supplies the gain. Then read the discussion of the memory as an unstructured
+      text buffer; that is where it drifts. See <a href="../track-c/68-self-feedback.html">L68</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2304.03442">Generative Agents: Interactive Simulacra of Human Behavior</a></h3>
+      <div class="rl-by">Park et al. &middot; Stanford / Google &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~50 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field the memory architecture that most agent frameworks still copy: an observation stream,
+      scored retrieval by recency/importance/relevance, periodic reflection, and plan revision. It is a memory
+      paper dressed as a social-simulation paper.</p>
+      <div class="rl-first">Read &sect;4 (memory stream, retrieval function, reflection) and the ablations that
+      remove each component. Skip the believability evaluation &mdash; the sample sizes do not support the
+      conclusion. Pair with <a href="../track-d/80-memory.html">L80</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2305.16291">Voyager: An Open-Ended Embodied Agent with LLMs</a></h3>
+      <div class="rl-by">Wang et al. &middot; NVIDIA / Caltech &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~45 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that an agent can write and <em>store</em> verified code as reusable skill, so capability
+      compounds across episodes instead of being relearned. The skill library + execution-verified addition rule
+      is the transferable idea; the Minecraft setting is not.</p>
+      <div class="rl-first">Read &sect;2's three components (automatic curriculum, skill library, iterative
+      prompting with environment feedback) and the ablation on the skill library. The verification-by-execution
+      gate is the part your own promotion gates should look like.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2009.03300">MMLU: Measuring Massive Multitask Language Understanding</a></h3>
+      <div class="rl-by">Hendrycks et al. &middot; UC Berkeley / Columbia / Chicago &middot; 2020</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~30 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field a broad knowledge screen that lasted five model generations, and then taught it how
+      benchmarks die: saturation, contamination, and format sensitivity. Its real value in 2026 is as the
+      canonical case study in <a href="../track-c/74-eval-contamination.html">L74</a>.</p>
+      <div class="rl-first">Read &sect;2 (construction and the subject list) and &sect;5's discussion of why
+      multiple-choice was chosen. Then read the contamination caveats and stop trusting any single MMLU number.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2211.09110">HELM: Holistic Evaluation of Language Models</a></h3>
+      <div class="rl-by">Liang et al. &middot; Stanford CRFM &middot; 2022</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~40 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that evaluation needs a scenario &times; metric matrix and declared omissions, not a
+      leaderboard column. The idea that you must report <em>coverage</em> alongside <em>score</em> is the most
+      under-implemented good idea in applied AI.</p>
+      <div class="rl-first">Read &sect;2 (the taxonomy of scenarios and metrics) and the section on reporting
+      uncertainty. Then steal the shape for your own eval harness in
+      <a href="../track-d/88-evals.html">L88</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2107.03374">Evaluating Large Language Models Trained on Code (HumanEval)</a></h3>
+      <div class="rl-by">Chen et al. &middot; OpenAI &middot; 2021</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~30 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field pass@k and the execute-the-tests evaluation paradigm &mdash; the first widely used
+      <em>functional</em> correctness benchmark. It also quietly set the pattern for the verifiable reward you
+      will build a training loop around in <a href="../track-c/63-verifiable-rewards.html">L63</a>.</p>
+      <div class="rl-first">Read &sect;2.2 (the unbiased pass@k estimator &mdash; get the sampling math right, it is
+      misquoted constantly) and the caveats about hand-written tests and prompt sensitivity.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2310.06770">SWE-bench: Resolving Real-World GitHub Issues</a></h3>
+      <div class="rl-by">Jimenez et al. &middot; Princeton / CMU &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~50 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field a benchmark that is hard to game: real repository, real issue, hidden tests, patch
+      applied and executed. It moved agent evaluation from &ldquo;did the transcript look right&rdquo; to
+      &ldquo;did the tests pass&rdquo;.</p>
+      <div class="rl-first">Read &sect;3 (task construction and the test-based validation gate) and &sect;5's
+      error taxonomy &mdash; that taxonomy is a ready-made debugging checklist for any coding agent you operate.
+      Skip the per-model results.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2311.12983">GAIA: A Benchmark for General AI Assistants</a></h3>
+      <div class="rl-by">Mialon et al. &middot; Meta AI / Hugging Face &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field a human-verifiable benchmark where the answer is a short string but getting it requires
+      multi-step tool use, file handling, and web navigation. It made &ldquo;easy for humans, hard for
+      assistants&rdquo; an explicit design criterion.</p>
+      <div class="rl-first">Read &sect;2 (the question-design principles and the three difficulty tiers) and the
+      scoring rule. Notice that the answer format &mdash; exact string &mdash; is what makes it auditable; copy that
+      discipline.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2308.03688">AgentBench: Evaluating LLMs as Agents</a></h3>
+      <div class="rl-by">Liu et al. &middot; Tsinghua KEG &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-skip">SKIP-UNLESS</span></div>
+      <p>Taught the field that agentic ability varies wildly by environment type and does not transfer from
+      chat benchmarks. The finding has aged well; the specific model numbers have not.</p>
+      <div class="rl-first">Read &sect;4's failure-mode analysis (invalid format, context limit, task limit) &mdash;
+      these are the same three walls your harness hits in <a href="../track-d/82-long-horizon.html">L82</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2310.11511">Self-RAG: Learning to Retrieve, Generate and Critique</a></h3>
+      <div class="rl-by">Asai et al. &middot; UW / AI2 / IBM &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~45 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that the model should decide <em>whether</em> to retrieve and then <em>whether the
+      retrieved passage supports the claim</em>, via trained reflection tokens. The second half &mdash; a learned
+      groundedness critic &mdash; is the useful production idea.</p>
+      <div class="rl-first">Read &sect;3 (the four reflection token types and their training data construction).
+      Then read &sect;5's latency costs; adaptive retrieval is not free. Pair with
+      <a href="../track-d/87-rag-evaluation.html">L87</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2004.04906">Dense Passage Retrieval for Open-Domain QA</a></h3>
+      <div class="rl-by">Karpukhin et al. &middot; Facebook AI &middot; 2020</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~35 min</span><span class="verdict v-read">READ</span></div>
+      <p>Taught the field that a dual encoder trained on question&ndash;passage pairs beats BM25 &mdash; and, by
+      extension, that retrieval quality is a trainable property, not a property of the embedding you happened to
+      pick off the shelf. This is the paper that made dense RAG possible.</p>
+      <div class="rl-first">Read &sect;3 (the in-batch negative trick, which is the whole training recipe) and the
+      passage-retrieval question-construction discussion. Then read
+      <a href="../track-d/85-rag-retrieval.html">L85</a> on why hybrid search beats both extremes.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2004.05150">Longformer: The Long-Document Transformer</a></h3>
+      <div class="rl-by">Beltagy, Peters, Cohan &middot; AI2 &middot; 2020</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9679;&#9675;&#9675;<i>&#9675;&#9675;</i></span><span class="chip">~30 min</span><span class="verdict v-skip">SKIP-UNLESS</span></div>
+      <p>Taught the field that attention can be given a sliding-window plus global-token pattern to get linear
+      cost on long documents &mdash; the idea that returns, generalised, in every 2026 sparse-attention design.</p>
+      <div class="rl-first">Read &sect;3's attention pattern figure and the global-attention discussion. That
+      figure is the ancestor of the DSA patterns in <a href="../track-b/34-dsa.html">L34</a>.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2004.10612">Are Sixteen Heads Really Better than One?</a></h3>
+      <div class="rl-by">Michel, Levy, Neubig &middot; CMU / Allen AI &middot; 2019</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~25 min</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field that many attention heads can be pruned at inference with little loss while being
+      essential for training &mdash; the first careful statement that redundancy in a transformer is
+      task-dependent, not architecture-dependent.</p>
+      <div class="rl-first">Read the per-head pruning result and the layer-wise finding, then the caveat about
+      pruned layers behaving like shallow networks on some tasks. It is the honest nuance, not the headline.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2312.10997">Retrieval-Augmented Generation for Large Language Models: A Survey</a></h3>
+      <div class="rl-by">Gao et al. &middot; Tongji / Fudan &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~60 min (survey)</span><span class="verdict v-skim">SKIM</span></div>
+      <p>Taught the field the naive / advanced / modular RAG taxonomy and, more usefully, the habit of judging a
+      RAG system by its retrieval recall and faithfulness separately rather than by end-to-end vibe.</p>
+      <div class="rl-first">Read the naive-to-advanced-to-modular progression and the evaluation section. Use the
+      bibliography, not the prose.</div>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://arxiv.org/abs/2308.11432">A Survey on LLM-based Autonomous Agents</a></h3>
+      <div class="rl-by">Wang et al. &middot; Renmin University &middot; 2023</div>
+      <div class="rl-meta"><span class="dots">&#9679;&#9679;&#9675;&#9675;&#9675;<i>&#9675;&#9675;&#9675;</i></span><span class="chip">~60 min (survey)</span><span class="verdict v-skip">SKIP-UNLESS</span></div>
+      <p>Taught the field a stable vocabulary &mdash; profile, memory, planning, action &mdash; that most agent
+      frameworks still use in their docs.</p>
+      <div class="rl-first">Read only the section defining those four modules and the environment-interaction
+      loop. The paper is offline-agent-era; read it for the vocabulary, not the architecture.</div>
+    </div>
+
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Reading order: the 6-week sequence">
+    <h2 id="papers-s6">6 &middot; Reading order: the 6-week sequence <a class="hook" href="#papers-s6">#</a></h2>
+
+    <p>The order is dependency-driven, not chronological. Each week ends with something you build, because a
+    week of reading that produces no artifact produced nothing. At 30 minutes a day, six weeks is about 21
+    hours of reading plus the builds.</p>
+
+    <div class="week">
+      <h4>Week 1 &mdash; The machine</h4>
+      <p class="why">Goal: be able to draw the transformer block from memory and say what every term costs in bytes.</p>
+      <ol>
+        <li><a href="https://arxiv.org/abs/1706.03762">Attention Is All You Need</a> &mdash; the base op. Days 1&ndash;2.</li>
+        <li><a href="https://arxiv.org/abs/1607.06450">Layer Normalization</a> then RMSNorm in <a href="../track-a/05-layernorm-rmsnorm.html">L05</a> &mdash; why the stack is trainable at all.</li>
+        <li><a href="https://arxiv.org/abs/2104.09864">RoPE</a> &mdash; position, and why RoPE survived into every 2024&ndash;26 frontier model.</li>
+        <li><a href="https://arxiv.org/abs/1412.6980">Adam</a> + <a href="https://arxiv.org/abs/1710.03740">Mixed precision</a> &mdash; the two things that silently break runs.</li>
+        <li><a href="https://arxiv.org/abs/1904.09751">The Curious Case of Neural Text Degeneration</a> &mdash; closing the loop from training to the token you actually see.</li>
+      </ol>
+      <p class="why">Why this order: attention without normalisation is un-trainable at depth, and RoPE only makes sense once you have seen the attention score equation.</p>
+      <p><strong>Build:</strong> <a href="../track-a/19-full-transformer.html">L19</a> &mdash; the tiny GPT. No build, no week.</p>
+    </div>
+
+    <div class="arrow">&#9660;</div>
+
+    <div class="week">
+      <h4>Week 2 &mdash; The budget</h4>
+      <p class="why">Goal: be able to size a training run and defend the number without a benchmark.</p>
+      <ol>
+        <li><a href="https://arxiv.org/abs/2001.08361">Kaplan scaling laws</a> &mdash; read it while knowing it is about to be corrected.</li>
+        <li><a href="https://arxiv.org/abs/2203.15556">Chinchilla</a> &mdash; the correction, and why the method mattered more than the number.</li>
+        <li><a href="https://arxiv.org/abs/2302.13971">LLaMA</a> &mdash; over-training, and why inference cost rewrote the rule.</li>
+        <li><a href="https://arxiv.org/abs/2005.14165">GPT-3</a> &mdash; capability as a function of scale, and in-context learning as the payoff.</li>
+      </ol>
+      <p class="why">Why this order: you must read Kaplan <em>before</em> Chinchilla or you will not feel what it cost the field to be wrong. Then LLaMA shows the third regime.</p>
+      <p><strong>Build:</strong> <a href="../track-b/27-chinchilla.html">L27</a> compute-optimal calculator, then break it deliberately with inference costs.</p>
+    </div>
+
+    <div class="arrow">&#9660;</div>
+
+    <div class="week">
+      <h4>Week 3 &mdash; The iron</h4>
+      <p class="why">Goal: reason about the cost of any architecture change on a napkin.</p>
+      <ol>
+        <li><a href="https://arxiv.org/abs/2101.03961">Switch Transformer</a> &rarr; <a href="https://arxiv.org/abs/2006.16668">GShard</a> &mdash; sparse activation and its tax.</li>
+        <li><a href="https://arxiv.org/abs/2304.10592">DeepSeekMoE</a> &mdash; fine-grained plus shared experts; the design every open MoE now copies.</li>
+        <li><a href="https://arxiv.org/abs/2205.14135">FlashAttention</a> &rarr; <a href="https://arxiv.org/abs/2307.08691">FA-2</a> &mdash; memory bandwidth as the real constraint.</li>
+        <li><a href="https://arxiv.org/abs/2305.13245">GQA</a> &rarr; <a href="https://arxiv.org/abs/2405.04434">DeepSeek-V2 (MLA)</a> &mdash; the KV cache as the object being optimised.</li>
+        <li><a href="https://arxiv.org/abs/2312.00752">Mamba</a> &mdash; the alternative, and its recall limit.</li>
+      </ol>
+      <p class="why">Why this order: MoE and KV compression are both &ldquo;spend compute differently&rdquo; arguments; reading them together makes the trade space visible. FlashAttention sits between them because it changes the cost model they are all optimising inside.</p>
+      <p><strong>Build:</strong> <a href="../track-b/33-mla.html">L33</a> memory table and <a href="../track-b/38-flash-attention.html">L38</a> bandwidth model.</p>
+    </div>
+
+    <div class="arrow">&#9660;</div>
+
+    <div class="week">
+      <h4>Week 4 &mdash; Training a frontier-class model, and manufacturing behaviour</h4>
+      <p class="why">Goal: explain the whole production pipeline, pretraining to post-training, with the before-and-after of each stage.</p>
+      <ol>
+        <li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3</a> &mdash; the reproducible systems recipe; two days.</li>
+        <li><a href="https://arxiv.org/abs/2203.02155">InstructGPT</a> &mdash; the canonical three-stage pipeline.</li>
+        <li><a href="https://arxiv.org/abs/1707.06347">PPO</a> &rarr; <a href="https://arxiv.org/abs/2402.03300">DeepSeekMath (GRPO)</a> &mdash; why dropping the critic was the unlock.</li>
+        <li><a href="https://arxiv.org/abs/2305.18290">DPO</a> &mdash; the closed-form shortcut, and what it cannot teach.</li>
+        <li><a href="https://arxiv.org/abs/2106.09685">LoRA</a> + <a href="https://arxiv.org/abs/2305.14314">QLoRA</a> &mdash; the economics of actually doing it.</li>
+        <li><code>deepseek-ai/DeepSeek-V2</code> style releases of weights &mdash; read a model card against the paper once. See <a href="https://huggingface.co/deepseek-ai/DeepSeek-V3.2">huggingface.co/deepseek-ai/DeepSeek-V3.2</a>.</li>
+      </ol>
+      <p class="why">Why this order: V3 first gives you the substrate; InstructGPT then shows the smallest pipeline that turns it into an assistant; PPO-before-GRPO is non-negotiable because GRPO is defined as the removal of PPO's critic.</p>
+      <p><strong>Build:</strong> <a href="../track-c/55-dpo.html">L55</a> DPO loss in numpy, <a href="../track-c/56-grpo.html">L56</a> GRPO on a bandit.</p>
+    </div>
+
+    <div class="arrow">&#9660;</div>
+
+    <div class="week">
+      <h4>Week 5 &mdash; Reasoning</h4>
+      <p class="why">Goal: know exactly which mechanism buys reasoning depth, and which merely buys length.</p>
+      <ol>
+        <li><a href="https://arxiv.org/abs/2201.11903">Chain-of-Thought</a> &rarr; <a href="https://arxiv.org/abs/2203.11171">Self-Consistency</a> &mdash; thought as compute, then thought as sampling.</li>
+        <li><a href="https://arxiv.org/abs/2305.10601">Tree of Thoughts</a> &mdash; thought as search, with its evaluator dependency.</li>
+        <li><a href="https://arxiv.org/abs/2501.12948">DeepSeek-R1</a> &mdash; RL against verifiable rewards grows a long chain; distillation moves it into small models.</li>
+        <li><a href="https://arxiv.org/abs/2512.02556">DeepSeek-V3.2</a> &mdash; reasoning <em>inside</em> tool use, plus environment synthesis at scale.</li>
+        <li><a href="https://arxiv.org/abs/2606.19348">DeepSeek-V4</a> &mdash; what this all costs when the context is a million tokens.</li>
+      </ol>
+      <p class="why">Why this order: prompting-era CoT establishes the vocabulary; R1 shows the training-time version of the same insight; V3.2 and V4 show where the 2026 frontier spends it.</p>
+      <p><strong>Build:</strong> <a href="../track-c/61-test-time-compute.html">L61</a> budget allocator; measure the crossover yourself.</p>
+    </div>
+
+    <div class="arrow">&#9660;</div>
+
+    <div class="week">
+      <h4>Week 6 &mdash; Agents and proof</h4>
+      <p class="why">Goal: ship an audited agent and be able to answer &ldquo;how do you know it works&rdquo; with a harness, not an anecdote.</p>
+      <ol>
+        <li><a href="https://arxiv.org/abs/2210.03629">ReAct</a> &mdash; the loop.</li>
+        <li><a href="https://arxiv.org/abs/2303.11366">Reflexion</a> &rarr; <a href="https://arxiv.org/abs/2304.03442">Generative Agents</a> &rarr; <a href="https://arxiv.org/abs/2305.16291">Voyager</a> &mdash; memory, advantage, and skills that persist.</li>
+        <li><a href="https://arxiv.org/abs/2005.11401">RAG</a> &rarr; <a href="https://arxiv.org/abs/2004.04906">DPR</a> &rarr; <a href="https://arxiv.org/abs/2310.11511">Self-RAG</a> &mdash; the retrieval stack.</li>
+        <li><a href="https://arxiv.org/abs/2310.06770">SWE-bench</a> &rarr; <a href="https://arxiv.org/abs/2311.12983">GAIA</a> &rarr; <a href="https://arxiv.org/abs/2009.03300">MMLU</a> &mdash; execution-based, exact-string, and saturated: three generations of eval design in one sitting.</li>
+        <li><a href="https://arxiv.org/abs/2211.09110">HELM</a> &rarr; <a href="https://arxiv.org/abs/2306.05685">LLM-as-judge</a> &mdash; how to report a score with its coverage and its biases.</li>
+      </ol>
+      <p class="why">Why this order: agent method papers are meaningless without the eval papers that define success. Ending on HELM and the MT-Bench judge paper means you finish with the audit lens, which is the point of the course.</p>
+      <p><strong>Build:</strong> <a href="../track-d/88-evals.html">L88</a> eval harness with confidence intervals, then <a href="../track-d/99-capstone.html">L99</a>.</p>
+    </div>
+
+    <div class="callout warn">
+      <p><strong>The trap in this page.</strong> Sixty papers is about 80 hours of reading and it will feel
+      like progress. It is not progress until a number changes in a repo you own. The 6-week sequence is designed
+      so that every week ends in an artifact &mdash; if you find yourself skipping the build weeks, you have
+      converted a curriculum into a podcast.</p>
+    </div>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; How to consume this">
+    <h2 id="papers-s7">7 &middot; How to consume this <a class="hook" href="#papers-s7">#</a></h2>
+
+    <p>This block is identical on all three resource pages, deliberately. The cadence is the same whether you are
+    reading a paper, a blog post, or watching a talk, because the failure is the same.</p>
+
+    <div class="grid2">
+      <div class="card">
+        <h4>The 30-minutes-a-day cadence</h4>
+        <p><strong>00&ndash;05 &mdash; orient.</strong> Title, abstract, all figures, all tables, conclusion. Write one
+        sentence: <em>what claim is this artifact making, and what would falsify it?</em></p>
+        <p><strong>05&ndash;25 &mdash; the load-bearing part.</strong> One section, chosen by the verdict above &mdash;
+        never page one to page N. Take notes as questions, not summaries.</p>
+        <p><strong>25&ndash;30 &mdash; the tag.</strong> One line in a log: claim &middot; evidence &middot; what I would
+        have to build to check it. This log is your citable memory; a paper you cannot cite from memory did not
+        get read.</p>
+      </div>
+      <div class="card">
+        <h4>The skim-versus-read rule</h4>
+        <p><strong>Read deeply only if you will implement something from it within two weeks.</strong> That is
+        the whole rule. Everything else is a skim, permanently, and that is correct &mdash; the abstraction is what
+        you need, not the derivation.</p>
+        <p>Concretely: implementing a loss function (DPO, GRPO) &rarr; read deeply, derive it on paper, reproduce
+        the loss. Citing a scaling constant &rarr; skim, keep the table. Choosing an attention variant &rarr; read
+        the memory arithmetic section only, and compute it.</p>
+        <p>If the two-week window is imaginary &mdash; you are &ldquo;reading up&rdquo; for a project that does not
+        exist &mdash; it is a skim. Mark it as such and move on without guilt.</p>
+      </div>
+    </div>
+
+    <div class="callout boss">
+      <p><strong>Reading without a build is entertainment.</strong> It produces the feeling of competence and
+      none of the artifacts. The only defence is a hard gate: a paper earns a place in your log when a number in
+      a repo you own moved because of it &mdash; a latency, a memory line, a loss curve, a pass rate. If nothing
+      moved, you were watching.</p>
+    </div>
+
+    <p class="honest">Next: the same discipline applied to <a href="blogs.html">blogs and newsletters</a>
+    (where the engineering detail lives and where the hype lives, both labelled) and
+    <a href="videos.html">videos and courses</a> (where you get the walkthrough you cannot get from a PDF).</p>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="../index.html"><span class="dir">&larr; COURSE</span><span class="ttl">AILearn &middot; 100 lessons</span></a>
+    <a class="next" href="blogs.html"><span class="dir">NEXT &rarr;</span><span class="ttl">Blogs &amp; newsletters</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

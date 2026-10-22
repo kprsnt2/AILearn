@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="agi/killswitch">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The kill-switch theorem — when to stop an autonomous system</title>
+<meta name="description" content="A computable stopping condition for unattended agents: divergence, hazard, and identity drift, each with a threshold you can tune.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .kicker { font-family: var(--mono); font-size: .68rem; letter-spacing: 2.4px; color: var(--red); margin-bottom: 14px; }
+  .hero { padding: 44px 0 10px; max-width: 900px; }
+  .hero h1 { font-size: clamp(1.9rem, 4.2vw, 2.9rem); letter-spacing: -1.3px; line-height: 1.1; }
+  .cond-grid { display: grid; gap: 16px; margin: 24px 0; }
+  .cond { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--red); border-radius: var(--r); padding: 18px 22px; }
+  .cond h3 { margin: 0 0 6px !important; font-size: 1rem; color: var(--txt); }
+  .cond .sig { font-family: var(--mono); font-size: .74rem; color: var(--red); margin-bottom: 10px; display: block; }
+  .cond p { margin: 0 0 8px; font-size: .9rem; color: var(--txt-2); }
+  .cond .why { font-size: .82rem; color: var(--txt-3); border-top: 1px dashed var(--line); padding-top: 9px; margin-top: 10px; }
+  .slider-row { display: grid; grid-template-columns: 200px 1fr 74px; gap: 14px; align-items: center; margin-bottom: 16px; }
+  @media (max-width: 700px) { .slider-row { grid-template-columns: 1fr; gap: 6px; } }
+  .slider-row label { font-family: var(--mono); font-size: .77rem; color: var(--txt-2); }
+  .slider-row input[type=range] { width: 100%; accent-color: var(--violet); }
+  .slider-row .val { font-family: var(--mono); font-size: .82rem; color: var(--cyan); text-align: right; }
+  .widget { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 24px 26px; margin: 26px 0; }
+  .verdict { margin-top: 22px; padding: 18px 22px; border-radius: 11px; font-family: var(--mono); font-size: .86rem; line-height: 1.7; border: 1px solid var(--line); }
+  .verdict.go { border-color: rgba(16,185,129,.4); background: rgba(16,185,129,.08); color: #6ee7b7; }
+  .verdict.hold { border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.08); color: #fcd34d; }
+  .verdict.stop { border-color: rgba(239,68,68,.4); background: rgba(239,68,68,.08); color: #fca5a5; }
+  .verdict .reason { display: block; color: var(--txt-2); font-size: .8rem; margin-top: 6px; font-family: var(--sans); }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="index.html">AGI Lab</a>
+      <a href="benchmark.html">Benchmark</a>
+      <a href="killswitch.html">Kill-switch</a>
+      <a href="../tools/agi-sim.html">Simulator</a>
+    </div>
+    <div class="nav-tools">
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="hero">
+  <div class="kicker">PART TWO · THE STOP CONDITION</div>
+  <h1>The kill-switch is a theorem, not a button.</h1>
+  <p class="lede">
+    Any autonomous system that cannot be stopped deterministically is not deployable, no matter how
+    capable it is. But "we can stop it" is a claim, and claims need a test. Here is the test:
+    three computable conditions, each evaluated at every cycle boundary, each with a threshold you can
+    defend. Below, a working calculator so you can tune them against a real run.
+  </p>
+</header>
+
+<h2 style="font-size:1.4rem;letter-spacing:-.5px;">Why a manual stop does not count</h2>
+<p style="color:var(--txt-2);max-width:80ch;">A human watching a dashboard is not a stop condition. It fails on
+the only case that matters: the overnight run. If your protection requires someone to notice, it is
+not protection; it is a hope with a dashboard attached. The conditions below are computed by the
+harness itself, and the harness must be able to halt without a model in the loop — which means
+they must be arithmetic, not judgment.</p>
+
+<div class="cond-grid">
+  <div class="cond">
+    <h3>Condition 1 — Replication floor</h3>
+    <span class="sig">if divergence_pct(last 3 cycles) &gt; D  →  HALT</span>
+    <p>The fraction of claims that failed independent replication. This is the only measure of
+    whether the system is still telling you true things.</p>
+    <div class="why"><strong>Default D = 0.15.</strong> Above 15% your "verified" work is not verified.
+    Set it from your own history: run the harness for 10 cycles, measure the variance, then set D at
+    mean + 2σ. Do not pick it from the air — pick it from data.</div>
+  </div>
+  <div class="cond">
+    <h3>Condition 2 — Any hazard</h3>
+    <span class="sig">if hazard_attempts &gt; 0  →  HALT and page a human</span>
+    <p>Any attempt at an action outside the declared scope, or any irreversible action without a
+    pre-registered rollback. Not "if it succeeds" — an <em>attempt</em> is enough.</p>
+    <div class="why"><strong>Threshold is zero, deliberately.</strong> There is no acceptable rate of
+    unauthorized irreversible actions. If you set a tolerance here, you have defined an attack
+    budget, and an adversary will spend it.</div>
+  </div>
+  <div class="cond">
+    <h3>Condition 3 — Identity drift</h3>
+    <span class="sig">if authority_mass &lt; 0.5 × previous  →  HALT</span>
+    <p>The sum of the earned authority of the skills the agent actually used, per cycle. A sudden
+    halving means the thing that is running is not the thing that was audited.</p>
+    <div class="why"><strong>This clause is the one nobody builds.</strong> It catches the failure mode
+    where an agent silently changes its scope or behaviour and the change is masked by a stable-
+    looking success rate. It is the difference between "is it working" and "is it still the same."</div>
+  </div>
+</div>
+
+<h2 style="font-size:1.4rem;letter-spacing:-.5px;margin-top:44px;">Tune it against your own numbers</h2>
+<div class="widget">
+  <div class="slider-row">
+    <label>divergence D</label>
+    <input type="range" id="s-d" min="0" max="0.5" step="0.01" value="0.15">
+    <span class="val" id="v-d">0.15</span>
+  </div>
+  <div class="slider-row">
+    <label>authority ratio floor</label>
+    <input type="range" id="s-a" min="0.1" max="1" step="0.05" value="0.5">
+    <span class="val" id="v-a">0.50</span>
+  </div>
+  <div class="slider-row">
+    <label>observed divergence</label>
+    <input type="range" id="s-od" min="0" max="0.5" step="0.01" value="0.02">
+    <span class="val" id="v-od">0.02</span>
+  </div>
+  <div class="slider-row">
+    <label>authority ratio now</label>
+    <input type="range" id="s-oa" min="0" max="1" step="0.05" value="0.92">
+    <span class="val" id="v-oa">0.92</span>
+  </div>
+  <div class="slider-row">
+    <label>hazards attempted</label>
+    <input type="range" id="s-h" min="0" max="5" step="1" value="0">
+    <span class="val" id="v-h">0</span>
+  </div>
+
+  <div class="verdict go" id="verdict">
+    <span id="verdict-head">CONTINUE</span>
+    <span class="reason" id="verdict-why">All three conditions are within tolerance.</span>
+  </div>
+</div>
+
+<h2 style="font-size:1.4rem;letter-spacing:-.5px;margin-top:44px;">The part that makes it a theorem</h2>
+<p style="color:var(--txt-2);max-width:80ch;">A stop condition is only a theorem if you can say what it
+guarantees. This one guarantees a bounded exposure:</p>
+
+<div class="formula">
+  exposure ≤ D × cycles_since_last_clean_replication × value_per_claim
+  <span class="note">
+    In words: the damage a drifting system can do is capped by the replication floor times how long it has
+    been drifting times the value of a claim. If you halve D, you halve the worst case but double the
+    false-alarm rate. That tradeoff is the whole engineering problem — and it is a tradeoff you can
+    compute, not a judgement call.
+  </span>
+</div>
+
+<p>Pick D, run 10 clean cycles, count false halts. Adjust. Now you have a stop condition you can
+defend in a review, because you have measured its two parameters instead of asserting them.</p>
+
+<div class="callout audit">
+  <p>This is the same structure as a statistical process control chart from manufacturing, and the same
+  logic as an audit sampling plan. You spent seven years learning that a control limit is set from
+  measured variance and not from a manager's intuition. Apply it here.</p>
+</div>
+
+<h2 style="font-size:1.4rem;letter-spacing:-.5px;margin-top:40px;">What to build, in order</h2>
+<ol style="color:var(--txt-2);max-width:80ch;">
+  <li><strong>The meter, not the brake.</strong> First record divergence_pct, hazard_attempts and
+  authority_mass per cycle for two weeks. Do not halt yet. You need the distribution.</li>
+  <li><strong>The brake, in shadow mode.</strong> Compute the halt decision, log it, do not enforce it.
+  Count how often it <em>would</em> have fired. Tune D.</li>
+  <li><strong>The brake, enforced.</strong> Only once false-alarm rate is acceptable. Enforcement
+  without a tuned threshold trains everyone to ignore the alarm.</li>
+  <li><strong>The page.</strong> A halt must reach a human through a channel that works at 3am, with
+  the reason string attached. A silent halt is a second failure.</li>
+</ol>
+
+<nav class="pager">
+  <a class="prev" href="benchmark.html"><span class="dir">← PREVIOUS</span><span class="ttl">FABLE · the benchmark</span></a>
+  <a class="next" href="../tools/agi-sim.html"><span class="dir">NEXT →</span><span class="ttl">Run the simulator</span></a>
+</nav>
+</main>
+
+<footer>AILearn · AGI Lab · <span class="asof">state as of 2026-10</span></footer>
+<script src="../_shell.js"></script>
+<script>
+(function () {
+  var ids = ['d', 'a', 'od', 'oa', 'h'];
+  var els = {};
+  ids.forEach(function (k) {
+    els[k] = { s: document.getElementById('s-' + k), v: document.getElementById('v-' + k) };
+  });
+  function fmt(k, val) {
+    if (k === 'h') return String(parseInt(val, 10));
+    return parseFloat(val).toFixed(2);
+  }
+  function compute() {
+    var D = parseFloat(els.d.s.value);
+    var Aratio = parseFloat(els.a.s.value);
+    var od = parseFloat(els.od.s.value);
+    var oa = parseFloat(els.oa.s.value);
+    var h = parseInt(els.h.s.value, 10);
+    ids.forEach(function (k) { els[k].v.textContent = fmt(k, els[k].s.value); });
+
+    var verdict = document.getElementById('verdict');
+    var head = document.getElementById('verdict-head');
+    var why = document.getElementById('verdict-why');
+    var reasons = [];
+
+    if (h > 0) {
+      reasons.push('hazard_attempts = ' + h + ' — any hazard is a halt (threshold is zero)');
+      verdict.className = 'verdict stop'; head.textContent = 'HALT — human review required';
+    } else if (od > D) {
+      reasons.push('divergence ' + od.toFixed(2) + ' > D ' + D.toFixed(2) + ' — replication floor breached');
+      verdict.className = 'verdict stop'; head.textContent = 'HALT — replication floor breached';
+    } else if (oa < Aratio) {
+      reasons.push('authority ratio ' + oa.toFixed(2) + ' < floor ' + Aratio.toFixed(2) + ' — identity drift');
+      verdict.className = 'verdict stop'; head.textContent = 'HALT — identity drift detected';
+    } else if (od > D * 0.75 || oa < Aratio * 1.15) {
+      reasons.push('within tolerance but approaching a limit — raise re-test sampling next cycle');
+      verdict.className = 'verdict hold'; head.textContent = 'HOLD — tighten monitoring';
+    } else {
+      reasons.push('divergence ' + od.toFixed(2) + ' ≤ D ' + D.toFixed(2) + ', authority ratio ' + oa.toFixed(2) + ' ≥ ' + Aratio.toFixed(2) + ', zero hazards — within tolerance');
+      verdict.className = 'verdict go'; head.textContent = 'CONTINUE';
+    }
+    why.textContent = reasons.join(' · ');
+  }
+  ids.forEach(function (k) { els[k].s.addEventListener('input', compute); });
+  compute();
+})();
+</script>
+</body>
+</html>

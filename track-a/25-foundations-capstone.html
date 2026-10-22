@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a25">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L25 · Capstone: A GPT-2-Scale Truth Check — AILearn</title>
+<meta name="description" content="The Track A capstone: state a predicted training curve before you run it, from parameter count and the 6N FLOPs rule, then measure how wrong you were. A reproducible, budgeted experiment rather than a vibe.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L25</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L25 &middot; Capstone: A GPT-2-Scale Truth Check</h1>
+  <p class="lede">Track A ends with the discipline the rest of the course depends on: predict first, then measure. You will state a loss curve and a compute budget from arithmetic alone, run a small model, and report the gap between prediction and reality as a number instead of an opinion.</p>
+  <div class="chips">
+    <span class="chip">~40 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: a reproducible, budgeted training run + truth check</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">prediction before measurement</span>
+  <span class="pill">6N FLOPs rule</span>
+  <span class="pill">MFU</span>
+  <span class="pill">bits-per-byte comparison</span>
+  <span class="pill">tokens/param</span>
+  <span class="pill">curve fingerprint</span>
+  <span class="pill">falsifiable run report</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a25-s1">1 &middot; Why it exists <a class="hook" href="#a25-s1">#</a></h2>
+
+    <p>Every claim about a training run is either a measurement or a guess, and the two are indistinguishable in
+    conversation. "A 124M model should reach loss around 3 on character-level data" is a guess until you write down an
+    arithmetic prediction, run the thing, and show both. The failure this capstone exists to prevent is the expensive one:
+    spending GPU budget on a run whose outcome you could have predicted, and therefore learned nothing from.</p>
+
+    <p>Here is the discipline, and it is the same discipline the audit background already uses: <strong>a prediction
+    committed to before the measurement is falsifiable; a prediction formed afterwards is not.</strong> So the capstone
+    has one rule &mdash; the predicted numbers are written into a report file <em>before</em> the run starts, and the report
+    is only accepted when the measured numbers sit beside them.</p>
+
+    <div class="callout boss">
+      <p>The deliverable is not a trained model. It is a one-page run report containing: predicted parameters, predicted
+      FLOPs, predicted time at a stated MFU, measured values for all three, and one sentence on the largest discrepancy
+      and why. That document is the only thing that proves you can do this.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a25-s2">2 &middot; The mental model <a class="hook" href="#a25-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> A structural engineer sizes a beam with arithmetic and then the load test confirms it. The
+    arithmetic is not optional and the test is not optional; the value is in the agreement or the explained disagreement.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The prediction here has three parts of very different reliability:
+    parameter count (exact arithmetic, should match to the tensor), FLOPs (exact given the forward/backward convention,
+    within a few percent of the runtime's implementation), and wall-clock time (a guess, because MFU depends on the
+    hardware, batch size, sequence length and kernel quality). Record them separately, or a large time error will mask a
+    real parameter error. (2) The loss prediction is <em>not</em> derived here &mdash; that is Track B's scaling law
+    (L26). In this capstone you predict loss only by a stated, fallible heuristic and mark it as such; the point is to
+    practice committing to a number, not to pretend you have a law. (3) A curve that matches your prediction can still be
+    a wrong implementation &mdash; the structural tests from L06/L15/L19 are a separate gate.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Predict: parameters</h4><p>From the config, with the L19/L24 formula, including biases, norms, positions and tying. This one is exact and must match the checkpoint.</p></div>
+      <div class="card"><h4>Predict: FLOPs</h4><p>6&middot;N per token for training (plus the attention n&sup2; term if sequences are long). Multiply by tokens; report in PF-days or GPU-hours.</p></div>
+      <div class="card"><h4>Predict: time</h4><p>FLOPs / (peak FLOPs &times; MFU) with MFU stated explicitly. Use a conservative MFU, then say so.</p></div>
+      <div class="card"><h4>Measure: everything</h4><p>Parameter sum from the state dict, tokens&times;6N, wall clock, tokens/s, and the loss curve sampled at fixed token counts (not fixed steps, since step size varies).</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a25-s3">3 &middot; The mechanism <a class="hook" href="#a25-s3">#</a></h2>
+
+    <div class="formula">
+      1. N &mdash; from the config (exact). &nbsp; 2. FLOPs = 6&middot;N&middot;D (training, D = tokens)<br>
+      3. wall-clock &asymp; FLOPs / (peak &times; MFU) &nbsp;&rArr;&nbsp; GPU-hours = FLOPs / (peak &times; MFU &times; 3600)<br>
+      4. tokens/param = D / N &nbsp;&nbsp;(compare against L27's compute-optimal ratio)<br>
+      5. bits/byte = (nats/token) / (ln2 &times; bytes/token) &nbsp;&nbsp;(the only cross-tokenizer loss unit, L16)
+      <span class="note">Report the three predictions independently. The one you will get most wrong is time, because MFU is not a property of the model but of the kernel, the batch shape and the hardware. Anything within a factor of 2 is a useful prediction; <em>claiming</em> a factor of 2 without stating the MFU is not.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># The prediction sheet. Fill it in BEFORE the run and commit the file.</span>
+<span class="kw">import</span> math
+cfg = {<span class="st">"V"</span>: <span class="nm">65</span>, <span class="st">"L"</span>: <span class="nm">4</span>, <span class="st">"d"</span>: <span class="nm">128</span>, <span class="st">"H"</span>: <span class="nm">4</span>, <span class="st">"d_ff"</span>: <span class="nm">4</span>*<span class="nm">128</span>, <span class="st">"tied"</span>: <span class="kw">True</span>,
+       <span class="st">"ctx"</span>: <span class="nm">256</span>, <span class="st">"batch"</span>: <span class="nm">32</span>, <span class="st">"steps"</span>: <span class="nm">5000</span>}
+<span class="kw">def</span> <span class="fn">params</span>(c):
+    per = <span class="nm">4</span>*c[<span class="st">"d"</span>]**<span class="nm">2</span> + <span class="nm">2</span>*c[<span class="st">"d"</span>]*c[<span class="st">"d_ff"</span>] + <span class="nm">2</span>*c[<span class="st">"d"</span>] + <span class="nm">4</span>*c[<span class="st">"d"</span>]   <span class="cm"># attention + FFN + norms + biases</span>
+    emb = c[<span class="st">"V"</span>] * c[<span class="st">"d"</span>]
+    head = <span class="nm">0</span> <span class="kw">if</span> c[<span class="st">"tied"</span>] <span class="kw">else</span> c[<span class="st">"V"</span>] * c[<span class="st">"d"</span>]
+    return c[<span class="st">"L"</span>] * per + emb + head + <span class="nm">2</span>*c[<span class="st">"d"</span>]                     <span class="cm"># + final norm</span>
+N = <span class="fn">params</span>(cfg)
+D = cfg[<span class="st">"batch"</span>] * cfg[<span class="st">"ctx"</span>] * cfg[<span class="st">"steps"</span>]
+flops = <span class="nm">6</span> * N * D
+peak, mfu = <span class="nm">150e12</span>, <span class="nm">0.30</span>                    <span class="cm"># STATE YOUR DEVICE AND YOUR MFU ASSUMPTION</span>
+hours = flops / (peak * mfu) / <span class="nm">3600</span>
+<span class="fn">print</span>(<span class="st">f"predicted N        = {N:,} parameters"</span>)
+<span class="fn">print</span>(<span class="st">f"tokens D           = {D:,} ({D/N:.0f} tokens/param)"</span>)
+<span class="fn">print</span>(<span class="st">f"predicted FLOPs    = {flops:.3e} ({flops/3600/(peak*mfu):.2f} GPU-hours on one device at MFU {mfu})"</span>)
+<span class="fn">print</span>(<span class="st">f"predicted train time = {hours:.2f} h"</span>)
+<span class="fn">print</span>(<span class="st">f"predicted loss (heuristic, MARK AS A GUESS): ln(V)={math.log(cfg['V']):.3f} at init; expect 1.5-2.2 nats/token after {D/N:.0f} tokens/param"</span>)
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+predicted N        = 798,080 parameters
+tokens D           = 40,960,000 (51 tokens/param)
+predicted FLOPs    = 1.961e+14 (0.00 GPU-hours on one device at MFU 0.3)
+predicted train time = 0.00 h
+    </div>
+    <p>Look at the two absurdities. <strong>798,080 parameters is dominated by the embedding:</strong> 65 &times; 128 =
+    8,320 of the total, with the trunk at 197,376 &times; 4 = 789,504 &mdash; so this is a model whose FFN and attention
+    are almost entirely in the name of predicting 65 token types. And <strong>51 tokens per parameter is a very
+    short run</strong> by any scaling reference (L27), which is exactly the point: at this budget the experiment cannot
+    demonstrate scaling, only that the machinery works. The FLOPs figure 1.961e14 is right for these numbers; the
+    formatted GPU-hours and hours columns print <code>0.00</code> because 1.961e14 / (150e12 &times; 0.3) = 4.36
+    <em>seconds</em>, i.e. 0.0012 hours. <strong>That formatting is itself the lesson:</strong> a report that rounds a
+    quantity to two decimals across four orders of magnitude hides the real number, so always print the raw value next
+    to the formatted one.</p>
+    <p>The correct reading of the sheet is therefore: N = 798,080, D = 40.96M tokens (51 tokens/param), 1.961e14 FLOPs,
+    and a single-device compute time of about 4.4 s <em>if</em> the kernels ran at 30% MFU. A real run of this size takes
+    far longer &mdash; minutes, not seconds &mdash; because data loading, optimizer bookkeeping and per-step launch
+    overhead dominate at this scale. That gap is the discrepancy your report must explain rather than hide, and it is a
+    demonstration of the 6N rule's scope: it models matmul FLOPs only, not the surrounding system.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a25-s4">4 &middot; Your hands <a class="hook" href="#a25-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Commit the prediction, then reconcile it</h4>
+      <p>Write the prediction sheet to a file with the config, the N/FLOPs/time predictions and the MFU assumption. Then
+      build the model, sum its actual parameters, and diff.</p>
+      <div class="code" data-lang="bash">
+python -c "import json; print(json.load(open('prediction.json')))"
+python -c "import torch; m=build_model(cfg); print(sum(p.numel() for p in m.parameters()), sum(p.numel() for p in m.parameters() if p.requires_grad))"
+      </div>
+      <p class="expect">Observe the parameter diff first: with biases included, a tied head and one final norm the count
+      should match to the integer. Any diff decomposes into named terms (L24). Only then look at the time diff, and
+      attribute it to one of: framework overhead at small scale, data-loading stalls, MFU far from your assumption, or a
+      unit error. Falsifier for "the implementation is right": if the parameter count matches but the loss at step 1 is
+      not close to ln(V) (for a zero-initialised or small head), the head or the loss is wrong.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The curve report: loss at fixed token counts</h4>
+      <p>The curve is only comparable across runs if it is sampled at fixed <em>tokens seen</em>, not at a fixed number
+      of steps &mdash; because batch size and sequence length differ between runs (L14, L16). Produce the report the
+      capstone asks for.</p>
+      <div class="code" data-lang="python">
+report = {
+  <span class="st">"config"</span>: {<span class="st">"V"</span>: <span class="nm">65</span>, <span class="st">"L"</span>: <span class="nm">4</span>, <span class="st">"d"</span>: <span class="nm">128</span>, <span class="st">"H"</span>: <span class="nm">4</span>, <span class="st">"d_ff"</span>: <span class="nm">512</span>, <span class="st">"tied"</span>: <span class="kw">True</span>, <span class="st">"ctx"</span>: <span class="nm">256</span>, <span class="st">"batch"</span>: <span class="nm">32</span>},
+  <span class="st">"predicted"</span>: {<span class="st">"N"</span>: <span class="nm">798_080</span>, <span class="st">"D"</span>: <span class="nm">40_960_000</span>, <span class="st">"flops"</span>: <span class="nm">1.961e14</span>, <span class="st">"gpu_hours"</span>: <span class="nm">0.0012</span>},
+  <span class="st">"measured"</span>: {<span class="st">"N"</span>: <span class="st">"?"</span>, <span class="st">"wall_clock_s"</span>: <span class="st">"?"</span>, <span class="st">"tokens_per_s"</span>: <span class="st">"?"</span>},
+  <span class="st">"curve_nats_per_token"</span>: {<span class="st">"1M"</span>: <span class="st">"?"</span>, <span class="st">"5M"</span>: <span class="st">"?"</span>, <span class="st">"10M"</span>: <span class="st">"?"</span>, <span class="st">"20M"</span>: <span class="st">"?"</span>, <span class="st">"41M"</span>: <span class="st">"?"</span>},
+  <span class="st">"baseline_uniform"</span>: <span class="st">"ln(V) = 4.174 nats/token"</span>,
+  <span class="st">"largest_discrepancy"</span>: <span class="st">"? and why"</span>,
+}
+<span class="kw">for</span> k, v <span class="kw">in</span> report.items(): <span class="fn">print</span>(k, <span class="st">"->"</span>, v)
+    </div>
+      <p class="expect">The report is the deliverable. The two acceptance criteria are: (a) the curve falls well below
+      the uniform baseline of ln(65) = 4.174 nats/token &mdash; a model that cannot beat uniform has not learned anything;
+      (b) every "?" is filled with a measured number and the largest discrepancy is explained in one sentence. A report
+      with an unexplained discrepancy is an honest report; a report with no discrepancy at 39 tokens/param is a
+      measurement bug. Report bits-per-byte alongside nats/token if your data has bytes (L16), because that is the number
+      that survives a tokenizer change.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Scale the truth check: is the curve where it should be?</h4>
+      <p>Track B opens with scaling laws. Do the crude version now: run the same config at 2&times; and 4&times; the token
+      budget and check that loss decreases monotonically with a shrinking improvement &mdash; the shape a power law
+      predicts.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">epr</span>(a, b, c):
+    <span class="cm"># three token budgets, three measured losses</span>
+    <span class="kw">return</span> (a, (a - b) / (b - c))
+<span class="cm"># a, b, c are losses at D, 2D, 4D. A power law implies the ratio (L(D)-L(2D))/(L(2D)-L(4D)) > 1</span>
+<span class="fn">print</span>(<span class="fn">epr</span>(<span class="nm">3.10</span>, <span class="nm">2.85</span>, <span class="nm">2.72</span>), <span class="st">"ratio 1.92 -&gt; consistent with a smooth power law"</span>)
+<span class="fn">print</span>(<span class="st">"ratio near 1.0 or below -&gt; you have hit an irreducible floor or a data wall; report it"</span>)
+    </div>
+      <p class="expect">The illustrative numbers above show the shape to look for: each doubling helps less. If your
+      measured ratio is near 1.0, you are at the noise floor of a tiny model and the honest report says so. If it is
+      <em>below</em> 1, something is wrong (a bug, a broken schedule, or evaluation noise). This experiment is the bridge
+      to L26, where the exponent gets fitted properly instead of eyeballed.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a25-s5">5 &middot; Failure modes <a class="hook" href="#a25-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Prediction written after the run.</strong> Symptom: the report is always right. Post-hoc predictions are not predictions; commit the file first, with a timestamp or a git hash.</li>
+        <li><strong>Unit errors in the time column.</strong> Symptom: GPU-hours that are off by 3600&times; &mdash; exactly the one caught in section 3. Carry units explicitly and sanity-check against a known run.</li>
+        <li><strong>Comparing curves at fixed steps.</strong> Symptom: two runs disagree in a way that vanishes when you plot against tokens. Always x-axis tokens seen.</li>
+        <li><strong>Loss not compared to the uniform baseline.</strong> Symptom: a "converged" model that is worse than predicting uniformly. Print ln(V) as a horizontal line on every loss plot a base model produces.</li>
+        <li><strong>Perplexity compared across tokenizers.</strong> Symptom: a change in tokenizer looks like a model improvement. Convert to bits/byte (L16).</li>
+        <li><strong>Claiming a scale result from one seed.</strong> Symptom: the "power law" changes shape with a different seed. At small scale, seed variance can be larger than the effect you are measuring; run at least two or three.</li>
+        <li><strong>No data card with the curve.</strong> Symptom: the loss cannot be attributed to the model because the corpus changed. Pin the shard hashes (L23).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a25-s6">6 &middot; Connects to <a class="hook" href="#a25-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> all of Track A &mdash; in particular <a class="tag-a" href="16-loss-perplexity.html">L16</a>, <a class="tag-a" href="19-full-transformer.html">L19</a>, <a class="tag-a" href="20-training-loop.html">L20</a>, <a class="tag-a" href="21-gpus-numerics.html">L21</a>, <a class="tag-a" href="23-data-corpora.html">L23</a>. &nbsp;
+    <strong>Unlocks:</strong> Track B.</p>
+    <ul>
+      <li><a class="tag-b" href="../track-b/26-scaling-laws.html">L26 &middot; Kaplan scaling laws</a> &mdash; replace the heuristic loss prediction here with a fitted power law.</li>
+      <li><a class="tag-b" href="../track-b/27-chinchilla.html">L27 &middot; Chinchilla</a> &mdash; the tokens/param number you just measured, placed on the compute-optimal frontier.</li>
+      <li><a class="tag-b" href="../track-b/43-training-cost.html">L43 &middot; Training cost</a> &mdash; the full FLOPs/MFU/$ model, including the attention term this capstone ignores.</li>
+      <li><a class="tag-c" href="../track-c/53-standard-pipeline.html">L53 &middot; Standard pipeline</a> &mdash; pretraining is only the first stage; the run report is the artefact you carry into it.</li>
+      <li><a class="tag-d" href="../track-d/88-evals.html">L88 &middot; Evals</a> &mdash; a loss curve is not a capability measurement; this is where the difference is operationalised.</li>
+      <li><a class="tag-d" href="../track-d/99-capstone.html">L99 &middot; Final capstone</a> &mdash; the same prediction-before-measurement discipline applied to an agent system.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: the capstone deliverable is a signed run report &mdash; config hash, data card hash, predicted
+      values with a timestamp, measured values, and the discrepancy explanation. It is one page, and it is the only
+      artefact that distinguishes engineering from experimentation.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a25-s7">7 &middot; Self-check <a class="hook" href="#a25-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why are parameters, FLOPs and wall-clock reported separately rather than as one "cost" number?</p>
+        <details><summary>Reveal answer</summary><p>Because their error sources differ. Parameters are exact arithmetic from the config and must match the checkpoint exactly &mdash; a mismatch is a real bug. FLOPs follows from N and tokens by convention and is accurate to a few percent, catching implementation mistakes (wrong token count, missing backward). Wall clock includes MFU, kernel quality, data loading and framework overhead, so it can be off by a factor of 2&ndash;10 legitimately. Combining them lets a large time error hide a small parameter error; separating them localises the discrepancy to the right layer.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Verify the section-3 arithmetic: 6&times;798,080&times;40,960,000 FLOPs at 150 TFLOP/s peak and MFU 0.30. What is the wall clock, and why did the sheet print 0.00 hours?</p>
+        <details><summary>Reveal answer</summary><p>FLOPs = 6 &times; 798,080 &times; 40,960,000 = <strong>1.961 &times; 10<sup>14</sup></strong>. Time = 1.961e14 / (150e12 &times; 0.30) = 1.961e14 / 4.5e13 = <strong>4.36 seconds</strong> = 0.0012 hours. The sheet printed <code>0.00 h</code> because two-decimal formatting of 0.0012 rounds to zero &mdash; not a units error, a <em>reporting</em> error, which is worse in practice because it silently hides the answer. Print the raw value beside the formatted one. Numeric check: 6 &times; 798,080 &times; 40.96e6 = 1.961e14. Well done if you also notice that 4.4 s is the matmul-only model: real wall clock is dominated by data loading and per-step overhead at this size.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your 800K-parameter model reaches 3.8 nats/token with V = 65 and you call it converged. What is wrong and what does the correct baseline tell you?</p>
+        <details><summary>Reveal answer</summary><p>The uniform-prediction baseline is ln(65) = <strong>4.174</strong> nats/token. 3.8 is only 0.374 nats below uniform &mdash; roughly 9% better than random &mdash; which for a 51-tokens/param run indicates a bug (loss mask, label shift, wrong window), a severely undertrained run, or a data problem. Always plot ln(V) as a horizontal line; "converged" is meaningless without it. A model that cannot clearly beat uniform has not learned a distribution, and no amount of further steps will fix a masking bug.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why sample the curve at fixed tokens rather than fixed steps, and why does this matter for a capstone report?</p>
+        <details><summary>Reveal answer</summary><p>Learning is a function of data seen and compute spent, not of optimizer steps. A step processes batch &times; context tokens, so two runs with different batch or context sizes reach the same loss at different step numbers. Plotting against steps makes a run with a bigger batch look "faster-learning" when it is only seeing more tokens per step. The capstone report must be comparable to other runs &mdash; and to Track B's scaling fits &mdash; so the x-axis is tokens seen and the metric is nats/token (or bits/byte).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What makes this capstone falsifiable, and what would count as a failed capstone?</p>
+        <details><summary>Reveal answer</summary><p>Falsifiable because the predictions are committed to a file before the run and the measured values are reported against them: a prediction that is off by 10&times; and explained is still a successful capstone, because the model of the system was explicit and its error is attributable. A <em>failed</em> capstone is one where no prediction was written first, or where a discrepancy is left unexplained, or where the loss curve has no uniform baseline and no data card &mdash; i.e. a report that could be produced without having learned anything.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="24-reading-code.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L24 &middot; Reading a real model repo</span></a>
+    <a class="next" href="../track-b/26-scaling-laws.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L26 &middot; Kaplan scaling laws</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a10">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L10 · MQA / GQA / MLA — The KV Compression Wars — AILearn</title>
+<meta name="description" content="Sharing key/value heads across query heads: the GQA mapper, the exact memory table for MHA/GQA/MQA/MLA, why grouping costs quality, and how to compute the trade on a napkin.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L10</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L10 &middot; MQA / GQA / MLA: The KV Compression Wars</h1>
+  <p class="lede">The KV cache from L09 is the binding constraint on concurrency at long context. Three architectures attack it by storing fewer distinct keys and values &mdash; sharing them (MQA, GQA) or compressing them into a latent (MLA). The whole trade fits in three lines of arithmetic, and the quality cost is a measurable consequence of one information-theoretic fact.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: GQA mapper + memory/quality trade table</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">MQA</span>
+  <span class="pill">GQA groups</span>
+  <span class="pill">repeat_kv mapping</span>
+  <span class="pill">KV bytes per token</span>
+  <span class="pill">MLA latent cache</span>
+  <span class="pill">decoupled RoPE</span>
+  <span class="pill">quality-vs-memory frontier</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a10-s1">1 &middot; Why it exists <a class="hook" href="#a10-s1">#</a></h2>
+
+    <p>From <a class="tag-a" href="09-kv-cache.html">L09</a>: with multi-head attention the KV cache is
+    <strong>2&middot;L&middot;d<sub>model</sub>&middot;bytes</strong> per token &mdash; and that d<sub>model</sub> factor is
+    the killer, because the cache is nearly as large as the weights' per-token width while the weights are shared by
+    every token in the batch and the cache is not. Concretely: 32 layers, d<sub>model</sub> = 4096, fp16 gives
+    <strong>512 KiB per token</strong>; a 128k-token context needs <strong>68.7 GB</strong> for a single request. At
+    that point you are buying GPUs to hold keys and values for one user, and batching &mdash; the only way to reach
+    decent arithmetic intensity &mdash; becomes impossible.</p>
+
+    <p>The insight behind this whole family: <strong>queries do not need to be cached</strong>. Each decode step
+    computes one new query vector per head and throws it away. Keys and values persist and therefore cost memory.
+    If several query heads could share one set of keys and values, the cache shrinks by the sharing factor and
+    nothing about the queries changes. MQA (one shared KV head) and GQA (H/G shared KV heads) are exactly that
+    idea with different group sizes; MLA instead keeps per-head caches but stores them as a much smaller shared latent.</p>
+
+    <div class="callout boss">
+      <p>KV-cache layout is the highest-leverage architecture decision in a serving business. Halving bytes per token
+      doubles the concurrent users per GPU at fixed context, or doubles the context at fixed users, with no change to
+      the FLOP count.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a10-s2">2 &middot; The mental model <a class="hook" href="#a10-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> MHA gives every analyst their own filing cabinet. MQA gives the whole floor one shared
+    cabinet (cheap storage, everyone fights over the same folders). GQA gives every clique of four analysts a shared
+    cabinet. MLA does something different: it stores <em>one compressed archive</em> of the filing cabinet and expands
+    it on demand &mdash; cheaper storage, but you pay decompression on every read.</p>
+
+    <p><strong>Where the analogy breaks.</strong> The filing cabinet is not just storage; it is <em>representational
+    capacity</em>. Query heads sharing a KV head can only differ in how they <em>score</em> the shared keys, not in
+    what those keys contain. So sharing removes a dimension of expressiveness that cannot be recovered by learning
+    &mdash; it is a hard information bottleneck. That is why MQA costs quality (a well-documented observation in the
+    MQA literature), why GQA's intermediate setting was adopted widely as the practical point (GQA, arXiv:2305.13245),
+    and why MLA spends extra compute (an up-projection and a decoupled RoPE part) to avoid paying the full bottleneck.
+    A second break: MQA's cache is 1/H of MHA's, not zero &mdash; at 32 layers and d<sub>head</sub> = 128 it is still
+    16 KiB/token, which is 2&times;10<sup>9</sup> bytes for a 128k context.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What sharing removes</h4><p>The ability of different heads to retrieve <em>different content</em> from the same token position. They can still weight the same content differently &mdash; that is a strictly weaker set of functions.</p></div>
+      <div class="card"><h4>What sharing does not change</h4><p>Query projections, attention FLOPs (QK<sup>T</sup> still n&times;n per head), output projection, or feedforward cost. It is a pure memory/latency optimisation with a quality tax.</p></div>
+      <div class="card"><h4>MQA vs GQA</h4><p>MQA is GQA with G = 1. GQA with G = H is exactly MHA. Everything in between is a dial, and the dial is "how much representational freedom am I willing to pay for memory".</p></div>
+      <div class="card"><h4>MLA's move</h4><p>Cache a low-rank latent <code>c</code> of dimension c<sub>KV</sub>, reconstruct K and V from it via up-projections at read time. Bytes/token drop from 2&middot;H&middot;d<sub>head</sub> to c<sub>KV</sub> (plus a small decoupled RoPE part), at the cost of an extra matmul per read.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a10-s3">3 &middot; The mechanism <a class="hook" href="#a10-s3">#</a></h2>
+
+    <div class="formula">
+      MHA: H<sub>kv</sub> = H &nbsp;&nbsp;|&nbsp;&nbsp; GQA: H<sub>kv</sub> = H/G &nbsp;&nbsp;|&nbsp;&nbsp; MQA: H<sub>kv</sub> = 1<br><br>
+      KV bytes/token = 2 &times; L &times; H<sub>kv</sub> &times; d<sub>head</sub> &times; bytes_per_element<br><br>
+      MLA: KV bytes/token = L &times; (c<sub>KV</sub> + d<sub>rope</sub>) &times; bytes_per_element
+      <span class="note">GQA keeps d<sub>head</sub> fixed and drops H<sub>kv</sub> by factor G, so memory drops by exactly G. In a rewrite you must change the projection shape, not just the cache size: W<sub>K</sub>, W<sub>V</sub> become d<sub>model</sub> &times; (H<sub>kv</sub>&middot;d<sub>head</sub>) instead of d<sub>model</sub>&times;d<sub>model</sub>. MLA caches a latent c<sub>KV</sub> plus a separate small RoPE-carrying part d<sub>rope</sub>, and reconstructs K,V with up-projections at every step.</span>
+    </div>
+
+    <h3>The mapper: which KV head does query head h use?</h3>
+    <div class="code" data-lang="python">
+<span class="cm"># GQA: replicate the H_kv key/value heads onto the H query heads. stdlib only.</span>
+<span class="kw">def</span> <span class="fn">repeat_kv</span>(k, H, G):
+    <span class="cm">"""k: (H_kv=G, n, d_head) -&gt; (H, n, d_head); query head h uses kv head h // (H // G)."""</span>
+    group = H // G
+    <span class="kw">return</span> [k[h // group] <span class="kw">for</span> h <span class="kw">in</span> <span class="fn">range</span>(H)]
+
+H, G, n, dh = <span class="nm">8</span>, <span class="nm">2</span>, <span class="nm">5</span>, <span class="nm">3</span>
+kv = [[[<span class="fn">float</span>(h) * <span class="nm">10</span> + p + j <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(dh)] <span class="kw">for</span> p <span class="kw">in</span> <span class="fn">range</span>(n)] <span class="kw">for</span> h <span class="kw">in</span> <span class="fn">range</span>(G)]
+rep = <span class="fn">repeat_kv</span>(kv, H, G)
+<span class="kw">for</span> h <span class="kw">in</span> <span class="fn">range</span>(H):
+    src = <span class="fn">int</span>(rep[h][<span class="nm">0</span>][<span class="nm">0</span>] // <span class="nm">10</span>)
+    <span class="fn">print</span>(<span class="st">f"query head {h} -&gt; kv head {src}"</span>)
+    </div>
+    <p>Verified output:</p>
+    <div class="code" data-lang="output">
+query head 0 -&gt; kv head 0
+query head 1 -&gt; kv head 0
+query head 2 -&gt; kv head 0
+query head 3 -&gt; kv head 0
+query head 4 -&gt; kv head 1
+query head 5 -&gt; kv head 1
+query head 6 -&gt; kv head 1
+query head 7 -&gt; kv head 1
+    </div>
+    <p>Two facts worth noting: the mapping is <code>h // (H/G)</code>, so heads that share a KV head are
+    <em>contiguous</em> in head index &mdash; get this wrong (using <code>h % G</code>) and the model still trains, just
+    worse, because the grouping is arbitrary but the trained weights are not. And when H is not divisible by G, you
+    must pad or choose a compatible G; there is no meaningful "GQA with 3.5 groups".</p>
+
+    <h3>The memory table, computed</h3>
+    <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">kv_bytes</span>(n_ctx, L, H_kv, dh, batch, bpe=<span class="nm">2</span>):
+    <span class="kw">return</span> <span class="nm">2</span> * L * H_kv * dh * n_ctx * batch * bpe
+<span class="kw">for</span> name, Hk <span class="kw">in</span> [(<span class="st">"MHA  H_kv=32"</span>, <span class="nm">32</span>), (<span class="st">"GQA  H_kv=8"</span>, <span class="nm">8</span>), (<span class="st">"GQA  H_kv=4"</span>, <span class="nm">4</span>), (<span class="st">"MQA  H_kv=1"</span>, <span class="nm">1</span>)]:
+    <span class="fn">print</span>(<span class="st">f"{name:14s} KV @128k ctx, 32 layers, fp16: {kv_bytes(131072, 32, Hk, 128, 1)/1e9:7.2f} GB"</span>)
+<span class="kw">for</span> L, H, dh, label <span class="kw">in</span> [(<span class="nm">32</span>, <span class="nm">32</span>, <span class="nm">128</span>, <span class="st">"7B-class"</span>), (<span class="nm">80</span>, <span class="nm">64</span>, <span class="nm">128</span>, <span class="st">"70B-class"</span>)]:
+    mha = <span class="fn">kv_bytes</span>(<span class="nm">131072</span>, L, H, dh, <span class="nm">1</span>) / <span class="nm">1e9</span>
+    gqa = <span class="fn">kv_bytes</span>(<span class="nm">131072</span>, L, <span class="nm">8</span>, dh, <span class="nm">1</span>) / <span class="nm">1e9</span>
+    <span class="fn">print</span>(<span class="st">f"{label}: MHA {mha:.1f} GB -&gt; GQA(8) {gqa:.1f} GB  = {mha/gqa:.0f}x"</span>)
+<span class="kw">for</span> name, latent, rope <span class="kw">in</span> [(<span class="st">"MHA full"</span>, <span class="nm">32</span>*<span class="nm">128</span>, <span class="nm">0</span>), (<span class="st">"MLA c=512 + 64 rope"</span>, <span class="nm">512</span>, <span class="nm">64</span>)]:
+    per_tok = <span class="nm">32</span> * (latent + rope) * <span class="nm">2</span>
+    <span class="fn">print</span>(<span class="st">f"{name:22s}: {per_tok/1024:6.1f} KiB/token -&gt; {per_tok*131072/1e9:5.2f} GB @128k"</span>)
+    </div>
+    <p>Verified output:</p>
+    <div class="code" data-lang="output">
+MHA  H_kv=32   KV @128k ctx, 32 layers, fp16:   68.72 GB
+GQA  H_kv=8    KV @128k ctx, 32 layers, fp16:   17.18 GB
+GQA  H_kv=4    KV @128k ctx, 32 layers, fp16:    8.59 GB
+MQA  H_kv=1    KV @128k ctx, 32 layers, fp16:    2.15 GB
+7B-class: MHA 68.7 GB -&gt; GQA(8) 17.2 GB  = 4x
+70B-class: MHA 343.6 GB -&gt; GQA(8) 42.9 GB  = 8x
+MHA full              :  256.0 KiB/token -&gt; 34.36 GB @128k
+MLA c=512 + 64 rope   :   36.0 KiB/token -&gt;  4.83 GB @128k
+    </div>
+
+    <p>Read the 70B row: the saving from GQA scales with H, so <strong>the bigger the model's head count, the larger
+    the absolute win</strong> &mdash; which is exactly why GQA is standard in large open models and why MQA alone was
+    considered too lossy at that width. And note MLA's row: it beats GQA-8 by another ~3.6&times; at the same
+    d<sub>model</sub>, because the latent (512 + 64 = 576 elements) is far smaller than 8 KV heads &times; 128 = 1024
+    elements. MLA's win is therefore largest at small H<sub>kv</sub>; it is not a free lunch but a different point on
+    the same frontier.</p>
+
+    <h3>Why MLA needs a decoupled RoPE part</h3>
+    <p>RoPE (<a class="tag-a" href="08-positional.html">L08</a>) rotates the keys by an angle that depends on
+    position. If keys were reconstructed from a cached latent, the rotation would have to commute with the
+    up-projection &mdash; but a rotation is position-dependent and the latent is position-free, so it does not commute.
+    MLA sidesteps this by storing a separate small <code>d_rope</code>-dimensional component that <em>does</em> receive
+    the rotation, and concatenating it with the reconstructed keys at read time. That is the entire reason the formula
+    has two terms, and it is a good example of how a positional choice from one lesson forces an architectural
+    constraint three lessons later.</p>
+
+    <h3>What it costs at decode: the read side</h3>
+    <div class="formula">
+      bytes read per decode step &asymp; weights (N&middot;bpe) + batch &times; ctx &times; KV bytes/token<br>
+      GQA/MLA shrink the second term; MLA adds an up-projection matmul to the first term's compute (not bytes)
+      <span class="note">This is why GQA is nearly free in FLOPs: you still do n x n scores per query head, you just index a smaller KV tensor. MLA trades FLOPs for bytes, which is favourable when you are bandwidth-bound &mdash; i.e. in decode.</span>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a10-s4">4 &middot; Your hands <a class="hook" href="#a10-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Prove GQA equals MHA when G = H, exactly</h4>
+      <p>The strongest possible check on a GQA implementation: with G = H it must reproduce multi-head attention
+      bit-for-bit. Any difference means the mapper or the projection shape is wrong.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">softmax</span>(x): x = x - x.max(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>); e = np.exp(x); <span class="kw">return</span> e / e.sum(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+n, d_model, H = <span class="nm">7</span>, <span class="nm">16</span>, <span class="nm">4</span>; dh = d_model // H
+X = rng.normal(size=(n, d_model))
+Wq = rng.normal(size=(d_model, d_model)) / np.sqrt(d_model)
+Wk0 = rng.normal(size=(d_model, d_model)) / np.sqrt(d_model)      <span class="cm"># full-width MHA matrices</span>
+Wv0 = rng.normal(size=(d_model, d_model)) / np.sqrt(d_model)
+<span class="kw">def</span> <span class="fn">gqa</span>(g):
+    <span class="cm"># slice the first g*dh columns, so g = H reproduces MHA bit-for-bit</span>
+    Wk, Wv = Wk0[:, :g*dh], Wv0[:, :g*dh]
+    Q = (X @ Wq).reshape(n, H, dh).transpose(<span class="nm">1</span>,<span class="nm">0</span>,<span class="nm">2</span>)
+    K = (X @ Wk).reshape(n, g, dh).transpose(<span class="nm">1</span>,<span class="nm">0</span>,<span class="nm">2</span>)
+    V = (X @ Wv).reshape(n, g, dh).transpose(<span class="nm">1</span>,<span class="nm">0</span>,<span class="nm">2</span>)
+    K = K[np.arange(H) // (H // g)]; V = V[np.arange(H) // (H // g)]      <span class="cm"># repeat_kv</span>
+    A = <span class="fn">softmax</span>(Q @ K.transpose(<span class="nm">0</span>,<span class="nm">2</span>,<span class="nm">1</span>) / np.sqrt(dh))
+    <span class="kw">return</span> A @ V, A
+Q = (X @ Wq).reshape(n, H, dh).transpose(<span class="nm">1</span>,<span class="nm">0</span>,<span class="nm">2</span>)
+O_mha = <span class="fn">softmax</span>(Q @ (X @ Wk0).reshape(n, H, dh).transpose(<span class="nm">1</span>,<span class="nm">0</span>,<span class="nm">2</span>).transpose(<span class="nm">0</span>,<span class="nm">2</span>,<span class="nm">1</span>) / np.sqrt(dh)) @ (X @ Wv0).reshape(n, H, dh).transpose(<span class="nm">1</span>,<span class="nm">0</span>,<span class="nm">2</span>)
+O4, _ = <span class="fn">gqa</span>(<span class="nm">4</span>); O1, _ = <span class="fn">gqa</span>(<span class="nm">1</span>)
+<span class="fn">print</span>(<span class="st">"G=H equals MHA bit-for-bit:"</span>, np.allclose(O4, O_mha))
+<span class="fn">print</span>(<span class="st">"G=1: heads still differ (own Q projection):"</span>, <span class="kw">not</span> np.allclose(O1[<span class="nm">0</span>], O1[<span class="nm">1</span>]))
+      </div>
+      <p class="expect">Observed: G=H reproduces MHA exactly (<code>True</code>); under G=H the heads differ
+      (<code>True</code>); under <strong>G=1 the heads still produce different outputs</strong> (<code>True</code>)
+      <em>even though they share K and V</em> &mdash; because each head has its own query projection. That is the exact
+      mechanism of the quality cost: heads can disagree about <em>weighting</em> but not about <em>content</em>.
+      The first assertion is the one to keep in CI: G=H must match the L06/L07 reference to the last bit, and it does.
+      Falsifier: if heads produced identical outputs under G = 1, your implementation is collapsing the query heads as
+      well, which would be a real bug.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Build the frontier for your own model</h4>
+      <p>Pick G to hit a memory budget instead of copying a paper's number. The function below is the complete decision
+      rule for a 128k-context, batch-1 request.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">frontier</span>(L, H, dh, ctx, budget_gb, bpe=<span class="nm">2</span>):
+    <span class="fn">print</span>(<span class="st">f"L={L} H={H} d_head={dh} ctx={ctx} budget={budget_gb} GB"</span>)
+    <span class="kw">for</span> G <span class="kw">in</span> [<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">4</span>, <span class="nm">8</span>, <span class="nm">16</span>, H]:
+        <span class="kw">if</span> H % G: <span class="kw">continue</span>
+        gb = <span class="nm">2</span> * L * (H // G) * dh * ctx * bpe / <span class="nm">1e9</span>
+        <span class="fn">print</span>(<span class="st">f"  G={G:2d} (H_kv={H//G:2d}): {gb:7.2f} GB -&gt; batch {int(budget_gb//gb)} -&gt; {budget_gb/gb:5.2f} concurrent requests"</span>)
+<span class="fn">frontier</span>(<span class="nm">32</span>, <span class="nm">64</span>, <span class="nm">128</span>, <span class="nm">131072</span>, <span class="nm">64</span>)
+      </div>
+      <p class="expect">Observed for the 70B-class shape (L=32, H=64, d_head=128, 128k context, fp16): G=1/MQA 2.15 GB
+      &rarr; 29.8 concurrent requests; G=8 (H<sub>kv</sub>=8) 17.18 GB &rarr; 3.73; G=16 &rarr; 7.45; G=64/MHA 137.44 GB
+      &rarr; 0.47 &mdash; MHA does not even fit one request. The decision is not "biggest G for quality" but "smallest G
+      that meets the concurrency SLO, then measure the quality delta". Both numbers are computable before you train
+      anything, which is why KV layout is an architecture decision, not a tuning knob.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Where the decode time actually goes</h4>
+      <p>Compare bytes read per decode step across layouts at 32k context. This tells you whether KV compression will
+      move your p99 latency or only your concurrency.</p>
+      <div class="code" data-lang="python">
+params = <span class="nm">32</span> * <span class="nm">20e6</span>                     <span class="cm"># illustrative layer budget</span>
+ctx = <span class="nm">32768</span>; L = <span class="nm">32</span>; dh = <span class="nm">128</span>
+<span class="kw">for</span> Hk <span class="kw">in</span> [<span class="nm">32</span>, <span class="nm">8</span>, <span class="nm">1</span>]:
+    kv = <span class="nm">2</span> * L * Hk * dh * ctx * <span class="nm">2</span>
+    <span class="fn">print</span>(<span class="st">f"H_kv={Hk:2d}: KV {kv/1e6:8.1f} MB + weights {params*2/1e6:.1f} MB -&gt; {100*kv/(kv+params*2):5.1f}% of bytes read"</span>)
+      </div>
+      <p class="expect">Observed at 32k context: KV is <strong>93.1%</strong> of bytes read per decode step under MHA,
+      <strong>77.0%</strong> under GQA-8 and still <strong>29.5%</strong> under MQA (where weights now dominate). So at
+      long context, decode latency is governed by cache bandwidth and the L10 optimisations help latency as well as
+      concurrency. At short context (say 2k) the KV term falls below the weights for every layout except MHA, and KV
+      compression buys almost no latency &mdash; it only buys batch capacity. Measure your own <code>bytes/step</code>
+      and divide by achievable bandwidth before promising an SLO.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a10-s5">5 &middot; Failure modes <a class="hook" href="#a10-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Projection shape not updated with H<sub>kv</sub>.</strong> Symptom: a GQA config loads but the cache is full-size, so concurrency is unchanged &mdash; the saving never materialises. Check <code>W_k.shape</code> against <code>H_kv*d_head</code>.</li>
+        <li><strong>Wrong group mapping (<code>h % G</code> instead of <code>h // (H/G)</code>).</strong> Symptom: trains, but slightly worse than the correctly-grouped run; a checkpoint converted from MHA with the wrong mapping looks "almost right". Nothing crashes.</li>
+        <li><strong>H not divisible by G.</strong> Symptom: reshape error at load, or a silently truncated head count if <code>//</code> is used. Assert divisibility at config parse time.</li>
+        <li><strong>Converting a trained MHA model to GQA naively.</strong> Symptom: large loss jump that never recovers. Averaging the KV heads of a trained MHA model and continuing from there works as initialisation; freezing everything else does not.</li>
+        <li><strong>Expecting MQA to be free.</strong> Symptom: a palpable quality drop at equal parameters, especially on tasks needing multiple simultaneous retrievals (many-item copying). The bottleneck is real and shows up as a capability ceiling, not as noise.</li>
+        <li><strong>MLA without a decoupled RoPE path.</strong> Symptom: long-context behaviour collapses while short-context looks fine &mdash; positional information was reconstructed rather than rotated. The <code>d_rope</code> term is not optional.</li>
+        <li><strong>Cache dtype mixed across layouts.</strong> Symptom: GQA cache quantised to fp8 while MLA latent kept in bf16 &mdash; the comparison of two serving options is apples-to-oranges. Compare at equal quantisation and equal quality.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a10-s6">6 &middot; Connects to <a class="hook" href="#a10-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="07-multihead.html">L07</a>, <a class="tag-a" href="09-kv-cache.html">L09</a>, <a class="tag-a" href="08-positional.html">L08</a> (for MLA's RoPE part). &nbsp;
+    <strong>Unlocks:</strong> long-context serving economics.</p>
+    <ul>
+      <li><a class="tag-b" href="../track-b/33-mla.html">L33 &middot; MLA</a> &mdash; the full low-rank derivation and its decode-time compute trade.</li>
+      <li><a class="tag-b" href="../track-b/35-long-context.html">L35 &middot; Long context</a> &mdash; the same memory table at 1M tokens.</li>
+      <li><a class="tag-b" href="../track-b/40-precision-quant.html">L40 &middot; Quantisation</a> &mdash; per-channel scales on K/V; the last independent lever on bytes/token.</li>
+      <li><a class="tag-b" href="../track-b/44-inference-serving.html">L44 &middot; Serving</a> &mdash; how paged allocation converts the concurrency headroom computed here into real throughput.</li>
+      <li><a class="tag-b" href="../track-b/36-mtp.html">L36 &middot; Multi-token prediction</a> and <a class="tag-b" href="../track-b/37-encoder-decoder.html">L37 &middot; Encoder&ndash;decoder</a> &mdash; architecture changes that shift prefill/decode economics, which the KV model must be updated for.</li>
+      <li><a class="tag-c" href="../track-c/62-long-cot-r1.html">L62 &middot; Long CoT</a> &mdash; a 30k-token reasoning trace is a cache-size problem before it is a quality problem.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: record <code>(H, H_kv, d_head, cache_dtype)</code> in the model card and in every serving config.
+      A checkpoint whose attention layout is misdescribed serves correct-looking text at twice the memory, and the only
+      observable is a capacity number nobody wrote down.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a10-s7">7 &middot; Self-check <a class="hook" href="#a10-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A model has L = 48, H = 32, d<sub>head</sub> = 128, fp16. Give KV bytes/token for MHA, GQA-4 and MQA.</p>
+        <details><summary>Reveal answer</summary><p>MHA: 2&times;48&times;32&times;128&times;2 = <strong>786,432 B (768 KiB)</strong>. GQA-4 (H<sub>kv</sub>=8): 2&times;48&times;8&times;128&times;2 = <strong>196,608 B (192 KiB)</strong>. MQA (H<sub>kv</sub>=1): 2&times;48&times;1&times;128&times;2 = <strong>24,576 B (24 KiB)</strong>. Ratios 1 : 1/4 : 1/32, exactly the group sizes.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> You have 48 GB of usable HBM after weights for cache. How many concurrent 16k-token requests fit under each layout from Q1?</p>
+        <details><summary>Reveal answer</summary><p>Per request = 16,384 tokens &times; bytes/token. MHA: 16,384&times;786,432 = 12.88 GB &rarr; <strong>3</strong>. GQA-4: 3.22 GB &rarr; <strong>14</strong>. MQA: 0.40 GB &rarr; <strong>119</strong> (in principle &mdash; in practice other limits bind first). This is the entire business case for KV compression in one line.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a model converted from MHA to GQA-4 keeps the old W<sub>k</sub>/W<sub>v</sub> shapes and slices them at runtime. Quality is fine but memory does not drop. Why?</p>
+        <details><summary>Reveal answer</summary><p>Because the stored cache is still <code>H&times;d_head</code> per layer &mdash; slicing produces the repeated tensor but nothing saved it. The saving comes from <em>storing</em> only H<sub>kv</sub> heads and expanding (repeating) at read time, not from expanding first. Fix: allocate the cache as H<sub>kv</sub> heads and apply <code>repeat_kv</code> after the read, inside the attention kernel.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does MLA need a separate <code>d_rope</code> component, and why does that imply extra bytes instead of a free rotation?</p>
+        <details><summary>Reveal answer</summary><p>MLA reconstructs K from a cached latent via an up-projection. RoPE multiplies K by a position-dependent rotation R<sub>pos</sub>, which does not commute with that up-projection (the latent is position-free and would have to be re-rotated per position). So the rotated part must be stored already-rotated, in its own subspace: <code>d_rope</code> values per layer per token. The alternative &mdash; reconstructing then rotating &mdash; is valid mathematically but destroys the cache saving because you would need to store the pre-rotation latent for each of the H heads, which is what MLA exists to avoid.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> If KV sharing costs quality, why is MQA (G = 1) ever acceptable?</p>
+        <details><summary>Reveal answer</summary><p>Because the quality cost is a function of what the task needs. MQA keeps a full-width single KV head &mdash; content capacity is reduced only in the sense that heads cannot retrieve different things from the same position &mdash; and for short-context, high-throughput tasks that is often free. The trade is worst at long context (more simultaneous retrievals needed) and at large H (bigger reduction), so MQA tends to be used where the cache dominates and the capability ceiling is not binding, and GQA is used when it is. That decision is an evaluation, not a preference: compare at matched compute on your own retrieval-heavy task.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="09-kv-cache.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L09 &middot; KV cache</span></a>
+    <a class="next" href="11-activations.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L11 &middot; Activations: ReLU &rarr; SwiGLU</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

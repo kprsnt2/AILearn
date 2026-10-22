@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d82">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L82 · Long-horizon autonomy: failure compounding, drift, stuck detection — AILearn</title>
+<meta name="description" content="Autonomy horizon is not set by per-step reliability but by detection latency. At 99% step reliability, dropping detection from 90% to 50% cuts the horizon from 636 to 137 steps. The math, plus a stuck detector.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L82</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L82 &middot; Long-horizon autonomy: failure compounding, drift, stuck detection</h1>
+  <p class="lede">The horizon at which an autonomous agent stops being trustworthy is not a function of how good each step is &mdash; it is a function of how fast you <em>notice</em> that a step went wrong. At 99% per-step success, halving detection cuts the horizon by 4.6&times;.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: compounding-failure model + stuck detector</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">failure compounding</span>
+  <span class="pill">detection latency</span>
+  <span class="pill">autonomy horizon</span>
+  <span class="pill">silent failure</span>
+  <span class="pill">goal drift</span>
+  <span class="pill">stuck detection</span>
+  <span class="pill">novelty / information gain</span>
+  <span class="pill">renewal vs patch</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d82-s1">1 &middot; Why it exists <a class="hook" href="#d82-s1">#</a></h2>
+
+    <p>The failure is specific and it happens at a specific step count. <strong>An agent runs 40 steps correctly, then
+    confidently continues from a wrong state for another 30.</strong> Every step after the mistake is locally reasonable.
+    The transcript has no error in it. The final report is wrong, and the mistake is 30 steps in the past, buried in a
+    summary that has been compacted twice.</p>
+
+    <p>Two quantities govern this, and they are usually confused. <strong>Reliability</strong> is how often a step is correct.
+    <strong>Detection latency</strong> is how many steps pass before a wrong step is caught. Reliability is what you optimise with
+    better models and prompts. Detection latency is what you optimise with oracles, invariants, and checks &mdash; and it
+    dominates, because an undetected error makes every subsequent step wasted work <em>plus</em> its own cost.</p>
+
+    <p>The third failure is <strong>stuckness</strong>: the agent is not failing, it is looping. It re-reads the same file, applies
+    the same patch, and gets the same test failure, twelve times, at real cost per cycle. A loop that terminates is
+    expensive; a loop that does not terminate is an incident.</p>
+
+    <div class="callout boss">
+      <p>Autonomy is a <strong>budgeted experiment in compounding error</strong>. You do not extend the horizon by making steps
+      better &mdash; you extend it by making failures visible sooner. The engineering deliverable is not a longer-running agent,
+      it is a shorter-latency detector, plus a hard stop for the case where the detector says "this is not progressing".</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d82-s2">2 &middot; The mental model <a class="hook" href="#d82-s2">#</a></h2>
+
+    <p>Think of the run as a chain of steps where each step has three outcomes, not two: <strong>correct</strong>,
+    <strong>failed-and-detected</strong>, and <strong>failed-and-silent</strong>. A binary success/failure model hides the third
+    category, and the third category is where long-horizon agents die.</p>
+
+    <table class="table">
+      <thead><tr><th>Outcome</th><th>Probability (per step)</th><th>Consequence</th><th>Recoverable?</th></tr></thead>
+      <tbody>
+        <tr><td>correct</td><td><code>p</code></td><td>proceed</td><td>&mdash;</td></tr>
+        <tr><td>failed, detected</td><td><code>(1&minus;p)&middot;d</code></td><td>repair, one extra step</td><td>yes</td></tr>
+        <tr><td><strong>failed, silent</strong></td><td><code>(1&minus;p)&middot;(1&minus;d)</code></td><td><strong>poisons all subsequent work</strong></td><td>only by a later oracle</td></tr>
+      </tbody>
+    </table>
+
+    <p><code>d</code> is the <em>detection rate</em> &mdash; the fraction of wrong steps that some check catches. It is the most
+    under-instrumented number in agent engineering. You almost certainly know your <code>p</code> (models are benchmarked on
+    task success). You very likely do not know your <code>d</code>, because measuring it requires deliberately corrupting
+    a step and seeing whether anything notices &mdash; a fault-injection test (L92).</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a chain of buckets with a leak detector</h4><p>Each step fills a bucket from the previous one. Some buckets leak (errors). Without a detector, leaked water flows downstream and the final measurement is wrong by an unknown amount. A detector at every third bucket does not stop leaks &mdash; it bounds the <em>volume</em> lost before a leak is found, which is the quantity that determines whether the whole chain is usable.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Water leaks are conserved and thus reversible. Errors are <em>mutations of state</em>: a wrong step writes to the filesystem or the database, and downstream steps build on top of the mutation. Detecting the error does not let you subtract the damage &mdash; you must roll back to a checkpoint (L78) or start over. So the model needs a third axis the bucket analogy lacks: <strong>irreversibility</strong>, which turns a detected error into an incident rather than a retry.</p></div>
+    </div>
+
+    <p>The design consequence: put detectors at points where you can <em>act</em> on the result &mdash; before irreversible steps,
+    at plan step boundaries, and immediately after any step that mutates shared state. A detector at a point where you
+    cannot roll back is just a notification that you have already lost.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d82-s3">3 &middot; The mechanism <a class="hook" href="#d82-s3">#</a></h2>
+
+    <p>First the survival model. A step is "clean" if it is correct, or if it fails but is detected and repaired. The
+    probability a whole run of <code>n</code> steps completes correctly is the clean-step probability raised to the run length.</p>
+
+    <div class="formula">
+      P(clean step) = p + (1&minus;p)&middot;d&middot;p &nbsp;&nbsp;&nbsp;&nbsp; P(clean run of n) = [p + (1&minus;p)&middot;d&middot;p]<sup>n</sup>
+      <span class="note"><code>p</code> = per-step correctness, <code>d</code> = detection rate (of failures), <code>n</code> = steps. The repair term is <code>(1&minus;p)&middot;d&middot;p</code> because a detected failure costs one retry, which itself must succeed.</span>
+    </div>
+
+    <p>Now the number that matters operationally &mdash; the <strong>horizon</strong>, the run length at which a clean run becomes
+    less likely than not:</p>
+
+    <div class="formula">
+      H<sub>1/2</sub> = ln(0.5) / ln[ p + (1&minus;p)&middot;d&middot;p ]
+      <span class="note">At <code>p=0.99, d=0.9</code>: clean = 0.9989, <code>H = 636</code> steps. At <code>p=0.99, d=0.5</code>: clean = 0.9950, <code>H = 137</code>. Same model quality, <strong>4.6&times; different autonomy horizon</strong>, entirely from detection.</span>
+    </div>
+
+    <p>Second, the drift term. Even with perfect detection, a silent error wastes all the work after it. If errors occur at
+    rate <code>r</code> per step over a horizon <code>H</code> and an error at step <code>i</code> wastes the remaining
+    <code>H&minus;i</code> steps, the expected waste is the sum of remaining work over all positions:</p>
+
+    <div class="formula">
+      E[wasted] = r &middot; &sum;<sub>i=1</sub><sup>H</sup> (H &minus; i) = r &middot; H(H&minus;1)/2
+      <span class="note">At <code>r=0.03, H=50</code>: <code>0.03 &times; 1225 = 36.75</code> wasted steps &mdash; 73.5% of the horizon. The quadratic in <code>H</code> is the entire reason long-horizon autonomy is hard: waste grows with the <em>square</em> of how long you let it run unattended.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th><code>p</code></th><th><code>d</code></th><th>clean step</th><th>Horizon (steps)</th></tr></thead>
+      <tbody>
+        <tr><td>0.99</td><td>0.90</td><td>0.99891</td><td><strong>636</strong></td></tr>
+        <tr><td>0.99</td><td>0.70</td><td>0.99693</td><td>225</td></tr>
+        <tr><td>0.99</td><td>0.50</td><td>0.99495</td><td>137</td></tr>
+        <tr><td>0.97</td><td>0.90</td><td>0.99619</td><td>182</td></tr>
+        <tr><td>0.97</td><td>0.50</td><td>0.98455</td><td>44</td></tr>
+        <tr><td>0.95</td><td>0.90</td><td>0.99275</td><td>95</td></tr>
+        <tr><td>0.95</td><td>0.50</td><td>0.97375</td><td>26</td></tr>
+        <tr><td>0.90</td><td>0.90</td><td>0.98100</td><td>36</td></tr>
+        <tr><td>0.90</td><td>0.50</td><td>0.94500</td><td>12.3</td></tr>
+      </tbody>
+    </table>
+
+    <p>Read the table across rows rather than down: halving <code>d</code> at fixed <code>p</code> costs you 60&ndash;70% of your
+    horizon, while improving <code>p</code> from 0.90 to 0.95 at fixed <code>d=0.9</code> only triples it. <strong>Detection is
+    the cheaper lever.</strong></p>
+
+    <p>The stuck detector. Not "is it failing" but "is its state still changing":</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json
+
+<span class="kw">def</span> <span class="fn">h</span>(x):
+    <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(json.<span class="fn">dumps</span>(x, sort_keys=<span class="kw">True</span>).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">8</span>]
+
+<span class="kw">def</span> <span class="fn">stuck_signals</span>(history, window=<span class="nm">6</span>, repeat=<span class="nm">3</span>):
+    <span class="cm"># history: list of (action, *args). Two independent signals:</span>
+    <span class="cm">#   max_same_call : repeated identical action+args in the trailing window</span>
+    <span class="cm">#   max_same_out  : repeated identical observation (e.g. same test failure)</span>
+    w = history[-window:]
+    calls = [<span class="fn">h</span>([a[<span class="nm">0</span>], *a[<span class="nm">1</span>:-<span class="nm">1</span>]]) <span class="kw">for</span> a <span class="kw">in</span> w]
+    outs  = [<span class="fn">h</span>(a[-<span class="nm">1</span>]) <span class="kw">for</span> a <span class="kw">in</span> w]
+    mc = <span class="fn">max</span>(calls.<span class="fn">count</span>(c) <span class="kw">for</span> c <span class="kw">in</span> calls)
+    mo = <span class="fn">max</span>(outs.<span class="fn">count</span>(o) <span class="kw">for</span> o <span class="kw">in</span> outs)
+    <span class="kw">return</span> {
+        <span class="st">"max_same_call"</span>: mc,
+        <span class="st">"max_same_out"</span>: mo,
+        <span class="st">"novelty"</span>: <span class="fn">novelty</span>(w),              <span class="cm"># fraction of unseen tokens</span>
+        <span class="st">"stuck"</span>: mc &gt;= repeat <span class="kw">and</span> mo &gt;= repeat,
+    }
+
+
+<span class="kw">def</span> <span class="fn">novelty</span>(window):
+    seen = <span class="fn">set</span>()
+    <span class="kw">for</span> a <span class="kw">in</span> window:
+        seen |= <span class="fn">set</span>(<span class="fn">str</span>(a[-<span class="nm">1</span>]).<span class="fn">split</span>())
+    <span class="kw">return</span> <span class="fn">len</span>(seen) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">sum</span>(<span class="fn">len</span>(<span class="fn">str</span>(a[-<span class="nm">1</span>]).<span class="fn">split</span>()) <span class="kw">for</span> a <span class="kw">in</span> window))
+    </div>
+
+    <p>The two conditions are conjoined deliberately. Repeated <em>calls</em> alone is normal (polling a build status is
+    legitimate). Repeated <em>outputs</em> alone is normal (reading the same file twice after editing it). Repeated calls
+    <em>and</em> repeated outputs together means the agent's action no longer changes the world &mdash; that is the definition of
+    stuck, and it is checkable without any model.</p>
+
+    <div class="callout audit">
+      <p>The audit artifact for a long run is not the final answer. It is the <strong>detection ledger</strong>: every oracle
+      invocation with its result and the step index it referred to. From that you can compute <code>d</code> empirically
+      (detected failures / all failures found later by offline replay) and therefore the actual horizon your production
+      runs operate within. An agent without a detection ledger has an unknown horizon, which is the same as having none.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d82-s4">4 &middot; Your hands <a class="hook" href="#d82-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Detection rate sets the horizon</h4>
+      <p>Three-outcome step model. Hold reliability fixed and sweep detection &mdash; the column that changes is the one that
+      matters.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+
+<span class="kw">def</span> <span class="fn">survival</span>(steps, p_ok, p_detect):
+    p_clean = p_ok + (<span class="nm">1</span> - p_ok) * p_detect * p_ok      <span class="cm"># ok, or fail+detect+repair ok</span>
+    <span class="kw">return</span> p_clean ** steps
+
+<span class="kw">for</span> p_ok <span class="kw">in</span> (<span class="nm">0.99</span>, <span class="nm">0.97</span>, <span class="nm">0.95</span>):
+    <span class="kw">for</span> p_det <span class="kw">in</span> (<span class="nm">0.9</span>, <span class="nm">0.5</span>):
+        p_clean = p_ok + (<span class="nm">1</span> - p_ok) * p_det * p_ok
+        h = math.<span class="fn">log</span>(<span class="nm">0.5</span>) / math.<span class="fn">log</span>(p_clean)
+        print(<span class="st">f"p_ok={p_ok:.2f} d={p_det:.1f}  clean={p_clean:.5f}  "
+              f"P(ok@10)={survival(10,p_ok,p_det):.3f}  P(ok@50)={survival(50,p_ok,p_det):.3f}  H={h:6.1f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>p_ok=0.99 d=0.9 clean=0.99891 P(ok@10)=0.989 P(ok@50)=0.947 H=636</code> &middot;
+      <code>p_ok=0.99 d=0.5 clean=0.99495 P(ok@10)=0.951 P(ok@50)=0.776 H=137</code> &middot;
+      <code>p_ok=0.97 d=0.9 clean=0.99619 H=182</code> &middot; <code>p_ok=0.97 d=0.5 clean=0.98455 H=44</code> &middot;
+      <code>p_ok=0.95 d=0.9 clean=0.99275 H=95</code> &middot; <code>p_ok=0.95 d=0.5 clean=0.97375 H=26</code>.
+      The headline: at 99% step reliability, a 50-step run is 94.7% clean with good detection and 77.6% clean with poor
+      detection &mdash; and the horizon differs by 4.6&times;. Improving <code>p</code> from 0.95 to 0.97 at <code>d=0.5</code> moves
+      the horizon from 26 to 44 steps; improving <code>d</code> from 0.5 to 0.9 at <code>p=0.95</code> moves it from 26 to 95.
+      <strong>Falsifier:</strong> if your detected failures are not actually repaired (repair itself fails often), the
+      <code>(1&minus;p)&middot;d&middot;p</code> term overstates survival &mdash; measure repair success rate separately and multiply it in.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The quadratic cost of letting it run</h4>
+      <p>Expected wasted steps when silent errors occur at rate <code>r</code> over horizon <code>H</code>. The point is how
+      fast this exceeds <code>H</code> itself.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">wasted</span>(r, H):
+    <span class="kw">return</span> r * H * (H - <span class="nm">1</span>) / <span class="nm">2</span>
+
+<span class="kw">for</span> r <span class="kw">in</span> (<span class="nm">0.01</span>, <span class="nm">0.03</span>, <span class="nm">0.05</span>):
+    <span class="kw">for</span> H <span class="kw">in</span> (<span class="nm">20</span>, <span class="nm">50</span>, <span class="nm">100</span>):
+        w = <span class="fn">wasted</span>(r, H)
+        print(<span class="st">f"r={r:.2f} H={H:3d} -&gt; E[wasted]={w:7.2f}  ({w/H:6.1%} of horizon)"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> at <code>r=0.03</code>: <code>H=20 &rarr; 6.30</code> (31.5%),
+      <code>H=50 &rarr; 36.75</code> (73.5%), <code>H=100 &rarr; 148.5</code> (148.5% &mdash; more than the entire run).
+      At <code>r=0.05, H=100</code> the waste is 247.5 steps, i.e. <strong>you would need 2.5 full runs to get one clean one</strong>.
+      That is the quantitative reason an unattended 100-step agent at 5% silent error rate is not economical even if each
+      step is cheap: you pay the whole run repeatedly.
+      <strong>Falsifier:</strong> if errors are detected <em>within the same step</em> (d near 1), the waste term collapses &mdash;
+      recompute with effective <code>r &rarr; r(1&minus;d)</code> before concluding that long horizons are uneconomical.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Separate a stuck run from a healthy one (copy-paste)</h4>
+      <p>Two nine-step traces: one looping, one progressing. The signals are computed, not eyeballed.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json
+
+<span class="kw">def</span> <span class="fn">h</span>(x): <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(json.<span class="fn">dumps</span>(x, sort_keys=<span class="kw">True</span>).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">8</span>]
+
+STUCK = [(<span class="st">"read"</span>,<span class="st">"src/retry.py"</span>), (<span class="st">"read"</span>,<span class="st">"src/retry.py"</span>), (<span class="st">"read"</span>,<span class="st">"src/retry.py"</span>),
+         (<span class="st">"edit"</span>,<span class="st">"src/retry.py"</span>,<span class="st">"patch-v1"</span>), (<span class="st">"test"</span>,<span class="st">"FAIL same assertion"</span>),
+         (<span class="st">"edit"</span>,<span class="st">"src/retry.py"</span>,<span class="st">"patch-v1"</span>), (<span class="st">"test"</span>,<span class="st">"FAIL same assertion"</span>),
+         (<span class="st">"edit"</span>,<span class="st">"src/retry.py"</span>,<span class="st">"patch-v1"</span>), (<span class="st">"test"</span>,<span class="st">"FAIL same assertion"</span>)]
+HEALTHY = [(<span class="st">"read"</span>,<span class="st">"src/retry.py"</span>), (<span class="st">"edit"</span>,<span class="st">"src/retry.py"</span>,<span class="st">"patch-v1"</span>), (<span class="st">"test"</span>,<span class="st">"FAIL a"</span>),
+           (<span class="st">"read"</span>,<span class="st">"src/retry.py"</span>), (<span class="st">"edit"</span>,<span class="st">"src/retry.py"</span>,<span class="st">"patch-v2"</span>), (<span class="st">"test"</span>,<span class="st">"FAIL b"</span>),
+           (<span class="st">"read"</span>,<span class="st">"src/queue.py"</span>), (<span class="st">"edit"</span>,<span class="st">"src/queue.py"</span>,<span class="st">"patch-v3"</span>), (<span class="st">"test"</span>,<span class="st">"PASS"</span>)]
+
+<span class="kw">def</span> <span class="fn">signals</span>(seq, window=<span class="nm">6</span>, repeat=<span class="nm">3</span>):
+    w = seq[-window:]
+    calls = [<span class="fn">h</span>([a[<span class="nm">0</span>], *a[<span class="nm">1</span>:-<span class="nm">1</span>]]) <span class="kw">for</span> a <span class="kw">in</span> w]
+    outs = [<span class="fn">h</span>(a[-<span class="nm">1</span>]) <span class="kw">for</span> a <span class="kw">in</span> w]
+    mc = <span class="fn">max</span>(calls.<span class="fn">count</span>(c) <span class="kw">for</span> c <span class="kw">in</span> calls)
+    mo = <span class="fn">max</span>(outs.<span class="fn">count</span>(o) <span class="kw">for</span> o <span class="kw">in</span> outs)
+    seen = <span class="fn">set</span>()
+    <span class="kw">for</span> a <span class="kw">in</span> seq:
+        seen |= <span class="fn">set</span>(<span class="fn">str</span>(a[-<span class="nm">1</span>]).<span class="fn">split</span>())
+    nov = <span class="fn">len</span>(seen) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">sum</span>(<span class="fn">len</span>(<span class="fn">str</span>(a[-<span class="nm">1</span>]).<span class="fn">split</span>()) <span class="kw">for</span> a <span class="kw">in</span> seq))
+    <span class="kw">return</span> {<span class="st">"max_same_call"</span>: mc, <span class="st">"max_same_out"</span>: mo, <span class="st">"novelty"</span>: <span class="fn">round</span>(nov,<span class="nm">3</span>),
+            <span class="st">"stuck"</span>: mc &gt;= repeat <span class="kw">and</span> mo &gt;= repeat}
+
+print(<span class="st">"STUCK  "</span>, <span class="fn">signals</span>(STUCK))
+print(<span class="st">"HEALTHY"</span>, <span class="fn">signals</span>(HEALTHY))
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>STUCK {'max_same_call': 3, 'max_same_out': 3, 'novelty': 0.333, 'stuck': True}</code> and
+      <code>HEALTHY {'max_same_call': 1, 'max_same_out': 1, 'novelty': 0.833, 'stuck': False}</code>.
+      Three independent separations: repetition counts (3/3 vs 1/1) and novelty (0.333 vs 0.833). Novelty is the useful
+      continuous one &mdash; set a threshold (e.g. mean novelty &lt; 0.4 over 10 steps &rarr; warn) to catch slow drift before
+      the hard stuck condition fires.
+      <strong>Falsifier:</strong> if your healthy runs show low novelty because they legitimately re-read the same files,
+      the novelty signal will false-positive &mdash; use the conjunction <code>max_same_call &amp; max_same_out</code> as the hard
+      stop and novelty only as a warning.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d82-s5">5 &middot; Failure modes <a class="hook" href="#d82-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Silent failure propagation.</strong> A wrong step is not detected and 30 subsequent steps build on it. Symptom: final artifact wrong, every step in the transcript looks locally reasonable, blame ambiguous. This is the default outcome of missing oracles, not an edge case.</li>
+        <li><strong>Goal drift.</strong> Late-run context is dominated by the agent's own prior outputs, so it optimises for finishing <em>its summary</em> rather than the task. Symptom: the last third of a run references intermediate artifacts and stops mentioning the original acceptance criteria.</li>
+        <li><strong>Infinite loop with progress illusion.</strong> Each cycle makes a trivial change (reformats a file, rewords a comment) so nothing is <em>identical</em>. Symptom: hash-based repeat detection never fires; only novelty or cost-per-novel-fact catches it.</li>
+        <li><strong>Compaction-driven amnesia.</strong> The failure gets compacted out of context but persists in state. Symptom: the agent cannot remember it made the mistake but keeps replicating it &mdash; acts like a fresh agent with a corrupted workspace.</li>
+        <li><strong>Detection without rollback.</strong> An oracle fires after an irreversible step. Symptom: alerts with no corrective action; incident review finds the detector was working and useless.</li>
+        <li><strong>Repair loop.</strong> A failed step is retried with the identical context so it fails identically. Symptom: <code>max_same_call</code> at the retry limit; error strings identical across attempts.</li>
+        <li><strong>Horizon overrun.</strong> The run continues past the point where clean completion is unlikely. Symptom: cost per completed task rises sharply with run length while completion rate falls &mdash; the economical output is the early checkpoint, which nobody looked at.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d82-s6">6 &middot; Connects to <a class="hook" href="#d82-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="78-planning.html">L78 &middot; Plan-repair</a>,
+    <a class="tag-d" href="76-agents.html">L76 &middot; Budgeted loop</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="96-production-checklist.html">L96 &middot; Go/no-go</a>,
+    <a class="tag-d" href="99-capstone.html">L99 &middot; Capstone</a>.</p>
+    <ul>
+      <li><a class="tag-c" href="../resources/papers.html">Reflexion &middot; arXiv:2303.11366</a> &mdash; the canonical attempt to add detection-as-self-critique; note that self-critique shares the model's blind spot, so it raises <code>d</code> for some failure classes only.</li>
+      <li><a class="tag-d" href="78-planning.html">L78 &middot; Plan-repair</a> &mdash; checkpoints are what make a detected error recoverable rather than fatal.</li>
+      <li><a class="tag-d" href="79-context-engineering.html">L79 &middot; Compaction</a> &mdash; a detection event must survive compaction; put it in structured state, not the transcript.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; task success rate at length <code>n</code> is <code>[clean]<sup>n</sup></code>; quote the n.</li>
+      <li><a class="tag-d" href="90-observability.html">L90 &middot; Observability</a> &mdash; the detection ledger is the artifact that makes <code>d</code> measurable.</li>
+      <li><a class="tag-d" href="92-reliability.html">L92 &middot; Reliability</a> &mdash; fault injection is how you <em>measure</em> <code>d</code> rather than assert it.</li>
+      <li><a class="tag-c" href="../track-c/71-agentic-rl.html">L71 &middot; Agentic RL</a> &mdash; training-time credit assignment across long rollouts faces the same compounding problem.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d82-s7">7 &middot; Self-check <a class="hook" href="#d82-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Your step reliability is 0.96 and detection is 0.8. What is the clean-step probability and the horizon?</p>
+        <details><summary>Reveal answer</summary><p><code>clean = 0.96 + 0.04 &times; 0.8 &times; 0.96 = 0.96 + 0.03072 = 0.99072</code>. Horizon <code>= ln(0.5)/ln(0.99072) = 0.6931/0.009323 = 74.3</code> steps. So a 74-step task is a coin flip. If you raise detection to 0.95: <code>clean = 0.96 + 0.04&times;0.95&times;0.96 = 0.99648</code>, horizon <code>= 196</code> steps &mdash; a 2.6&times; improvement from detection alone, no model change.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> At a 3% silent-error rate, how much of a 60-step run is wasted work on average, and what does that imply about pricing?</p>
+        <details><summary>Reveal answer</summary><p><code>r&middot;H(H&minus;1)/2 = 0.03 &times; 60 &times; 59/2 = 0.03 &times; 1770 = 53.1</code> wasted steps &mdash; 88.5% of the horizon. Implication: the <em>effective</em> cost per clean completion is not 60 steps, it is roughly <code>60 &times; P(clean)</code> amortised, and with heavy waste you may need multiple full runs. Price the run by <strong>cost per verified completion</strong>, not cost per run &mdash; otherwise a 3% silent-error agent looks 1.7&times; cheaper than it is.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a run shows normal latency and token burn, all steps succeed, but the final diff is wrong. What class of failure, and what single instrument would have caught it earlier?</p>
+        <details><summary>Reveal answer</summary><p><em>Silent failure propagation</em> &mdash; a wrong intermediate state was never contradicted. The instrument is a <strong>post-step invariant oracle on shared state</strong> (e.g. "the migration is reversible", "no duplicate rows", "the ledger chain verifies") invoked right after every mutating step, not just at the end. End-of-run oracles tell you the run failed; per-mutation oracles tell you which step did it and let you roll back to the previous checkpoint.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does an agent that reformats a file on each cycle defeat hash-based stuck detection, and what catches it?</p>
+        <details><summary>Reveal answer</summary><p>Because the state <em>is</em> changing every cycle &mdash; the file content differs, so no hash repeats. It is "progress illusion": the agent is burning budget on changes that do not reduce the gap to goal. Catch it with a <strong>goal-distance signal</strong>, not a state-identity signal: track the oracle's failure output (same assertion failing, same test count), or measure novelty of the <em>evidence</em> rather than the state. The general rule: hash detecting works for exact loops, but you need a monotone progress metric for <em>directed</em> stuckness.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is "add self-critique so the agent notices its own errors" less reliable than an external oracle for raising <code>d</code>?</p>
+        <details><summary>Reveal answer</summary><p>Because self-critique is the same model reading the same context &mdash; its errors are correlated with the errors it is supposed to detect, so it raises <code>d</code> for failure classes where the mistake is visible in text (formatting, obvious logic gaps) and not at all for classes where the model's belief is the bug (wrong assumption, stale fact, misread requirement). An external oracle &mdash; tests, schema validation, hash verification, a diff check &mdash; is statistically independent of the actor's belief. That is why your 4-point promotion gate works where "review your own work" would not.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="81-subagents.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L81 &middot; Subagents &amp; orchestration</span></a>
+    <a class="next" href="83-swarms.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L83 &middot; Swarms</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

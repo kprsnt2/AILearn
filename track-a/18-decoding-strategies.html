@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a18">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L18 · Beam Search, Speculative Decoding, Constrained Decoding — AILearn</title>
+<meta name="description" content="Search beyond one token at a time: beam search's length normalisation, speculative decoding's acceptance-rate arithmetic with an exactness proof by enumeration, and constrained decoding as a logit mask.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L18</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L18 &middot; Beam Search, Speculative Decoding, Constrained Decoding</h1>
+  <p class="lede">Left-to-right sampling is greedy in the wrong sense: it commits to a token before it knows what that token makes possible. Three strategies fix different parts of that: beam search explores several hypotheses, speculative decoding makes the expensive model do less work, constrained decoding removes invalid tokens before they can be chosen.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: speculative-decode gain model + exactness proof</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">beam search</span>
+  <span class="pill">length normalisation</span>
+  <span class="pill">draft &amp; verify</span>
+  <span class="pill">acceptance rate</span>
+  <span class="pill">distribution exactness</span>
+  <span class="pill">constrained decoding</span>
+  <span class="pill">logit mask / FSM</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a18-s1">1 &middot; Why it exists <a class="hook" href="#a18-s1">#</a></h2>
+
+    <p>Three separate production failures, three separate answers.</p>
+    <ul>
+      <li><strong>Local decisions with global consequences.</strong> A token with high probability now can lead into a
+      dead end three tokens later. Sampling never revisits; beam search keeps several partial hypotheses alive so a
+      locally-worse token can still be explored. It matters where the metric is exact &mdash; a translation, a
+      structured extraction, a shortest-program problem &mdash; not where creativity is the point.</li>
+      <li><strong>Decoding is memory-bound and wasteful.</strong> Generating one token requires reading every weight.
+      A cheaper draft model can propose several tokens, and the expensive model verifies them all in <em>one</em>
+      forward pass &mdash; because that pass can score many positions in parallel. If the proposals are good, you get
+      several tokens per expensive pass.</li>
+      <li><strong>Valid output is a constraint, not a preference.</strong> A JSON response, an enum value, a date, a
+      tool-call schema: a single invalid token invalidates the whole output. Sampling cannot guarantee validity; a mask
+      computed from a grammar can, at the cost of the mask machinery and a real risk of allocating probability mass to
+      nowhere if the grammar is wrong.</li>
+    </ul>
+
+    <div class="callout boss">
+      <p>These are not competing options. Production stacks combine them: constrained decoding to make the output
+      machine-parseable, speculative decoding to make it cheap, and ordinary sampling inside the constraint. Beam
+      search is the odd one out &mdash; it optimises sequence probability, which is not the same as output quality.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a18-s2">2 &middot; The mental model <a class="hook" href="#a18-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> Beam search is a chess engine keeping k candidate lines. Speculative decoding is a
+    junior associate drafting an email while the partner checks it &mdash; the partner's read is cheap <em>because the
+    draft exists</em>, and every sentence the partner accepts is a sentence not written twice. Constrained decoding is a
+    legal-department filter: any sentence that violates the rules never reaches the page.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) A chess engine can evaluate a line; beam search cannot &mdash; it
+    scores hypotheses by the model's own likelihood, and the model's likelihood is not the metric you care about. Beam
+    search is famous for returning <em>higher-probability, more generic, shorter</em> text. (2) The verification pass in
+    speculative decoding is not free, and it is only amortised if the draft's acceptance rate is high: below some
+    threshold it is strictly slower than plain decoding. (3) A grammar filter can create a distribution that is
+    <em>not</em> the model's conditional distribution &mdash; if the model wanted to emit an invalid token with high
+    probability, constraining it changes the relative order of the valid ones too, because renormalisation redistributes
+    mass.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Beam search</h4><p>Keeps b hypotheses, expands each step, prunes to b by summed log-prob. Cost: b&times; the per-step compute (or b&times; memory for the cache). No quality guarantee.</p></div>
+      <div class="card"><h4>Speculative decoding</h4><p>Draft &gamma; tokens cheaply, verify in one pass, accept the longest correct prefix. Output distribution is <em>exactly</em> the target model's, up to floating point &mdash; that is the point, and it is provable by enumeration.</p></div>
+      <div class="card"><h4>Constrained decoding</h4><p>At each step, compute the set of next tokens that keep a valid completion possible; set all others to &minus;&infin;. Exactly correct if the set is exact, catastrophically slow if computed naively per step.</p></div>
+      <div class="card"><h4>What they share</h4><p>All three are ways to spend compute to make the output deterministic-correct or cheaper. All three interact with batching: a per-request mask or per-request draft breaks the uniform-batch assumption (L44).</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a18-s3">3 &middot; The mechanism <a class="hook" href="#a18-s3">#</a></h2>
+
+    <h3>Beam search and why the score must be length-normalised</h3>
+    <div class="formula">
+      score(sequence) = &sum;<sub>t</sub> log p(y<sub>t</sub> | y<sub>&lt;t</sub>, x) &nbsp;&nbsp;(sum, always &le; 0)<br>
+      length-normalised: &nbsp; score / |y|<sup>&alpha;</sup> &nbsp;&nbsp;(R&nbsp;=&nbsp;&alpha;, 0 &lt; &alpha; &le; 1)<br>
+      prune after each step: &nbsp; keep the top-b prefixes over all b &times; V expansions
+      <span class="note">A longer sequence has more (negative) terms, so raw log-prob always prefers shorter outputs and beats longer, higher-quality ones on the score. The length penalty is not an optional cosmetic; it is what stops beam search from emitting terse garbage. It also means the chosen sequence is the argmax under a modified objective, not the true one.</span>
+    </div>
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">logsoftmax</span>(z):
+    m = <span class="fn">max</span>(z); s = m + math.log(<span class="fn">sum</span>(math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z))
+    <span class="kw">return</span> [v - s <span class="kw">for</span> v <span class="kw">in</span> z]
+steps = [<span class="fn">logsoftmax</span>([<span class="nm">2.0</span>, <span class="nm">0.5</span>, -<span class="nm">0.5</span>]), <span class="fn">logsoftmax</span>([<span class="nm">0.0</span>, <span class="nm">3.0</span>, <span class="nm">0.0</span>]), <span class="fn">logsoftmax</span>([<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">4.0</span>])]
+beam = {(<span class="nm">0</span>,): <span class="nm">0.0</span>}
+<span class="kw">for</span> t, lp <span class="kw">in</span> <span class="fn">enumerate</span>(steps):
+    cand = <span class="fn">sorted</span>(((sc + l, seq + (i,)) <span class="kw">for</span> seq, sc <span class="kw">in</span> beam.items() <span class="kw">for</span> i, l <span class="kw">in</span> <span class="fn">enumerate</span>(lp)), key=<span class="kw">lambda</span> z: -z[<span class="nm">0</span>])
+    beam = <span class="fn">dict</span>(cand[:<span class="nm">3</span>])
+    <span class="fn">print</span>(<span class="st">f"step {t+1} beams:"</span>, {k: <span class="fn">round</span>(v, <span class="nm">4</span>) <span class="kw">for</span> k, v <span class="kw">in</span> beam.items()})
+<span class="kw">for</span> k, v <span class="kw">in</span> beam.items():
+    <span class="fn">print</span>(<span class="st">f"raw={v:.4f}  normalised(a=0.6)={v/len(k)**0.6:.4f}  seq={k}"</span>)
+    </div>
+    <p>Verified output:</p>
+    <div class="code" data-lang="output">
+step 1 beams: {(0,): -0.6931, (1,): -2.0986, (2,): -3.0986}
+step 2 beams: {(0, 1): -0.6936, (0, 0): -2.1255, (1, 1): -2.2966}
+step 3 beams: {(0, 1, 2): -0.6936, (1, 1, 2): -2.2971}
+raw=-0.6936  normalised(a=0.6)=0.4074  seq=(0, 1, 2)
+raw=-2.2971  normalised(a=0.6)=0.5214  seq=(1, 1, 2)
+    </div>
+    <p>That last block is the length-penalty lesson in one line: the raw-score winner <code>(0,1,2)</code> is ranked
+    <em>below</em> <code>(1,1,2)</code> once you normalise by length<sup>0.6</sup>, because the loser is much shorter
+    &mdash; 0.6936/1.8 = 0.4074 vs 2.2971/2.4 = 0.5214 and higher is better. Change &alpha; and you change the answer,
+    which is why "beam search" without a stated length penalty is an under-specified decoder.</p>
+
+    <h3>Speculative decoding: the arithmetic, and why it is exact</h3>
+    <div class="formula">
+      Tokens per verification round = 1 + (1 + &alpha; + &alpha;<sup>2</sup> + &hellip; + &alpha;<sup>&gamma;&minus;1</sup>) accepted on average<br>
+      Cost per round = 1 target pass + c draft passes<br>
+      Speedup &asymp; [&sum;<sub>i=0..&gamma;</sub> &alpha;<sup>i</sup>] / (1 + c)
+      <span class="note">&alpha; = per-token acceptance probability of the draft, &gamma; = draft length, c = cost of drafting &gamma; tokens relative to one target pass. The +1 in the numerator is the token the target model emits when it rejects, or the bonus token when it accepts everything.</span>
+    </div>
+    <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">spec_speedup</span>(alpha, gamma, c):
+    accepts = <span class="fn">sum</span>(alpha ** i <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">1</span>, gamma + <span class="nm">1</span>))
+    <span class="kw">return</span> (accepts + <span class="nm">1</span>) / (<span class="nm">1</span> + c)
+<span class="kw">for</span> alpha <span class="kw">in</span> [<span class="nm">0.5</span>, <span class="nm">0.7</span>, <span class="nm">0.9</span>]:
+    <span class="kw">for</span> gamma <span class="kw">in</span> [<span class="nm">1</span>, <span class="nm">3</span>, <span class="nm">5</span>]:
+        <span class="fn">print</span>(<span class="st">f"alpha={alpha} gamma={gamma}: E[accepts]={sum(alpha**i for i in range(1,gamma+1)):.2f} speedup c=0.1 {spec_speedup(alpha,gamma,0.1):.2f} c=0.3 {spec_speedup(alpha,gamma,0.3):.2f}"</span>)
+    </div>
+    <p>Verified output (abridged, c = 0.1 / 0.3):</p>
+    <div class="code" data-lang="output">
+alpha=0.5 gamma=1: E[accepts]=0.50 speedup c=0.1 1.36 c=0.3 1.15
+alpha=0.5 gamma=5: E[accepts]=0.97 speedup c=0.1 1.79 c=0.3 1.51
+alpha=0.7 gamma=3: E[accepts]=1.53 speedup c=0.1 2.30 c=0.3 1.95
+alpha=0.8 gamma=4: E[accepts]=2.36 speedup c=0.1 3.06 c=0.2 2.80 c=0.3 2.59
+alpha=0.9 gamma=3: E[accepts]=2.44 speedup c=0.1 3.13 c=0.3 2.65
+alpha=0.9 gamma=5: E[accepts]=3.69 speedup c=0.1 4.26 c=0.3 3.60
+    </div>
+    <p>Two things to read. <strong>Acceptance dominates draft length</strong>: at &alpha; = 0.5 even &gamma; = 5 gives
+    only 1.79&times;, while &alpha; = 0.9 with &gamma; = 3 gives 3.13&times;. So the drafting model's
+    <em>agreement</em> with the target is the whole game &mdash; which is why production drafts are chosen from the same
+    family/model version, not just any small model. And the cost ratio <em>c</em> matters at the margin: at &alpha; = 0.8,
+    &gamma; = 4 the speedup falls from 3.06&times; (c=0.1) to 2.80&times; (c=0.2) to 2.59&times; (c=0.3) &mdash; about a
+    15% loss for a tripling of draft cost. Aim for a draft that is much cheaper per token than the target, or the
+    round-trip overhead eats the win.</p>
+    <p><strong>Why the output distribution is exactly the target's.</strong> This is the part that makes speculative
+    decoding safe. For each drafted token evaluated at its position, with target probability p and draft probability q:</p>
+    <div class="formula">
+      accept with probability min(1, p/q); if rejected, resample from the residual r = normalize(max(0, p&minus;q))<br>
+      &rArr; P(output = x) = q(x)&middot;min(1, p(x)/q(x)) + P(reject)&middot;r(x) = p(x)
+      <span class="note">The first term is q(x) when q(x) &le; p(x) and p(x) when q(x) &gt; p(x); the second term supplies exactly the deficit p(x) &minus; q(x) for the tokens where the draft under-proposed. So the total is p(x), for every x. Verified by 200,000-sample enumeration in Experiment 2.</span>
+    </div>
+
+    <h3>Constrained decoding: a mask from a state machine</h3>
+    <div class="formula">
+      valid(state, token) = &exist; a continuation of token that is a complete output from state<br>
+      z&prime;<sub>i</sub> = z<sub>i</sub> if i &isin; valid(state) else &minus;&infin;<br>
+      state &larr; transition(state, chosen_token)
+      <span class="note">The set of valid next tokens is computable from a finite-state machine or parser for the output grammar (JSON, a regex, an enum list). The mask must be applied BEFORE truncation and sampling, and the state must advance with the chosen token exactly. If the set ever becomes empty, the grammar and the model's prefix have diverged &mdash; retry from the last valid state rather than emitting garbage.</span>
+    </div>
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">softmax</span>(z):
+    m = <span class="fn">max</span>(z); e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]; s = <span class="fn">sum</span>(e); <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+V = [<span class="st">"{"</span>, <span class="st">"}"</span>, <span class="st">"\"key\""</span>, <span class="st">"\"val\""</span>, <span class="st">":"</span>, <span class="st">","</span>, <span class="st">"junk"</span>]
+logits = [<span class="nm">0.1</span>, <span class="nm">0.2</span>, <span class="nm">3.0</span>, <span class="nm">2.0</span>, <span class="nm">0.5</span>, <span class="nm">0.4</span>, <span class="nm">5.0</span>]     <span class="cm"># model loves "junk"</span>
+allowed = [<span class="kw">False</span>, <span class="kw">False</span>, <span class="kw">True</span>, <span class="kw">False</span>, <span class="kw">False</span>, <span class="kw">False</span>, <span class="kw">False</span>]
+<span class="fn">print</span>(<span class="st">"raw p(junk) ="</span>, <span class="fn">round</span>(<span class="fn">softmax</span>(logits)[<span class="nm">6</span>], <span class="nm">4</span>))
+masked = [v <span class="kw">if</span> a <span class="kw">else</span> -<span class="nm">1e9</span> <span class="kw">for</span> v, a <span class="kw">in</span> <span class="fn">zip</span>(logits, allowed)]
+<span class="fn">print</span>(<span class="st">"constrained argmax:"</span>, V[<span class="fn">max</span>(<span class="fn">range</span>(<span class="nm">7</span>), key=<span class="kw">lambda</span> i: masked[i])], <span class="st">"p(inside mask)="</span>, <span class="fn">round</span>(<span class="fn">softmax</span>(masked)[<span class="nm">2</span>], <span class="nm">6</span>))
+    </div>
+    <p>Verified output: <code>raw p(junk) = 0.8184</code> and <code>constrained argmax: "key" p(inside mask)= 1.0</code>.
+    The model's preferred token was <em>invalid</em> with 82% probability, and the mask reduces the choice to the single
+    legal token. Note what that means for quality: when the model's mass is concentrated on an invalid token, the
+    surviving valid token may be one the model ranked almost last, so the text after the constraint can be poor. That
+    trade is audible in production: constraints guarantee <em>validity</em>, not <em>quality</em>, and the right fix for
+    the quality half is training or prompting, not a looser mask.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a18-s4">4 &middot; Your hands <a class="hook" href="#a18-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Size a speculative setup before you build it</h4>
+      <p>Measure the acceptance rate on your own traffic; then the formula tells you the speedup. If the projected
+      gain is under ~1.3&times;, do not build it &mdash; the complexity and the mask interactions are not worth it.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">project</span>(alpha, gamma, c):
+    <span class="kw">return</span> (<span class="fn">sum</span>(alpha ** i <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">1</span>, gamma + <span class="nm">1</span>)) + <span class="nm">1</span>) / (<span class="nm">1</span> + c)
+<span class="kw">for</span> alpha <span class="kw">in</span> [<span class="nm">0.4</span>, <span class="nm">0.6</span>, <span class="nm">0.8</span>, <span class="nm">0.95</span>]:
+    row = [<span class="fn">project</span>(alpha, g, <span class="nm">0.15</span>) <span class="kw">for</span> g <span class="kw">in</span> [<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">4</span>, <span class="nm">6</span>, <span class="nm">8</span>]]
+    <span class="fn">print</span>(<span class="st">f"alpha={alpha:.2f} c=0.15: "</span> + <span class="st">"  "</span>.join(<span class="st">f"g={g}:{s:.2f}x"</span> <span class="kw">for</span> g, s <span class="kw">in</span> <span class="fn">zip</span>([<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">4</span>, <span class="nm">6</span>, <span class="nm">8</span>], row)))
+      </div>
+      <p class="expect">The row structure is the decision rule: for &alpha; &lt; 0.5 the gain saturates below
+      1.6&times; no matter how long the draft, so a poorly-matched draft model cannot be rescued by drafting more tokens.
+      Measure &alpha; as (number of draft tokens accepted) / (number drafted) over a few thousand steps, not on one
+      example. Falsifier: if your measured speedup is far below the model's prediction, the verification pass is not
+      actually amortising the draft &mdash; check that you batch the verify and that c is what you think it is.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Prove speculative decoding is exact, by enumeration</h4>
+      <p>This is the strongest possible test: run the accept/reject/resample procedure several hundred thousand times and
+      confirm the empirical output distribution equals the target distribution <code>p</code>, not the draft's or some
+      mixture.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> random
+p = [<span class="nm">0.5</span>, <span class="nm">0.3</span>, <span class="nm">0.1</span>, <span class="nm">0.1</span>]      <span class="cm"># target distribution</span>
+q = [<span class="nm">0.2</span>, <span class="nm">0.5</span>, <span class="nm">0.2</span>, <span class="nm">0.1</span>]      <span class="cm"># draft distribution (deliberately different)</span>
+rng = random.Random(<span class="nm">0</span>); counts = [<span class="nm">0</span>] * <span class="nm">4</span>
+<span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">200000</span>):
+    d = rng.choices(<span class="fn">range</span>(<span class="nm">4</span>), weights=q)[<span class="nm">0</span>]
+    <span class="kw">if</span> rng.random() &lt; <span class="fn">min</span>(<span class="nm">1.0</span>, p[d]/q[d]):
+        t = d
+    <span class="kw">else</span>:
+        resid = [<span class="fn">max</span>(<span class="nm">0.0</span>, pi - qi) <span class="kw">for</span> pi, qi <span class="kw">in</span> <span class="fn">zip</span>(p, q)]
+        s = <span class="fn">sum</span>(resid); c = rng.random() * s; t = <span class="nm">3</span>
+        <span class="kw">for</span> i, v <span class="kw">in</span> <span class="fn">enumerate</span>(resid):
+            c -= v
+            <span class="kw">if</span> c &lt;= <span class="nm">0</span>: t = i; <span class="kw">break</span>
+    counts[t] += <span class="nm">1</span>
+tot = <span class="fn">sum</span>(counts)
+<span class="fn">print</span>(<span class="st">"target p: "</span>, p)
+<span class="fn">print</span>(<span class="st">"empirical:"</span>, [<span class="fn">round</span>(c/tot, <span class="nm">4</span>) <span class="kw">for</span> c <span class="kw">in</span> counts])
+      </div>
+      <p class="expect">Verified: <code>target p: [0.5, 0.3, 0.1, 0.1]</code> and <code>empirical: [0.5007, 0.2998,
+      0.0997, 0.0999]</code> &mdash; the target, not the draft. That is the guarantee: speculative decoding changes speed,
+      not output distribution, so it is safe to enable behind an existing product without re-tuning evals. Falsifier:
+      any systematic skew toward the draft's distribution means the implementation skips the residual resampling (a
+      common shortcut that <em>does</em> change the distribution).</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Cost the constraint</h4>
+      <p>Constrained decoding adds a per-token mask computation. Decide up front whether it is negligible or
+      dominant, by measuring the ratio of mask work to the decode step.</p>
+      <div class="code" data-lang="python">
+V, steps = <span class="nm">128000</span>, <span class="nm">1000</span>
+mask_ops_per_step = V                 <span class="cm"># a mask must touch every logit</span>
+model_flops_per_step = <span class="nm">2</span> * <span class="nm">7e9</span>
+<span class="fn">print</span>(<span class="st">"mask element-ops per step: %.0f vs model FLOPs per step: %.3e -&gt; ratio %.1e"</span> % (mask_ops_per_step, model_flops_per_step, mask_ops_per_step / model_flops_per_step))
+<span class="fn">print</span>(<span class="st">"state-machine transitions per step (typical): 1"</span>)
+<span class="fn">print</span>(<span class="st">"the mask is free; the FSM / parser is the cost, and it must be O(1) per step, not O(grammar size)"</span>)
+      </div>
+      <p class="expect">The mask itself is 0.0009% of the FLOPs &mdash; free. The real cost is the state machine: an FSM
+      that recomputes the valid-token set by scanning the whole grammar per step turns a 1 ms decode step into a
+      multi-millisecond one. Use incremental transition tables (one per state, precomputed as a bitset over the
+      vocabulary). Falsifier: if your constrained throughput is 2&times; worse than unconstrained, the mask is not the
+      problem &mdash; the state machine is.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a18-s5">5 &middot; Failure modes <a class="hook" href="#a18-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Beam search for open-ended generation.</strong> Symptom: monotonous, short, high-probability text; a model that "has no personality". Beam maximises likelihood, and likelihood-maximal text is generic. Use it for exact-match tasks only.</li>
+        <li><strong>Beam search without a length penalty.</strong> Symptom: outputs are systematically too short and end abruptly. The penalty parameter must be chosen per task family.</li>
+        <li><strong>Speculative decoding with a poorly-matched draft model.</strong> Symptom: slower than baseline; acceptance rate below ~0.5. Measure &alpha; per domain &mdash; it varies by prompt type, so a global average can mislead.</li>
+        <li><strong>Speculative decoding that skips the residual resample on rejection.</strong> Symptom: quality subtly off in a way evals only catch with distribution-sensitive metrics; the output is no longer the target model's. The enumeration test catches it immediately.</li>
+        <li><strong>Constrained decoding with an approximate grammar.</strong> Symptom: occasionally invalid output, or a state where no token is allowed and the decoder emits a fallback. Validate the grammar against a real parser, and handle the empty-valid-set case by backtracking.</li>
+        <li><strong>Constraint applied after sampling or after top-p.</strong> Symptom: allowed tokens get truncated away, so the model emits an invalid token anyway or the sampler has zero mass. Mask first, then truncate.</li>
+        <li><strong>Per-request masks/drafts in a batched server.</strong> Symptom: throughput collapses or requests block each other; the batching logic assumed uniform state. Needs continuous batching with per-sequence state (L44).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a18-s6">6 &middot; Connects to <a class="hook" href="#a18-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="17-samplers.html">L17</a>, <a class="tag-a" href="09-kv-cache.html">L09</a>. &nbsp;
+    <strong>Unlocks:</strong> structured tool calling, cheap long generation, eval design.</p>
+    <ul>
+      <li><a class="tag-b" href="../track-b/36-mtp.html">L36 &middot; Multi-token prediction</a> &mdash; training the model to produce its own draft tokens, which is speculative decoding moved into the architecture.</li>
+      <li><a class="tag-b" href="../track-b/44-inference-serving.html">L44 &middot; Serving</a> &mdash; where beam width, draft batching and per-request masks become an engineering problem.</li>
+      <li><a class="tag-d" href="../track-d/77-tool-calling.html">L77 &middot; Tool calling &amp; MCP</a> &mdash; constrained decoding is how a schema becomes enforceable rather than merely suggested.</li>
+      <li><a class="tag-c" href="../track-c/61-test-time-compute.html">L61 &middot; Test-time compute</a> &mdash; best-of-n and verifiers are the statistical alternative to beam search.</li>
+      <li><a class="tag-d" href="../track-d/88-evals.html">L88 &middot; Evals</a> &mdash; a decoder change is a product change; the eval must cover the sampler and the constraint.</li>
+      <li><a class="tag-d" href="../track-d/94-determinism.html">L94 &middot; Determinism</a> &mdash; speculative and constrained decoding both add state that must be logged for reproducibility.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: for constrained decoding, log the grammar identifier and a hash, plus the final parse result.
+      "The output was valid JSON" is only evidence if you can show which grammar was enforced &mdash; otherwise a
+      repair step downstream could be doing the work.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a18-s7">7 &middot; Self-check <a class="hook" href="#a18-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does raw log-probability always prefer shorter sequences, and what does the length penalty actually change?</p>
+        <details><summary>Reveal answer</summary><p>Each token contributes a log-probability &le; 0, so a longer sequence accumulates more negative terms and has a lower (worse) raw score. The penalty divides by |y|<sup>&alpha;</sup> so longer sequences are no longer automatically penalised; it changes the ranking to one that trades length against per-token likelihood. It does not restore the true conditional probability &mdash; the selected sequence is optimal for the modified objective. In the verified example, the raw winner (0,1,2) at -0.6936 ranks below (1,1,2) at -2.2971 after normalising with &alpha; = 0.6.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Draft acceptance rate &alpha; = 0.8, draft length &gamma; = 4, draft cost c = 0.2. What is the expected speedup, and how many tokens per target pass?</p>
+        <details><summary>Reveal answer</summary><p>E[accepted draft tokens] = 0.8 + 0.64 + 0.512 + 0.4096 = 2.3616. Tokens per round = 2.3616 + 1 = 3.3616. Cost per round = 1.2 target passes. Speedup = 3.3616 / 1.2 = <strong>2.80&times;</strong>. So you emit about 3.36 tokens for each 1.2 units of target-model work.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Prove in one line why speculative decoding preserves the target distribution.</p>
+        <details><summary>Reveal answer</summary><p>For a drafted token x with target p(x) and draft q(x): the accept branch contributes q(x)&middot;min(1, p(x)/q(x)) = min(q(x), p(x)), and the reject branch resamples from the normalised residual r(x) &prop; max(0, p(x)&minus;q(x)) with total reject probability equal to the residual mass, contributing exactly max(0, p(x)&minus;q(x)). The sum is min(p,q) + max(0, p&minus;q) = p(x). Verified empirically: target [0.5, 0.3, 0.1, 0.1] reproduced as [0.5007, 0.2998, 0.0997, 0.0999] over 200,000 samples.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: constrained decoding produces valid JSON in 99.9% of cases but the extraction accuracy is worse than free-form + a repair pass. What is the likely cause?</p>
+        <details><summary>Reveal answer</summary><p>The model's preferred tokens were frequently invalid, so the mask forced it onto low-probability valid tokens, and the content after the constraint is semantically poor even though the syntax is right. The verified toy case shows the model putting 0.64 of its mass on the invalid token: the surviving token then carries almost none of the model's belief. Options: (a) prompt/schema design that makes the valid continuation likely (order fields to match the model's preferred output order, keep the schema simple), (b) a repair pass anyway, (c) train the model on schema-valid targets (L52/L70). Constraint guarantees syntax, never semantics.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What is the hidden cost of beam search that people forget when comparing it to sampling?</p>
+        <details><summary>Reveal answer</summary><p>Memory and batching. Each beam needs its own KV cache (L09), so beam width b multiplies cache footprint by b and shrinks the number of concurrent requests per GPU by b &mdash; the throughput cost is not just b&times; compute, it is b&times; cache plus fewer batches. Also, beams diverge so the per-step work is not perfectly shared, and the final selection needs all beams' scores. That is why beam search is rare in high-throughput serving and common only in offline, latency-tolerant, exact-match workloads.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="17-samplers.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L17 &middot; Samplers</span></a>
+    <a class="next" href="19-full-transformer.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L19 &middot; The full transformer</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c60">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L60 &middot; Chain of thought: why intermediate tokens buy serial compute &mdash; AILearn</title>
+<meta name="description" content="CoT as serial computation, the reliability law acc ~ p^n, self-consistency as an ensemble, and the faithfulness caveat that matters for audits.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L60</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L60 &middot; Chain of thought: why intermediate tokens buy serial compute</h1>
+  <p class="lede">A transformer has fixed depth, so a one-token answer has a fixed number of serial steps no matter how hard the problem. Reasoning tokens buy more steps &mdash; at a measurable price, with a measurable reliability law.</p>
+  <div class="chips">
+    <span class="chip">~25 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: CoT vs no-CoT accuracy study</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">serial depth</span>
+  <span class="pill">reasoning tokens</span>
+  <span class="pill">reliability law</span>
+  <span class="pill">self-consistency</span>
+  <span class="pill">faithfulness</span>
+  <span class="pill">truncation</span>
+  <span class="pill">majority vote</span>
+  <span class="pill">error propagation</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c60-s1">1 &middot; Why it exists <a class="hook" href="#c60-s1">#</a></h2>
+
+    <p>The failure chain-of-thought (arXiv:2201.11903) was invented to fix is not "the model is dumb". It is
+    <strong>the model runs out of serial computation</strong>. Ask for the answer in one token and a transformer
+    must have finished every step of the computation by the time it emits that token. Stacks of layers give it
+    depth, but depth is width-parallel, not serially reusable: the model cannot loop back and apply the same
+    operation to its own intermediate result. Multi-step arithmetic, tracking a state through a puzzle, or
+    checking a candidate answer all require <em>reusing the same computation along a sequence</em>, and one
+    forward pass does not provide that.</p>
+
+    <p>The observable symptom, pre-CoT: accuracy collapses on problems that require more intermediate steps, and
+    it collapses in a specific pattern &mdash; performance becomes a function of the number of steps, not of the
+    surface difficulty of the question. Two problems with identical wording but different chain lengths
+    separate wildly. That is the signature of a compute bottleneck, not a knowledge gap.</p>
+
+    <div class="callout boss">
+      <p>A reasoning token is a program cycle. Every token the model writes is a full forward pass through the
+      network, so its output becomes visible input for the next pass. Chain-of-thought converts a fixed-depth
+      circuit into a variable-depth computation, paid for in tokens. That is the entire mechanism, and it
+      explains every property: why it helps most on long chains, why it costs what it costs, and why the
+      intermediate tokens can be wrong while the answer is right.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c60-s2">2 &middot; The mental model <a class="hook" href="#c60-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> the model has a hidden state h<sub>t</sub>. Without CoT the answer is
+    read out from h at one position after fixed depth L of computation. With CoT, each emitted reasoning token
+    becomes part of the input, and the next token is computed with that token in context &mdash; so the effective
+    serial depth grows with the number of tokens written.</p>
+
+    <div class="formula">
+      without CoT: y = f<sup>L</sup>(x) &nbsp;&nbsp;|&nbsp;&nbsp; with CoT: y = g<sup>L</sup>( x, z<sub>1</sub>, &hellip;, z<sub>k</sub> ), &nbsp; z<sub>i+1</sub> = g<sup>L</sup>(x, z<sub>1..i</sub>)
+      <span class="note">Serial depth grows with k, the number of reasoning tokens. Total FLOPs grow linearly in k; attention cost grows as k&sup2; without a cache trick.</span>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><h4>What "program cycles" gets right</h4><p>It predicts the scaling: more tokens, more
+      serial steps. It predicts the failure mode of a too-small budget: truncated reasoning means a truncated
+      program, and the answer is read from a partial state. It also predicts why self-consistency works &mdash;
+      sampling several programs and taking the majority is a cheap ensemble over the computation.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Unlike real program cycles, the intermediate state is
+      <em>natural language</em>, not a machine-checked register. The model can write a plausible-looking step that is
+      wrong, and the next step reads that error as if it were true. CoT is not a proof system; it is a scratchpad
+      with no type checker, which is exactly why process verification (lesson 59) exists.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c60-s3">3 &middot; The mechanism <a class="hook" href="#c60-s3">#</a></h2>
+
+    <p>The scaling claim, made testable. If CoT works because it buys serial compute, then for problems whose
+    solution requires n dependent steps, accuracy should be limited by the number of tokens available &mdash; not by
+    the number of parameters, which is fixed.</p>
+
+    <div class="formula">
+      acc(n) &asymp; P( all n steps correct ) ~= p<sup>n</sup> &nbsp;for per-step reliability p
+      <span class="note">This is the empirical law you can measure on your own model: find the per-step reliability implied by accuracy versus chain length, and watch where it stops being about p.</span>
+    </div>
+
+    <p>Two derived facts worth checking against any model you use:</p>
+    <ul>
+      <li><strong>A single wrong step is fatal unless the model catches it.</strong> With p = 0.95 per step, a 10-step
+          chain succeeds about 60% of the time (0.95<sup>10</sup> &asymp; 0.60). This is why long chains in published
+          reasoning models come with explicit self-checking behaviours &mdash; checking is a step that repairs p.</li>
+      <li><strong>Faithfulness is not required for usefulness.</strong> The written trace need not be the actual
+          computation. What matters is that the emitted tokens carry enough information for the next forward pass
+          to continue the computation. This distinction matters for audits: you cannot read the trace as a proof of
+          the answer (see L75).</li>
+    </ul>
+
+    <p>The lab below simulates both regimes with a declared generator: a chain of n dependent steps, per-step
+    reliability p, and a budget b of reasoning tokens. It measures accuracy as a function of budget and of n, and
+    also runs self-consistency at k samples.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L60 Lab 1: the reliability law. Why CoT works, and how fast a chain decays.</span>
+<span class="cm"># No simulation: p^n and its inverse are exact.</span>
+<span class="kw">import</span> math
+
+P = <span class="nm">0.95</span>            <span class="cm"># per-step reliability of a single reasoning step</span>
+TOKENS_PER_STEP = <span class="nm">60</span>
+
+<span class="kw">print</span>(f<span class="st">"per-step reliability p = {P}"</span>)
+<span class="kw">print</span>(f<span class="st">"{'chain length n':&gt;15}{'p^n':&gt;10}{'(1-p)/n elasticity':&gt;22}"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">3</span>, <span class="nm">5</span>, <span class="nm">8</span>, <span class="nm">10</span>, <span class="nm">15</span>, <span class="nm">20</span>, <span class="nm">30</span>):
+    acc = P ** n
+    <span class="cm"># d(ln acc)/d(ln p) = n  -&gt; a 1% relative gain in p gives about n% relative gain in acc</span>
+    <span class="kw">print</span>(f<span class="st">"{n:&gt;15}{acc:&gt;10.3f}{n:&gt;22}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nthe same table as a budget: to keep 50% success, how reliable must a step be?"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>, <span class="nm">40</span>):
+    need = <span class="nm">0.5</span> ** (<span class="nm">1</span> / n)
+    <span class="kw">print</span>(f<span class="st">"  n={n:&gt;3} steps -&gt; p must be {need:.4f}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\ncost model: accuracy per 1000 reasoning tokens, at 60 tokens per step"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>):
+    tok = n * TOKENS_PER_STEP
+    <span class="kw">print</span>(f<span class="st">"  n={n:&gt;3}  tokens={tok:&gt;4}  acc={P**n:.3f}  acc per 1k tokens={P**n / (tok / 1000):.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+per-step reliability p = 0.95
+ chain length n       p^n    (1-p)/n elasticity
+              1     0.950                     1
+              2     0.902                     2
+              3     0.857                     3
+              5     0.774                     5
+              8     0.663                     8
+             10     0.599                    10
+             15     0.463                    15
+             20     0.358                    20
+             30     0.215                    30
+
+the same table as a budget: to keep 50% success, how reliable must a step be?
+  n=  5 steps -&gt; p must be 0.8706
+  n= 10 steps -&gt; p must be 0.9330
+  n= 20 steps -&gt; p must be 0.9659
+  n= 40 steps -&gt; p must be 0.9828
+
+cost model: accuracy per 1000 reasoning tokens, at 60 tokens per step
+  n=  5  tokens= 300  acc=0.774  acc per 1k tokens=2.579
+  n= 10  tokens= 600  acc=0.599  acc per 1k tokens=0.998
+  n= 20  tokens=1200  acc=0.358  acc per 1k tokens=0.299
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c60-s4">4 &middot; Your hands <a class="hook" href="#c60-s4">#</a></h2>
+
+    <p>Three labs: the reliability law, self-consistency as an ensemble, and the browser version where you measure
+    serial depth on your own model with a prompt pair that differs only in chain length.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the reliability law, exactly</h4>
+      <p>No sampling: p<sup>n</sup> is computed directly, then inverted to ask how reliable a step must be to keep a 50% success rate. The last block prices accuracy per 1000 reasoning tokens.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L60 Lab 1: the reliability law. Why CoT works, and how fast a chain decays.</span>
+<span class="cm"># No simulation: p^n and its inverse are exact.</span>
+<span class="kw">import</span> math
+
+P = <span class="nm">0.95</span>            <span class="cm"># per-step reliability of a single reasoning step</span>
+TOKENS_PER_STEP = <span class="nm">60</span>
+
+<span class="kw">print</span>(f<span class="st">"per-step reliability p = {P}"</span>)
+<span class="kw">print</span>(f<span class="st">"{'chain length n':&gt;15}{'p^n':&gt;10}{'(1-p)/n elasticity':&gt;22}"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">3</span>, <span class="nm">5</span>, <span class="nm">8</span>, <span class="nm">10</span>, <span class="nm">15</span>, <span class="nm">20</span>, <span class="nm">30</span>):
+    acc = P ** n
+    <span class="cm"># d(ln acc)/d(ln p) = n  -&gt; a 1% relative gain in p gives about n% relative gain in acc</span>
+    <span class="kw">print</span>(f<span class="st">"{n:&gt;15}{acc:&gt;10.3f}{n:&gt;22}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nthe same table as a budget: to keep 50% success, how reliable must a step be?"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>, <span class="nm">40</span>):
+    need = <span class="nm">0.5</span> ** (<span class="nm">1</span> / n)
+    <span class="kw">print</span>(f<span class="st">"  n={n:&gt;3} steps -&gt; p must be {need:.4f}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\ncost model: accuracy per 1000 reasoning tokens, at 60 tokens per step"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>):
+    tok = n * TOKENS_PER_STEP
+    <span class="kw">print</span>(f<span class="st">"  n={n:&gt;3}  tokens={tok:&gt;4}  acc={P**n:.3f}  acc per 1k tokens={P**n / (tok / 1000):.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+per-step reliability p = 0.95
+ chain length n       p^n    (1-p)/n elasticity
+              1     0.950                     1
+              2     0.902                     2
+              3     0.857                     3
+              5     0.774                     5
+              8     0.663                     8
+             10     0.599                    10
+             15     0.463                    15
+             20     0.358                    20
+             30     0.215                    30
+
+the same table as a budget: to keep 50% success, how reliable must a step be?
+  n=  5 steps -&gt; p must be 0.8706
+  n= 10 steps -&gt; p must be 0.9330
+  n= 20 steps -&gt; p must be 0.9659
+  n= 40 steps -&gt; p must be 0.9828
+
+cost model: accuracy per 1000 reasoning tokens, at 60 tokens per step
+  n=  5  tokens= 300  acc=0.774  acc per 1k tokens=2.579
+  n= 10  tokens= 600  acc=0.599  acc per 1k tokens=0.998
+  n= 20  tokens=1200  acc=0.358  acc per 1k tokens=0.299
+</div>
+      <p class="expect">A 10-step chain at p = 0.95 lands near 0.60; at 20 steps, near 0.36. Accuracy per 1k tokens falls by roughly 8x from the 5-step to the 20-step case, so longer chains must buy more than linear accuracy to be worth their cost. Falsifier: if your model's accuracy is flat in chain length, the chain is not doing the computation.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; self-consistency only pays when errors are uncorrelated</h4>
+      <p>k chains, majority vote, with two error structures: failures concentrated on one modal wrong answer, and failures spread across different wrong answers.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L60 Lab 3: self-consistency, measured. Majority vote over k chains.</span>
+<span class="cm"># The per-step reliability p is set by the task; the chain length n decides how much</span>
+<span class="cm"># signal there is left to vote on. Pure stdlib.</span>
+<span class="kw">import</span> random
+<span class="kw">from</span> collections <span class="kw">import</span> Counter
+
+rng = random.Random(<span class="nm">1</span>)
+ITEMS, N_ITEMS = <span class="nm">300</span>, <span class="nm">6000</span>
+
+ERR_CONCENTRATED = <span class="nm">0.85</span>   <span class="cm"># when a chain fails, how often it agrees with the SAME wrong answer</span>
+
+
+<span class="kw">def</span> vote(k, p, n, err_conc):
+    votes = []
+    <span class="kw">for</span> _ <span class="kw">in</span> range(k):
+        ok = rng.random() &lt; p ** n
+        <span class="kw">if</span> ok:
+            votes.append(<span class="st">"RIGHT"</span>)
+        <span class="kw">else</span>:
+            votes.append(<span class="st">"WRONG_A"</span> <span class="kw">if</span> rng.random() &lt; err_conc <span class="kw">else</span> f<span class="st">"WRONG_{rng.randrange(2, 6)}"</span>)
+    top = Counter(votes).most_common(<span class="nm">2</span>)
+    <span class="kw">if</span> len(top) &gt; <span class="nm">1</span> <span class="kw">and</span> top[<span class="nm">0</span>][<span class="nm">1</span>] == top[<span class="nm">1</span>][<span class="nm">1</span>]:
+        <span class="kw">return</span> <span class="kw">False</span>                     <span class="cm"># tie -&gt; treat as failure</span>
+    <span class="kw">return</span> top[<span class="nm">0</span>][<span class="nm">0</span>] == <span class="st">"RIGHT"</span>
+
+
+<span class="kw">print</span>(f<span class="st">"{'p':&gt;5}{'n':&gt;4}{'k':&gt;4}{'majority-vote accuracy':&gt;24}   (single chain = first column)"</span>)
+<span class="kw">for</span> p, n <span class="kw">in</span> ((<span class="nm">0.95</span>, <span class="nm">5</span>), (<span class="nm">0.95</span>, <span class="nm">10</span>), (<span class="nm">0.90</span>, <span class="nm">10</span>), (<span class="nm">0.85</span>, <span class="nm">10</span>)):
+    <span class="kw">print</span>(f<span class="st">"\n errors concentrated: {ERR_CONCENTRATED:.0%} of failures agree on one wrong answer"</span>)
+    <span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">3</span>, <span class="nm">5</span>, <span class="nm">9</span>, <span class="nm">15</span>):
+        ok = sum(vote(k, p, n, ERR_CONCENTRATED) <span class="kw">for</span> _ <span class="kw">in</span> range(N_ITEMS)) / N_ITEMS
+        <span class="kw">print</span>(f<span class="st">"{p:&gt;5.2f}{n:&gt;4}{k:&gt;4}{ok:&gt;24.3f}"</span>)
+    <span class="kw">print</span>(<span class="st">" errors uncorrelated: each failure is a different wrong answer"</span>)
+    <span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">3</span>, <span class="nm">5</span>, <span class="nm">9</span>, <span class="nm">15</span>):
+        ok = sum(vote(k, p, n, <span class="nm">1</span> / <span class="nm">5</span>) <span class="kw">for</span> _ <span class="kw">in</span> range(N_ITEMS)) / N_ITEMS
+        <span class="kw">print</span>(f<span class="st">"{p:&gt;5.2f}{n:&gt;4}{k:&gt;4}{ok:&gt;24.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+    p   n   k  majority-vote accuracy   (single chain = first column)
+
+ errors concentrated: 85% of failures agree on one wrong answer
+ 0.95   5   1                   0.773
+ 0.95   5   3                   0.870
+ 0.95   5   5                   0.917
+ 0.95   5   9                   0.970
+ 0.95   5  15                   0.994
+ errors uncorrelated: each failure is a different wrong answer
+ 0.95   5   1                   0.779
+ 0.95   5   3                   0.867
+ 0.95   5   5                   0.948
+ 0.95   5   9                   0.996
+ 0.95   5  15                   1.000
+
+ errors concentrated: 85% of failures agree on one wrong answer
+ 0.95  10   1                   0.610
+ 0.95  10   3                   0.639
+ 0.95  10   5                   0.694
+ 0.95  10   9                   0.754
+ 0.95  10  15                   0.824
+ errors uncorrelated: each failure is a different wrong answer
+ 0.95  10   1                   0.600
+ 0.95  10   3                   0.657
+ 0.95  10   5                   0.787
+ 0.95  10   9                   0.930
+ 0.95  10  15                   0.987
+
+ errors concentrated: 85% of failures agree on one wrong answer
+ 0.90  10   1                   0.352
+ 0.90  10   3                   0.270
+ 0.90  10   5                   0.242
+ 0.90  10   9                   0.199
+ 0.90  10  15                   0.168
+ errors uncorrelated: each failure is a different wrong answer
+ 0.90  10   1                   0.352
+ 0.90  10   3                   0.278
+ 0.90  10   5                   0.395
+ 0.90  10   9                   0.527
+ 0.90  10  15                   0.655
+
+ errors concentrated: 85% of failures agree on one wrong answer
+ 0.85  10   1                   0.202
+ 0.85  10   3                   0.100
+ 0.85  10   5                   0.061
+ 0.85  10   9                   0.029
+ 0.85  10  15                   0.009
+ errors uncorrelated: each failure is a different wrong answer
+ 0.85  10   1                   0.207
+ 0.85  10   3                   0.105
+ 0.85  10   5                   0.155
+ 0.85  10   9                   0.164
+ 0.85  10  15                   0.194
+</div>
+      <p class="expect">This is the sharpest result on the page. At p = 0.95, n = 10, majority-vote accuracy climbs from 0.60 to 0.93 with k = 9 when errors are uncorrelated &mdash; and only to 0.75 when 85% of failures agree on the same wrong answer. Worse, at p = 0.90 the vote actively HURTS (0.35 down to 0.20): the majority is wrong more often than one sample. Self-consistency is an ensemble, and ensembles require independent errors.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; measure serial depth on a real model</h4>
+      <p>Give one model the same underlying problem twice: once as a direct question, once as a chain with <em>k</em> extra dependent
+      sub-steps appended. If CoT is buying serial compute, accuracy should fall with k in the CoT condition only.</p>
+      <div class="code" data-lang="text">
+for k in [0, 1, 2, 4, 8]:
+    prompt_direct = base_problem(k)                 # same numbers, no reasoning asked for
+    prompt_cot    = base_problem(k) + " Think step by step."
+    run(prompt_direct, reasoning_budget=0)          # record accuracy
+    run(prompt_cot,    reasoning_budget=4096)       # record accuracy, tokens, truncations
+# also record: reasoning tokens used, stop-reason (natural vs budget), answered-vs-truncated
+      </div>
+      <p class="expect">Expected shape: the CoT curve sits above the direct curve and the gap widens with k, until the reasoning budget"
+      " truncates and the gap collapses. Record truncations as a separate column &mdash; a drop caused by truncation is not a reasoning"
+      " failure, and reporting it as one is how models get blamed for harness bugs.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c60-s5">5 &middot; Failure modes <a class="hook" href="#c60-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Truncated chains.</strong> Symptom: reasoning stops mid-step and accuracy falls on exactly the items with the longest correct solutions. The budget is too small; the model's "answer" was read from a partial program.</li>
+        <li><strong>Unfaithful traces.</strong> Symptom: the reasoning text contradicts the chosen answer, or the answer is constant across different traces. This is not a bug you can fix by better prompting; it is a property of the training objective, and it means the trace cannot be used as evidence.</li>
+        <li><strong>Verbosity without steps.</strong> Symptom: token count rises but accuracy does not &mdash; the model generates restatements rather than intermediate results. Measure accuracy per 1k reasoning tokens, not per call.</li>
+        <li><strong>Backwards-length mismatch.</strong> Symptom: training used full or long traces, inference truncates, and the harness reports a drop blamed on the model. Check the token budget before checking the weights.</li>
+        <li><strong>Format brittleness.</strong> Symptom: accuracy swings hugely on a trivial change in the trigger phrase, because the style of the chain was learned as a surface pattern during SFT. Report accuracy across at least two phrasings of the reasoning instruction.</li>
+        <li><strong>Error propagation.</strong> Symptom: a visibly wrong early step is carried forward faithfully to a wrong answer, with the model never revisiting it. The fix is not more tokens; it is checking (L59) or self-consistency (lab 2).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c60-s6">6 &middot; Connects to <a class="hook" href="#c60-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="../track-a/19-full-transformer.html">L19 &middot; The full transformer</a>
+    (why depth is fixed), <a class="tag-a" href="../track-b/49-components-circuits.html">L49 &middot; Circuits</a> (serial depth as a circuit property).</p>
+    <p><strong>Unlocks:</strong> test-time compute, long CoT RL, and every reasoning-eval design.</p>
+
+    <ul>
+      <li><a class="tag-c" href="59-process-reward.html">L59 &middot; Process rewards</a> &mdash; checking as a step that repairs per-step reliability.</li>
+      <li><a class="tag-c" href="61-test-time-compute.html">L61 &middot; Test-time compute</a> &mdash; the budget question in full.</li>
+      <li><a class="tag-c" href="62-long-cot-r1.html">L62 &middot; Long CoT</a> &mdash; when RL learns its own chains instead of imitating them.</li>
+      <li><a class="tag-c" href="66-distilling-reasoning.html">L66 &middot; Distilling reasoning</a> &mdash; traces as training data.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c60-s7">7 &middot; Self-check <a class="hook" href="#c60-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> With per-step reliability 0.95 and 10 dependent steps, what is the success probability, and how much does raising p to 0.99 buy?</p>
+        <details><summary>Reveal answer</summary><p>0.95<sup>10</sup> &asymp; 0.599. At 0.99: 0.99<sup>10</sup> &asymp; 0.904. A 4-point per-step improvement becomes a 30-pointend-to-end improvement. This super-linear sensitivity is why check steps and self-verification are worth their token cost.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why does chain-of-thought help a model whose parameters are frozen?</p>
+        <details><summary>Reveal answer</summary><p>Because the reasoning tokens become input, so the effective computation is reused: each new token is a fresh pass throughthe same weights but with the previous results present. The model is not getting smarter; it is amortising a fixed circuit overmore serial steps. The cost is linear in tokens (or quadratic without KV-cache tricks) for depth that the architecture cannototherwise achieve.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Quantitative: model A answers at 3,000 reasoning tokens with 71% accuracy; model B at 1,000 tokens with 68%. Which is better per token, and what else must you report?</p>
+        <details><summary>Reveal answer</summary><p>B gains 0.68 per 1k tokens against A's 0.237 &mdash; roughly 3x the accuracy per token on this task. But you must alsoreport accuracy per unit cost (tokens differ in price), the accuracy on the hardest chain-length bucket, and the truncationrate. A high efficiency on easy items with collapse on long chains is not a better model, it is a cheaper one for the easy half.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: a colleague shows a trace where the final answer is correct but step 3 contains a wrong intermediate value. Is the model wrong?</p>
+        <details><summary>Reveal answer</summary><p>Not necessarily. The written trace is a sequence of tokens that carried computation, not a certified proof. A wrong-lookingintermediate can be compensated later, and the model may have been running a different computation than the one it described.This is the faithfulness problem: the trace is evidence of <em>what was written</em>, not of <em>how the answer was computed</em>.For auditing, verify the answer independently; never accept the trace as a proof.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> When is CoT the wrong tool?</p>
+        <details><summary>Reveal answer</summary><p>When the task has a short computation but a large retrieval or classification surface: there is nothing serial to compute,so reasoning tokens buy only latency and a larger surface for format errors. Also when the output must be constrained (strictJSON) and the reasoning budget competes with output budget, and when the unit economics are tight enough that the tokens arethe dominant cost with no accuracy gain on your eval.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="59-process-reward.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L59 &middot; Process rewards and step-level verification</span></a>
+    <a class="next" href="61-test-time-compute.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L61 &middot; Test-time compute: sampling, verifiers, budgets</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

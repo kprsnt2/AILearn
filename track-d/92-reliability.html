@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d92">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L92 · Reliability: retries, idempotency, degradation, queueing — AILearn</title>
+<meta name="description" content="Retries amplify load on an already-failing backend: 1.43× attempts at a 30% failure rate. A 5% timeout rate with no idempotency key duplicates 4.5% of mutations. The math and a failure-injection suite.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L92</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L92 &middot; Reliability: retries, idempotency, degradation, queueing</h1>
+  <p class="lede">Retries are the most common reliability feature and the most common cause of cascading failure: at a 30% backend failure rate with 5 retries, each logical call becomes <strong>1.43</strong> attempts, making the failing backend fail harder. And a key generated <em>inside</em> the retry loop turns one mutation into three.</p>
+  <div class="chips">
+    <span class="chip">~35 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: failure-injection test suite</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">retry amplification</span>
+  <span class="pill">idempotency key placement</span>
+  <span class="pill">duplicate mutations</span>
+  <span class="pill">degradation ladder</span>
+  <span class="pill">Little's Law</span>
+  <span class="pill">utilisation knee</span>
+  <span class="pill">circuit breaker</span>
+  <span class="pill">failure injection</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d92-s1">1 &middot; Why it exists <a class="hook" href="#d92-s1">#</a></h2>
+
+    <p>The failure: <strong>retry logic turned a partial outage into a total one.</strong> A provider degrades to a 30% error
+    rate. Every client retries up to five times with no jitter. Each logical call now generates a mean of 1.428 attempts
+    against a service already struggling, so effective load rises by 42.8% at exactly the moment capacity is lowest. The
+    service goes from degraded to unavailable, and the retries keep it saturated.</p>
+
+    <p>The second failure is quieter and more expensive: <strong>duplicate side effects.</strong> A tool call times out. Your retry
+    fires. The first call had already applied its effect &mdash; the <em>response</em> was slow, not the write. Now there are two
+    rows, two comments, two charges. At a 5% timeout rate with 90% of effects applied before timeout,
+    <strong>4.5% of mutations are duplicated</strong>. Applied to a 15,317-tool-call run that is roughly <strong>689 duplicate
+    mutations</strong>, and none of them raise an error.</p>
+
+    <p>The third failure is the absence of a degradation policy. When the system cannot serve at full quality it either serves
+    broken at full quality, or it hangs. There is no designed intermediate state, so the failure mode is whatever the timeout
+    happens to produce.</p>
+
+    <div class="callout boss">
+      <p>Three mechanisms that must be <em>designed</em> rather than inherited: <strong>(1) bounded retries with backoff and
+      jitter</strong>, whose amplification is computable from the failure rate; <strong>(2) idempotency</strong>, with the key derived from
+      the logical operation once, before any attempt; <strong>(3) a declared degradation ladder</strong> specifying what is served at
+      each level of impairment, including honest refusal.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d92-s2">2 &middot; The mental model <a class="hook" href="#d92-s2">#</a></h2>
+
+    <p>Reliability is a <strong>budget of attempts</strong>, and every retry spends it on the assumption that the failure is
+    transient. When failure is <em>persistent</em> &mdash; overload, quota exhaustion, a broken deploy &mdash; retries convert a bounded
+    problem into an unbounded one.</p>
+
+    <table class="table">
+      <thead><tr><th>Mechanism</th><th>Protects against</th><th>Creates</th><th>Required co-design</th></tr></thead>
+      <tbody>
+        <tr><td>Retry</td><td>transient blips</td><td>load amplification <code>&sum;p<sup>i</sup></code></td><td>backoff + jitter + shared budget + breaker</td></tr>
+        <tr><td>Idempotency key</td><td>duplicate effects</td><td>key storage and a TTL</td><td>key derived from the logical op, generated once</td></tr>
+        <tr><td>Timeout</td><td>hangs</td><td>ambiguity: did it apply?</td><td>idempotent operations make ambiguity safe</td></tr>
+        <tr><td>Circuit breaker</td><td>persistent failure</td><td>fast failure to the caller</td><td>a fallback in the degradation ladder</td></tr>
+        <tr><td>Queue / bulkhead</td><td>bursts, one slow dependency</td><td>queueing delay, backlog</td><td>bounded queue + shed policy + <code>L = &lambda;W</code> sizing</td></tr>
+        <tr><td>Degradation</td><td>partial capability loss</td><td>lower-quality answers</td><td>explicit levels with thresholds and labels</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a circuit breaker in a house</h4><p>A breaker trips to protect the wiring, not the appliance. In a distributed system the breaker protects the <em>caller</em> from a dead dependency and the <em>dependency</em> from the caller's load. Both directions matter: half of a retry storm is you hurting the provider, half is the provider hurting you.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A house breaker trips on current and resets by hand. A software breaker must decide when to <em>probe</em>, and each probe sends real traffic to a service you believe is down. The half-open state is where most breaker bugs live: loops that never probe (permanent outage after a transient), or every client probing at once (a thundering herd at recovery).</p></div>
+    </div>
+
+    <p>Real attempts form a geometric sum. For independent failures at rate <code>p</code> with <code>r</code> retries, expected
+    attempts per logical call is <code>&sum;<sub>i=0</sub><sup>r</sup> p<sup>i</sup></code>, which converges to
+    <code>1/(1&minus;p)</code>. Compute that before choosing the retry count.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d92-s3">3 &middot; The mechanism <a class="hook" href="#d92-s3">#</a></h2>
+
+    <p>Retry amplification, exactly:</p>
+
+    <div class="formula">
+      E[attempts] = &sum;<sub>i=0</sub><sup>r</sup> p<sup>i</sup> &nbsp;&nbsp;&rarr;&nbsp;&nbsp; 1/(1&minus;p) as r&rarr;&infin; &nbsp;&nbsp;&nbsp;&nbsp; excess load = E[attempts] &minus; 1
+      <span class="note"><code>p</code> = per-attempt failure probability, <code>r</code> = retries. At <code>p=0.30, r=5</code>: <code>1+0.3+0.09+0.027+0.0081+0.00243 = 1.428</code> &rarr; <strong>+42.8% load</strong> on an already-failing backend. At <code>p=0.50, r=5</code>: <code>1.969</code> &rarr; <strong>+96.9%</strong>. This is why retries need a budget shared across the whole run rather than a per-call count.</span>
+    </div>
+
+    <p>Duplication without idempotency, and the queueing relation that makes overload nonlinear:</p>
+
+    <div class="formula">
+      P(duplicate) = P(timeout) &middot; P(effect applied | timeout) &nbsp;&nbsp;&nbsp;&nbsp; L = &lambda; &middot; W &nbsp;&nbsp;&rarr;&nbsp;&nbsp; W = 1/(&mu;&minus;&lambda;) at util &rho;=&lambda;/&mu;
+      <span class="note">Left: <code>0.05 &times; 0.90 = 0.045</code>. Right: Little's Law says in-flight work equals arrival rate times time-in-system, so <strong>a latency increase multiplies concurrency linearly</strong>, which is how one slow dependency exhausts a connection pool. At <code>&rho;=0.95</code> time-in-system is 10&times; the service time at <code>&rho;=0.50</code>'s 1.11&times; &mdash; the curve is not linear near saturation.</span>
+    </div>
+
+    <p>The implementation: shared retry budget, caller-supplied idempotency key, circuit breaker.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> random, time
+
+<span class="kw">class</span> <span class="fn">RetryBudget</span>:
+    <span class="cm">"""Shared across a whole agent run: caps TOTAL extra attempts, not per-call retries."""</span>
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, extra=<span class="nm">10</span>):
+        <span class="nm">self</span>.extra, <span class="nm">self</span>.used = extra, <span class="nm">0</span>
+    <span class="kw">def</span> <span class="fn">take</span>(<span class="nm">self</span>):
+        <span class="kw">if</span> <span class="nm">self</span>.used &gt;= <span class="nm">self</span>.extra: <span class="kw">return</span> <span class="kw">False</span>
+        <span class="nm">self</span>.used += <span class="nm">1</span>
+        <span class="kw">return</span> <span class="kw">True</span>
+
+<span class="kw">class</span> <span class="fn">Breaker</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, threshold=<span class="nm">5</span>, cooldown_s=<span class="nm">30</span>):
+        <span class="nm">self</span>.threshold, <span class="nm">self</span>.cooldown_s = threshold, cooldown_s
+        <span class="nm">self</span>.fails, <span class="nm">self</span>.opened_at = <span class="nm">0</span>, <span class="kw">None</span>
+    <span class="kw">def</span> <span class="fn">allowed</span>(<span class="nm">self</span>, now):
+        <span class="kw">if</span> <span class="nm">self</span>.opened_at <span class="kw">is None</span>: <span class="kw">return</span> <span class="kw">True</span>
+        <span class="kw">if</span> now - <span class="nm">self</span>.opened_at &gt; <span class="nm">self</span>.cooldown_s:
+            <span class="nm">self</span>.opened_at, <span class="nm">self</span>.fails = <span class="kw">None</span>, <span class="nm">0</span>   <span class="cm"># half-open: allow ONE probe</span>
+            <span class="kw">return</span> <span class="kw">True</span>
+        <span class="kw">return</span> <span class="kw">False</span>
+    <span class="kw">def</span> <span class="fn">record</span>(<span class="nm">self</span>, ok, now):
+        <span class="kw">if</span> ok:
+            <span class="nm">self</span>.fails = <span class="nm">0</span>
+        <span class="kw">else</span>:
+            <span class="nm">self</span>.fails += <span class="nm">1</span>
+            <span class="kw">if</span> <span class="nm">self</span>.fails &gt;= <span class="nm">self</span>.threshold: <span class="nm">self</span>.opened_at = now
+
+<span class="kw">def</span> <span class="fn">call_with_retries</span>(op, idem_key, budget, breaker, clock,
+                      attempts=<span class="nm">3</span>, base_s=<span class="nm">0.2</span>, jitter=<span class="nm">0.5</span>, rng=<span class="kw">None</span>):
+    <span class="cm">"""idem_key comes FROM THE CALLER, derived once from the logical operation.</span>
+<span class="cm">       Generating it here is the bug: every retry would get a fresh key and the</span>
+<span class="cm">       server-side dedupe would never fire."""</span>
+    rng = rng <span class="kw">or</span> random.<span class="fn">Random</span>()
+    <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(attempts):
+        now = <span class="fn">clock</span>()
+        <span class="kw">if</span> <span class="kw">not</span> breaker.<span class="fn">allowed</span>(now):
+            <span class="kw">raise</span> <span class="fn">CircuitOpen</span>(idem_key)
+        <span class="kw">try</span>:
+            out = <span class="fn">op</span>(idem_key)                    <span class="cm"># server dedupes on key</span>
+            breaker.<span class="fn">record</span>(<span class="kw">True</span>, now)
+            <span class="kw">return</span> out
+        <span class="kw">except</span> (<span class="fn">TransientError</span>, <span class="fn">TimeoutError</span>):
+            breaker.<span class="fn">record</span>(<span class="kw">False</span>, now)
+            <span class="kw">if</span> i == attempts - <span class="nm">1</span> <span class="kw">or not</span> budget.<span class="fn">take</span>():
+                <span class="kw">raise</span>
+            sleep = base_s * (<span class="nm">2</span>**i) * (<span class="nm">1</span> + jitter*(<span class="nm">2</span>*rng.<span class="fn">random</span>()-<span class="nm">1</span>))
+            time.<span class="fn">sleep</span>(sleep)                    <span class="cm"># exponential backoff + jitter</span>
+    </div>
+
+    <p>Four decisions, all load-bearing. <strong>(1) The idempotency key is a parameter, not a generated value</strong> &mdash; the single
+    most common bug. <strong>(2) The budget is shared across the run</strong>, so a run cannot generate unbounded retries through many
+    calls each retrying. <strong>(3) The breaker opens on persistent failure and probes after a cooldown</strong>, so a dead dependency
+    stops receiving retry traffic. <strong>(4) Backoff is exponential with jitter</strong> &mdash; without jitter, clients retry in lockstep
+    and the retry wave is itself a spike.</p>
+
+    <table class="table">
+      <thead><tr><th>Degradation level</th><th>Trigger</th><th>What is served</th><th>User-visible signal</th></tr></thead>
+      <tbody>
+        <tr><td>full</td><td>errors &lt; 5%</td><td>all tools, verifier on, full context</td><td>none</td></tr>
+        <tr><td>reduced</td><td>errors &ge; 5%</td><td>drop optional tools; tighter context; skip reranking</td><td>none (quality impact only)</td></tr>
+        <tr><td>cached_only</td><td>errors &ge; 15%</td><td>cached or previous answers, with an age label</td><td><strong>staleness flag</strong></td></tr>
+        <tr><td>refuse</td><td>errors &ge; 40% or breaker open</td><td>explicit "degraded, cannot answer"</td><td><strong>explicit refusal</strong></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>Reliability claims are testable only by injection. The audit question: <strong>for each row of the degradation ladder, is
+      there a test that forces the trigger and asserts the served behaviour?</strong> If the "refuse" level has never been
+      exercised, you do not know whether it refuses or crashes &mdash; and that path runs for the first time during your worst incident.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d92-s4">4 &middot; Your hands <a class="hook" href="#d92-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Retries amplify load on a failing backend</h4>
+      <p>Expected attempts per logical call across failure rates and retry counts. Watch the right-hand column as <code>p</code> rises.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">amplification</span>(p_fail, retries):
+    <span class="kw">return</span> <span class="fn">sum</span>(p_fail**i <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(retries + <span class="nm">1</span>))
+
+print(<span class="st">"p_fail   r=0    r=2    r=5"</span>)
+<span class="kw">for</span> pf <span class="kw">in</span> (<span class="nm">0.01</span>, <span class="nm">0.05</span>, <span class="nm">0.10</span>, <span class="nm">0.30</span>, <span class="nm">0.50</span>):
+    row = [<span class="fn">amplification</span>(pf, r) <span class="kw">for</span> r <span class="kw">in</span> (<span class="nm">0</span>, <span class="nm">2</span>, <span class="nm">5</span>)]
+    print(<span class="st">f"{pf:5.2f}  " + "  ".join(f"{x:.3f}" for x in row)"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>0.01 &rarr; 1.000 1.010 1.010</code> &middot;
+      <code>0.05 &rarr; 1.000 1.052 1.053</code> &middot; <code>0.10 &rarr; 1.000 1.110 1.111</code> &middot;
+      <code>0.30 &rarr; 1.000 1.390 1.428</code> &middot; <code>0.50 &rarr; 1.000 1.750 1.969</code>.
+      Two readings. Retries are nearly free when <code>p</code> is small (1.010&times; at 1% failure) &mdash; the regime they were designed for.
+      They are <strong>devastating when <code>p</code> is large</strong>: at 50% failure with 5 retries you nearly double the load on a
+      service already at half capacity, which drives <code>p</code> toward 1, which raises attempts further. That positive feedback is
+      the mechanism behind most retry-induced outages.
+      <strong>Falsifier:</strong> if your service survives a 50% failure with 5 retries, you have genuine headroom &mdash; verify that with
+      Experiment 3's utilisation numbers rather than assuming it, because the loop only bites near saturation.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Duplicates depend on where one line of code lives</h4>
+      <p>Timeout-then-retry with and without a key that survives the retry loop.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">duplicate_rate</span>(p_timeout, p_applied_given_timeout):
+    <span class="kw">return</span> p_timeout * p_applied_given_timeout
+
+<span class="kw">for</span> p_to, p_ap <span class="kw">in</span> ((<span class="nm">0.01</span>, <span class="nm">0.5</span>), (<span class="nm">0.05</span>, <span class="nm">0.5</span>),
+                   (<span class="nm">0.05</span>, <span class="nm">0.9</span>), (<span class="nm">0.10</span>, <span class="nm">0.9</span>)):
+    print(<span class="st">f"P(timeout)={p_to:.2f} P(applied|timeout)={p_ap:.1f} "
+          f"-&gt; P(duplicate)={duplicate_rate(p_to,p_ap):.4f}"</span>)
+print(<span class="st">f"15317 tool calls at 4.5% -&gt; {int(15317*0.045)} duplicate mutations"</span>)
+
+<span class="kw">def</span> <span class="fn">apply_with_dedupe</span>(attempts, seen):
+    applied = <span class="nm">0</span>
+    <span class="kw">for</span> k <span class="kw">in</span> attempts:
+        <span class="kw">if</span> k <span class="kw">in</span> seen: <span class="kw">continue</span>      <span class="cm"># dedupe hit - no side effect</span>
+        seen.<span class="fn">add</span>(k)
+        applied += <span class="nm">1</span>
+    <span class="kw">return</span> applied
+
+print(<span class="st">"same key x3  -&gt; applied"</span>, <span class="fn">apply_with_dedupe</span>([<span class="st">"k1"</span>]*<span class="nm">3</span>, <span class="fn">set</span>()), <span class="st">"(correct)"</span>)
+print(<span class="st">"new key each -&gt; applied"</span>, <span class="fn">apply_with_dedupe</span>([<span class="st">"k1"</span>,<span class="st">"k2"</span>,<span class="st">"k3"</span>], <span class="fn">set</span>()), <span class="st">"(BUG: 3 mutations)"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>0.01 / 0.5 &rarr; 0.0050</code> &middot; <code>0.05 / 0.5 &rarr; 0.0250</code> &middot;
+      <code>0.05 / 0.9 &rarr; 0.0450</code> &middot; <code>0.10 / 0.9 &rarr; 0.0900</code>; then
+      <code>15317 tool calls at 4.5% -&gt; 689 duplicate mutations</code>; then
+      <code>same key x3 -&gt; applied 1 (correct)</code> and <code>new key each -&gt; applied 3 (BUG: 3 mutations)</code>.
+      The last two lines are the lesson compressed: <strong>whether your system duplicates depends on where one line of code
+      lives.</strong> Generating the key inside the retry function is a one-line difference between one mutation and three.
+      <strong>Falsifier:</strong> if your dedupe store has a TTL shorter than your longest retry chain, the window closes and
+      duplicates return &mdash; check TTL against <code>sum(backoff) + timeout</code>.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; The utilisation knee, where retries land</h4>
+      <p>Mean time in system for an M/M/1 queue as utilisation rises. This is the headroom that absorbs retries instead of
+      amplifying them.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">time_in_system</span>(lam, mu):
+    <span class="kw">return</span> <span class="nm">1</span> / (mu - lam)        <span class="cm"># seconds, valid for lam &lt; mu</span>
+
+mu = <span class="nm">10.0</span>                    <span class="cm"># 10 requests/sec service capacity</span>
+<span class="kw">for</span> util <span class="kw">in</span> (<span class="nm">0.5</span>, <span class="nm">0.7</span>, <span class="nm">0.8</span>, <span class="nm">0.9</span>, <span class="nm">0.95</span>):
+    lam = util * mu
+    print(<span class="st">f"util={util:.2f} -&gt; time in system {time_in_system(lam,mu):.2f}s "
+          f"(service {1/mu:.2f}s, ratio {time_in_system(lam,mu)*mu:.1f}x)"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>util=0.50 &rarr; 0.20s (service 0.10s, ratio 2.0x)</code> &middot;
+      <code>0.70 &rarr; 0.33s (3.3x)</code> &middot; <code>0.80 &rarr; 0.50s (5.0x)</code> &middot;
+      <code>0.90 &rarr; 1.00s (10.0x)</code> &middot; <code>0.95 &rarr; 2.00s (20.0x)</code>.
+      At 95% utilisation a request waits 20&times; its service time &mdash; and a 42.8% load increase from retries (Experiment 1 at
+      <code>p=0.30</code>) pushes utilisation from 0.70 to 0.99, where the queue explodes. <strong>The retry policy must be designed
+      against the utilisation curve, not against the error rate.</strong>
+      <strong>Falsifier:</strong> if your latency is flat at high utilisation you have concurrency or batching hiding the queue
+      &mdash; that is real headroom; find its limit with a load test rather than trusting the M/M/1 numbers.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d92-s5">5 &middot; Failure modes <a class="hook" href="#d92-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Retry storm.</strong> Unbounded or unjittered retries on a degraded backend. Symptom: effective load rises above capacity precisely during an incident; utilisation pinned near 1.0.</li>
+        <li><strong>Key generated inside the retry loop.</strong> Symptom: duplicate rows/comments/charges with no error; duplicate count tracks timeout rate.</li>
+        <li><strong>Retry on non-idempotent, non-retryable errors.</strong> Retrying a 400 or a validation error. Symptom: identical error strings repeated in the trace; wasted spend with zero chance of success.</li>
+        <li><strong>Timeout shorter than p99 of the operation.</strong> Healthy slow requests are killed and retried, adding load. Symptom: retry rate exceeds true error rate; retried calls often succeed on the second attempt for no reason.</li>
+        <li><strong>Breaker with no probe.</strong> Opens and never closes. Symptom: a dependency recovers but traffic never returns; permanent degradation after a transient.</li>
+        <li><strong>Breaker probe storm.</strong> All clients probe simultaneously on cooldown expiry. Symptom: periodic latency spikes at exactly the cooldown interval.</li>
+        <li><strong>Unbounded queue.</strong> Backlog grows without shedding. Symptom: queue depth grows monotonically; latency measured in queue-age, not work time; memory climbs.</li>
+        <li><strong>Undesigned degradation.</strong> No ladder. Symptom: at 20% error rate users get partial or truncated answers with no warning; support cannot distinguish "degraded" from "broken".</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d92-s6">6 &middot; Connects to <a class="hook" href="#d92-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="90-observability.html">L90 &middot; Traces</a>,
+    <a class="tag-d" href="91-cost-latency.html">L91 &middot; Latency SLOs</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="96-production-checklist.html">L96 &middot; Go/no-go</a>,
+    <a class="tag-d" href="99-capstone.html">L99 &middot; Capstone</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="90-observability.html">L90 &middot; Observability</a> &mdash; retry chains are visible only if each attempt is a span with the same logical id.</li>
+      <li><a class="tag-d" href="91-cost-latency.html">L91 &middot; Cost/latency</a> &mdash; retries are the cost that pushes p95 past the SLO; cost per verified task is where they show up.</li>
+      <li><a class="tag-d" href="82-long-horizon.html">L82 &middot; Long horizon</a> &mdash; fault injection is how you measure detection rate <code>d</code>, which sets the autonomy horizon.</li>
+      <li><a class="tag-d" href="77-tool-calling.html">L77 &middot; Tool schemas</a> &mdash; a retryable vs non-retryable distinction belongs in the tool contract, not the caller.</li>
+      <li><a class="tag-b" href="../track-b/44-inference-serving.html">L44 &middot; Serving</a> &mdash; continuous batching determines how much retry load a model endpoint can absorb.</li>
+      <li><a class="tag-d" href="84-safety-sandboxing.html">L84 &middot; Sandboxing</a> &mdash; an irreversible action must never be retried automatically; that is a capability decision, not a reliability one.</li>
+      <li><a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a> &mdash; the harness's promotion gates include a reliability gate built from these injection tests.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d92-s7">7 &middot; Self-check <a class="hook" href="#d92-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Backend failure rate 0.20, 4 retries. Compute the load multiplier and say what it does to a backend running at 80% utilisation.</p>
+        <details><summary>Reveal answer</summary><p><code>&sum;<sub>i=0</sub><sup>4</sup> 0.2<sup>i</sup> = 1 + 0.2 + 0.04 + 0.008 + 0.0016 = 1.2496</code> &rarr; <strong>+25% load</strong>. A backend at 80% utilisation receiving 1.25&times; load goes to <code>0.80 &times; 1.2496 = 0.9997</code> &mdash; effectively 100%, where queue time diverges and latency blows up. So a 20% error rate plus retries does not merely persist the error rate; it removes the remaining headroom and turns a degradation into an outage. The fix is a shared retry budget plus a breaker, so total attempt inflation is bounded rather than per-call.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> You observe 4% duplicate comments. Timeout rate is 4%, and effects apply before timeout 95% of the time. Is the math consistent, and what is the bug?</p>
+        <details><summary>Reveal answer</summary><p>Predicted duplicate rate <code>= 0.04 &times; 0.95 = 0.038</code>, i.e. 3.8% &mdash; consistent with the observed 4%. So the mechanism is confirmed: the retry fired after the effect had already been applied, and the second application succeeded because it was not deduplicated. The bug is the absence of an idempotency key, or a key generated per attempt rather than per logical operation. Fix: derive the key from <code>(logical_op, target, request_id)</code> at the call site <em>before</em> entering the retry loop, and require the server to dedupe on it. Verify by asserting the mutation count equals the logical-op count in a test that injects timeouts.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why does jitter matter, quantitatively?</p>
+        <details><summary>Reveal answer</summary><p>Without jitter, clients that fail at the same moment retry at the same moment: an outage produces a synchronized retry wave at <code>t+backoff</code>, which hits the recovering service as a spike and can re-trigger the outage. With full jitter, retries spread uniformly over the backoff window, so the peak load from retries is roughly <code>1/(number of retry cohorts)</code> of the no-jitter peak. Practically: exponential backoff sets the <em>total</em> wait budget; jitter spreads arrivals within it. The standard implementation is <code>sleep = base &times; 2^i &times; (1 + jitter&times;(2r&minus;1))</code> with <code>jitter</code> near 0.5, which disperses each cohort over a 2&times; window.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: a dependency recovered 20 minutes ago but your error rate is unchanged. What is the likely cause and the test that proves it?</p>
+        <details><summary>Reveal answer</summary><p>A <strong>circuit breaker with no working probe</strong> &mdash; it opened and never entered half-open, so no traffic reaches the recovered dependency. Prove it by inspecting the breaker state in the trace (<code>CircuitOpen</code> errors with no attempted call underneath), then force a probe manually and watch the error rate drop. The fix is an explicit half-open state with a single permitted probe and jitter on the cooldown, and a test that simulates recovery and asserts traffic resumes. Without this, a transient failure becomes a permanent one &mdash; the failure mode a breaker is supposed to prevent.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Which operations must never be auto-retried, and what does that imply for the architecture?</p>
+        <details><summary>Reveal answer</summary><p>Irreversible or externally visible mutations without a reliable idempotency guarantee: deploys, payments, deletions, sends to third parties, and anything with side effects outside your transaction boundary. Retrying them risks an un-undoable duplicate (L84). Implication: the retryable/non-retryable distinction is a property of the <em>tool or capability</em>, not a global policy &mdash; so it belongs in the tool contract (L77) alongside the irreversibility flag, and the retry wrapper must consult it. For non-retryable operations, the correct behaviour is to surface the ambiguity ("we do not know whether it applied") and require an out-of-band check, not to guess by retrying.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="91-cost-latency.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L91 &middot; Cost &amp; latency budgets</span></a>
+    <a class="next" href="93-safety-alignment.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L93 &middot; Safety &amp; prompt injection</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

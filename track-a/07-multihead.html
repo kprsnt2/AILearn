@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a07">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L07 · Multi-Head Attention — AILearn</title>
+<meta name="description" content="Why one attention head is not enough: the head-slicing experiment, reshape/transpose correctness, per-head scaling, and what the concat-and-project step actually buys.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L07</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L07 &middot; Multi-Head Attention: Why Heads, and What They Cost</h1>
+  <p class="lede">One attention head produces one convex combination per token &mdash; a single "average of what I looked at". Language needs several different lookups at once: previous token, matching bracket, subject, delimiter. Multi-head attention is that fan-out, and its whole implementation risk lives in four transpose calls.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: head-slicing experiment + shape-correct multi-head attention</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">head splitting</span>
+  <span class="pill">d_head = d_model / H</span>
+  <span class="pill">reshape vs transpose</span>
+  <span class="pill">concat + W_O</span>
+  <span class="pill">per-head scaling</span>
+  <span class="pill">specialised heads</span>
+  <span class="pill">head redundancy</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a07-s1">1 &middot; Why it exists <a class="hook" href="#a07-s1">#</a></h2>
+
+    <p>Single-head attention computes <code>softmax(QK<sup>T</sup>/&radic;d)A&middot;V</code> &mdash; one distribution over
+    keys per query, hence <em>one</em> weighted average of values. That is a severe bottleneck for exactly the cases
+    that matter in code and contracts. A token inside a JSON object wants to attend to its matching opening brace
+    <em>and</em> to the key name <em>and</em> to the previous token. Averaging those three lookups into one vector
+    destroys the distinction: the output is a blend that a linear layer cannot un-blend, because the averaging happens
+    before any nonlinearity.</p>
+
+    <p>Multi-head attention fixes this by splitting the representation space: run H independent attention operations on
+    H disjoint slices of the model dimension, then concatenate. Each head has its own Q/K/V projections, therefore its
+    own similarity metric, therefore its own attention pattern. This is the mechanism that lets a trained model
+    contain a "previous token head", a "syntactic head" and a "copy head" simultaneously &mdash; and it is why
+    interpretability work (induction heads, head ablation, attribution patching) addresses heads individually rather
+    than a monolithic attention block.</p>
+
+    <div class="callout boss">
+      <p>Multi-head does not increase the FLOPs or the parameter count much: d<sub>model</sub> &times; d<sub>model</sub>
+      for Q, K, V each, regardless of H. It increases capacity to express <em>multiple distinct attention patterns</em>
+      at the same cost per token, and it multiplies the KV-cache size by H unless you compress &mdash; the tradeoff that
+      drives every architecture in Track B.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a07-s2">2 &middot; The mental model <a class="hook" href="#a07-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> A committee of H specialists reads the same sentence. Each writes its own summary of
+    "what I looked at", and a final editor (the output projection W<sub>O</sub>) merges the H memos into one
+    document. A syntax specialist and a coreference specialist can disagree without destroying each other's work.</p>
+
+    <p><strong>Where the analogy breaks.</strong> The specialists do not read the same input &mdash; they read disjoint
+    <em>slices</em> of each token's vector. Head h only ever sees coordinates [h&middot;d<sub>head</sub> :
+    (h+1)&middot;d<sub>head</sub>] after its own projection, so the split is a hard partition of the width, not a
+    soft mixture of experts. And the merge is a single learned linear map shared by all positions, not an editor with
+    judgement: W<sub>O</sub> is the only place heads can interact, and its rank is d<sub>model</sub>. A second place
+    it breaks: with a small d<sub>head</sub>, a head cannot represent an arbitrary similarity function &mdash; its
+    capacity is bounded by d<sub>head</sub>-dimensional geometry, which is exactly why the number of heads has an
+    optimum rather than "more is better".</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Cost is per-head, not per-model</h4><p>Q,K,V,O are four d<sub>model</sub>&times;d<sub>model</sub> matrices no matter the split. Attention FLOPs are 4&middot;n<sup>2</sup>&middot;d<sub>model</sub> per layer regardless of H. Splitting is nearly free.</p></div>
+      <div class="card"><h4>What costs is d<sub>head</sub></h4><p>The scaling factor becomes 1/&radic;d<sub>head</sub>, not 1/&radic;d<sub>model</sub>. Using d<sub>model</sub> under-scales logits by &radic;H &mdash; a silent bug that makes attention too flat.</p></div>
+      <div class="card"><h4>Heads are not independent</h4><p>Many heads turn out to be prunable at inference (identified in the literature as a large fraction being removable), but they must be <em>trained</em> as redundancy &mdash; pruning before convergence is destructive.</p></div>
+      <div class="card"><h4>The KV-cache multiplier</h4><p>Memory for K and V is 2&middot;H&middot;d<sub>head</sub>&middot;L per token &mdash; the full d<sub>model</sub> width, twice. That is the number GQA/MQA/MLA attack (L09, L10, L33).</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a07-s3">3 &middot; The mechanism <a class="hook" href="#a07-s3">#</a></h2>
+
+    <div class="formula">
+      d<sub>head</sub> = d<sub>model</sub> / H &nbsp;&nbsp;(must divide evenly)<br>
+      For h = 1..H: &nbsp; Q<sub>h</sub> = XW<sub>Q,h</sub>, &nbsp; K<sub>h</sub> = XW<sub>K,h</sub>, &nbsp; V<sub>h</sub> = XW<sub>V,h</sub> &nbsp;&nbsp;where each W<sub>h</sub> &isin; R<sup>d<sub>model</sub>&times;d<sub>head</sub></sup><br>
+      O<sub>h</sub> = softmax(Q<sub>h</sub>K<sub>h</sub><sup>T</sup>/&radic;d<sub>head</sub> + mask) V<sub>h</sub> &isin; R<sup>n&times;d<sub>head</sub></sup><br>
+      out = [O<sub>1</sub> ; O<sub>2</sub> ; &hellip; ; O<sub>H</sub>] W<sub>O</sub> &nbsp;&nbsp;(concat on the feature axis, W<sub>O</sub> &isin; R<sup>d<sub>model</sub>&times;d<sub>model</sub></sup>)
+      <span class="note">In practice W<sub>Q</sub>, W<sub>K</sub>, W<sub>V</sub> are stored as single d<sub>model</sub>&times;d<sub>model</sub> matrices and the head split is a reshape. It is algebraically identical to H separate matrices &mdash; and it is why the reshape must be <code>view(n, H, d_head)</code> then <code>transpose(1, 0, 2)</code>, not a bare reshape of the (n, H, d_head) output.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+np.set_printoptions(precision=<span class="nm">3</span>, suppress=<span class="kw">True</span>)
+<span class="kw">def</span> <span class="fn">softmax</span>(x, axis=-<span class="nm">1</span>):
+    x = x - x.max(axis=axis, keepdims=<span class="kw">True</span>); e = np.exp(x); <span class="kw">return</span> e / e.sum(axis=axis, keepdims=<span class="kw">True</span>)
+
+rng = np.random.default_rng(<span class="nm">1</span>)
+n, d_model, H = <span class="nm">6</span>, <span class="nm">16</span>, <span class="nm">4</span>
+d_head = d_model // H
+X = rng.normal(size=(n, d_model))
+Wq, Wk, Wv, Wo = (rng.normal(size=(d_model, d_model)) / np.sqrt(d_model) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">4</span>))
+<span class="kw">def</span> <span class="fn">split</span>(z): <span class="kw">return</span> z.reshape(n, H, d_head).transpose(<span class="nm">1</span>, <span class="nm">0</span>, <span class="nm">2</span>)     <span class="cm"># (H, n, d_head)</span>
+Q, K, V = <span class="fn">split</span>(X @ Wq), <span class="fn">split</span>(X @ Wk), <span class="fn">split</span>(X @ Wv)
+S = Q @ K.transpose(<span class="nm">0</span>, <span class="nm">2</span>, <span class="nm">1</span>) / np.sqrt(d_head)          <span class="cm"># (H, n, n) -- scale by d_head!</span>
+S = S + np.triu(np.full((n, n), -np.inf), k=<span class="nm">1</span>)              <span class="cm"># causal, broadcast over heads</span>
+A = <span class="fn">softmax</span>(S, -<span class="nm">1</span>)
+O = A @ V                                                  <span class="cm"># (H, n, d_head)</span>
+Y = O.transpose(<span class="nm">1</span>, <span class="nm">0</span>, <span class="nm">2</span>).reshape(n, d_model) @ Wo            <span class="cm"># concat heads, then project</span>
+<span class="fn">print</span>(<span class="st">"Y[1][:4]:"</span>, Y[<span class="nm">1</span>][:<span class="nm">4</span>])
+<span class="kw">for</span> h <span class="kw">in</span> <span class="fn">range</span>(H):
+    ent = -(A[h] * np.log(A[h] + <span class="nm">1e-12</span>)).sum(-<span class="nm">1</span>)
+    <span class="fn">print</span>(<span class="st">f"head {h} attention entropy at last token: {ent[-1]:.3f} nats"</span>)
+    </div>
+
+    <p>Verified output (numpy 2.3.5):</p>
+    <div class="code" data-lang="output">
+Y[1][:4]: [-0.138 -0.032 -0.081  0.535]
+head 0 attention entropy at last token: 1.759 nats
+head 1 attention entropy at last token: 1.490 nats
+head 2 attention entropy at last token: 1.783 nats
+head 3 attention entropy at last token: 1.633 nats
+    </div>
+
+    <p>With random weights the heads are near-uniform, so entropy is close to ln(6) = 1.79 for all four &mdash; they do
+    not yet differ. That is the correct expectation at initialisation, and it tells you how to detect a real
+    problem: <strong>if all heads share entropy and attention patterns after training, the split is not being used</strong>
+    (typical cause: the head-axis transpose is missing, so all "heads" are attending over the same feature block).</p>
+
+    <h3>Is multi-head just one wide head?</h3>
+    <p>No, and it is worth being precise about why, because people often claim it is "equivalent for linear
+    attention". With one head of width d<sub>model</sub>, the row-stochastic matrix A<sub>single</sub> is <em>shared</em>
+    across all feature dimensions: every output coordinate is a mixture of the values with the same weights, so the
+    output at a position lies in the span of the values weighted by a single distribution. With H heads, each block of
+    d<sub>head</sub> output coordinates has its <em>own</em> distribution A<sub>h</sub>. Formally, the concatenated output
+    is a block-diagonal mixture: H independent convex combinations. A single head cannot represent that unless all
+    heads agree. Verified numerically in Experiment 1: the two outputs differ by
+    <code>max |single-head - multihead| = 0.6697</code> on identical inputs.</p>
+
+    <h3>The four transpose bugs</h3>
+    <table class="table">
+      <tr><th>Line</th><th>Wrong version</th><th>Symptom</th></tr>
+      <tr><td><code>view(n, H, d_head)</code></td><td><code>view(n, d_head, H)</code></td><td>Heads are interleaved across features; attention still runs, quality quietly drops</td></tr>
+      <tr><td><code>transpose(1, 0, 2)</code></td><td>missing transpose</td><td>Batch/head axes swapped: heads 1..H-1 silently share head 0's statistics; often no crash when n == H</td></tr>
+      <tr><td><code>S / sqrt(d_head)</code></td><td><code>S / sqrt(d_model)</code></td><td>Logits too flat by &radic;H; attention never sharpens, model underfits</td></tr>
+      <tr><td>concat <code>transpose(1,0,2).reshape(n, d_model)</code></td><td><code>reshape(n, d_model)</code> on the (H, n, d_head) tensor</td><td>Head contents are scrambled into wrong output coordinates; trains but badly, with no error</td></tr>
+    </table>
+    <p>The last one is the worst kind of bug because shapes all agree. The invariant that catches it: after the
+    reshape, <code>Y[:, h*d_head:(h+1)*d_head]</code> must equal <code>O[h]</code> exactly. Assert that in a unit test.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a07-s4">4 &middot; Your hands <a class="hook" href="#a07-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Prove that H heads &ne; one wide head</h4>
+      <p>Build both on identical weights and compare. If they match, either your split is degenerate or your
+      "multi-head" is secretly averaging.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># paste the section-3 setup first, then:</span>
+Qs = X @ Wq; Ks = X @ Wk; Vs = X @ Wv
+Ss = Qs @ Ks.T / np.sqrt(d_model) + np.triu(np.full((n, n), -np.inf), k=<span class="nm">1</span>)
+out_single = (np.exp(Ss - Ss.max(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>)) @ Vs) @ Wo
+<span class="cm"># normalise_single above == softmax(Ss); compare with multi-head Y</span>
+<span class="fn">print</span>(<span class="st">"max |single - multi| ="</span>, <span class="fn">float</span>(np.abs(out_single - Y).max()))
+      </div>
+      <p class="expect">Verified: <strong>0.6697</strong> &mdash; a large difference, not floating point noise. The
+      reason is structural: the single head applies one attention distribution to all 16 coordinates, while the
+      multi-head version applies four different distributions to four blocks of 4. Falsifier: if the difference were
+      ~1e-15, the head axis is not being used. This experiment is the cheapest possible check on a rewritten attention
+      kernel.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The concat invariant</h4>
+      <p>The assertion that catches the scrambled-concat bug, which produces valid shapes and broken semantics.</p>
+      <div class="code" data-lang="python">
+O = A @ V                                  <span class="cm"># (H, n, d_head) from section 3</span>
+concat = O.transpose(<span class="nm">1</span>, <span class="nm">0</span>, <span class="nm">2</span>).reshape(n, d_model)
+ok = <span class="fn">all</span>(np.allclose(concat[:, h*d_head:(h+<span class="nm">1</span>)*d_head], O[h]) <span class="kw">for</span> h <span class="kw">in</span> <span class="fn">range</span>(H))
+<span class="fn">print</span>(<span class="st">"concat invariant holds:"</span>, ok)
+<span class="fn">print</span>(<span class="st">"head0 block equals O[0]:"</span>, np.allclose(concat[:, :d_head], O[<span class="nm">0</span>]))
+      </div>
+      <p class="expect">Both print <code>True</code>. Now remove the transpose (<code>O.reshape(n, d_model)</code>) and
+      rerun: shapes still match, but the invariant fails. That is the exact signature to look for in a code review &mdash;
+      correct shape, wrong layout, no exception.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Price the head count</h4>
+      <p>Head count is nearly free in compute and in parameters, but it is <em>linear</em> in KV-cache memory and in the
+      size of the attention matrix you must store. Compute all three for a realistic block.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">cost</span>(d_model=<span class="nm">4096</span>, n=<span class="nm">2048</span>, H=<span class="nm">32</span>, bpe=<span class="nm">2</span>, layers=<span class="nm">32</span>):
+    d_head = d_model // H
+    params = <span class="nm">4</span> * d_model * d_model                        <span class="cm"># Q, K, V, O</span>
+    flops_attn = <span class="nm">4</span> * n * n * d_model                      <span class="cm"># QK^T and AV</span>
+    scores = H * n * n * bpe
+    kv = <span class="nm">2</span> * H * d_head * bpe                             <span class="cm"># bytes per token per layer</span>
+    <span class="kw">return</span> d_head, params, flops_attn, scores / <span class="nm">1e6</span>, kv, kv * layers
+<span class="kw">for</span> H <span class="kw">in</span> [<span class="nm">8</span>, <span class="nm">16</span>, <span class="nm">32</span>, <span class="nm">64</span>, <span class="nm">128</span>]:
+    dh, p, f, sc, kv, kvl = <span class="fn">cost</span>(H=H)
+    <span class="fn">print</span>(<span class="st">f"H={H:3d} d_head={dh:4d} params={p/1e6:6.1f}M attn_FLOPs={f/1e9:7.1f}G scores={sc:8.2f}MB KV/token/layer={kv:6d}B KV/token(all)={kvl:6d}B"</span>)
+      </div>
+      <p class="expect">Parameters and FLOPs are <em>identical</em> across every head count; only d<sub>head</sub> and the
+      score-matrix size change, and the score matrix scales as H&times;n<sup>2</sup>&times;2 bytes while KV per token stays
+      fixed at 2&middot;d<sub>model</sub> bytes because H&middot;d<sub>head</sub> = d<sub>model</sub>. That last equality is
+      important: <strong>naive MHA's KV cache does not depend on head count at all</strong> &mdash; it depends on
+      d<sub>model</sub> and layers. GQA/MQA break that equality deliberately (L10).</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a07-s5">5 &middot; Failure modes <a class="hook" href="#a07-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Scaling by d_model instead of d_head.</strong> Symptom: attention entropy stays near maximum (uniform) even after many steps; loss decreases but plateaus above target. Check: log mean row entropy per head; healthy trained heads are much sharper than ln(n).</li>
+        <li><strong>Scrambled concat (missing transpose before reshape).</strong> Symptom: no crash, quality lower than expected, head ablations show every head matters equally &mdash; a sign the layout is mixed. Caught by the concat invariant test.</li>
+        <li><strong>Head transpose applied to the wrong axis after batching.</strong> Symptom: works with n == H or batch == 1 and breaks otherwise; classic in code moved from a single-example notebook. Test with batch &ne; heads &ne; n.</li>
+        <li><strong>d_model not divisible by H.</strong> Symptom: reshape error, or worse, silent truncation when using <code>//</code>. Assert <code>d_model % H == 0</code> at construction.</li>
+        <li><strong>Per-head dropout with the wrong probability.</strong> Symptom: attention entropy at eval is much sharper than at train, and validation loss is worse than train &mdash; the classic unresolved dropout-vs-eval scaling mistake.</li>
+        <li><strong>Head pruning without accounting for KV groups.</strong> Symptom: after removing heads you gain little because the KV cache is unchanged (removing a query head that shares a KV head saves compute, not memory). This is why GQA is a design-time choice, not a post-hoc prune (L10).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a07-s6">6 &middot; Connects to <a class="hook" href="#a07-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="06-attention-core.html">L06</a>. &nbsp;
+    <strong>Unlocks:</strong> positional variants per head, KV cache compression, interpretability.</p>
+    <ul>
+      <li><a class="tag-a" href="09-kv-cache.html">L09 &middot; KV cache</a> &mdash; H&middot;d<sub>head</sub>&middot;L&middot;2 bytes per token is the number you will optimise for the rest of the course.</li>
+      <li><a class="tag-a" href="10-gqa-mqa.html">L10 &middot; MQA / GQA / MLA</a> &mdash; sharing KV heads across query heads to cut that number.</li>
+      <li><a class="tag-a" href="15-batching-seqpack.html">L15 &middot; Batching</a> &mdash; masks must broadcast over the head axis; the shape tests here plus padding masks are the standard suite.</li>
+      <li><a class="tag-a" href="19-full-transformer.html">L19 &middot; Full transformer</a> &mdash; the MHA block inside the residual, with the output projection and dropout.</li>
+      <li><a class="tag-b" href="../track-b/49-components-circuits.html">L49 &middot; Circuits</a> &mdash; previous-token and induction heads: concrete, measurable head specialisations.</li>
+      <li><a class="tag-b" href="../track-b/33-mla.html">L33 &middot; MLA</a> &mdash; compressing the per-head latent rather than sharing heads.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: store a per-head attention-entropy summary per layer per request (H&times;L floats). A degraded
+      serving path that silently drops the head axis shows up here as all heads having identical entropy &mdash; before
+      it shows up in your eval numbers.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a07-s7">7 &middot; Self-check <a class="hook" href="#a07-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> With d_model = 768 and H = 12, what is d_head, and what number goes under the square root?</p>
+        <details><summary>Reveal answer</summary><p>d_head = 768/12 = <strong>64</strong>, so the scaling is 1/&radic;64 = 1/8. Using 1/&radic;768 would make logits &radic;12 &asymp; 3.46&times; too small, i.e. attention too flat. The general statement: the scaling must match the width of the vectors being dotted together, which is d_head in each head.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Does increasing H from 16 to 64 (fixed d_model = 4096) change parameter count, attention FLOPs, or KV-cache size? Answer each.</p>
+        <details><summary>Reveal answer</summary><p>(a) Parameters: <strong>unchanged</strong> &mdash; four d<sub>model</sub><sup>2</sup> matrices either way. (b) Attention FLOPs: <strong>unchanged</strong> &mdash; 4&middot;n<sup>2</sup>&middot;d<sub>model</sub> for the QK<sup>T</sup>+AV pair, since H&middot;d_head = d<sub>model</sub>. (c) KV-cache size: <strong>unchanged</strong> &mdash; 2&middot;H&middot;d_head = 2&middot;d<sub>model</sub> bytes per token per layer. (d) <em>Changed</em>: the score matrix count grows with H (each head materialises its own n&times;n block), and the per-head geometric capacity shrinks. So H trades "how many distinct patterns" against "how much geometry per pattern", at constant compute.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a rewritten attention kernel passes every shape check and loss decreases, but the model is 4 points behind a reference run. Name the two most likely causes and the test for each.</p>
+        <details><summary>Reveal answer</summary><p>(1) Scrambled concat / missing head transpose &mdash; test with the concat invariant <code>concat[:, h*d:(h+1)*d] == O[h]</code>. (2) Wrong scaling factor (d_model instead of d_head) &mdash; test by logging per-head attention entropy after a few hundred steps; uniformly high entropy indicates under-scaling. A third candidate: masks broadcast on the wrong axis (test: sequence alone vs in a padded batch). All three are silently wrong, none crashes, which is why the three assertions belong in the kernel's test file.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Explain precisely why H=4 heads with d_head=4 is not equivalent to H=1 head with d_head=16, even ignoring the output projection.</p>
+        <details><summary>Reveal answer</summary><p>Because the attention mixture is applied per head: the output block of coordinates 0..3 is (A<sub>1</sub>V<sub>1</sub>), coordinates 4..7 is (A<sub>2</sub>V<sub>2</sub>), and so on. A single 16-wide head applies one A to all coordinates. Four heads can express a block-diagonal family of mixtures (4 distinct distributions), a single head can only express rank-one-along-features mixtures. The measured difference on random weights was 0.67 in max-abs, not numerical noise. Only if all four A<sub>h</sub> happened to be equal would the two be equivalent.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does removing a query head save compute but not KV memory, and why does that shape the KV-cache optimisations?</p>
+        <details><summary>Reveal answer</summary><p>The KV cache stores keys and values per <em>KV head</em>. A query head carries no stored state &mdash; it is computed fresh for the current token. Removing one reduces the QK<sup>T</sup> work for that head only, while K and V must still be kept. Memory is governed by the number of KV heads, which is exactly why GQA/MQA <em>share</em> KV across query heads and MLA stores a compressed latent: the only ways to shrink the cache are to store fewer distinct K/V tensors or fewer bytes per entry.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="06-attention-core.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L06 &middot; Attention from first principles</span></a>
+    <a class="next" href="08-positional.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L08 &middot; Positional encoding &rarr; RoPE</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

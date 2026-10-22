@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a01">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L01 · Tokenization — AILearn</title>
+<meta name="description" content="Tokenization as a physical interface: BPE merging by frequency, the round-trip test, and where cost, failure and audit risk actually come from.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L01</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L01 &middot; Tokenization: The Physics of the Text Interface</h1>
+  <p class="lede">The model never sees text &mdash; it sees a list of integers whose <em>count</em> is your bill and whose <em>boundaries</em> decide which arithmetic it can never do. Tokenization is the one layer where a "cosmetic" change silently changes context limits, pricing and evaluation scores.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: BPE trainer + token cost meter</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">BPE</span>
+  <span class="pill">byte fallback</span>
+  <span class="pill">merge order determinism</span>
+  <span class="pill">vocab size tradeoff</span>
+  <span class="pill">tokens-per-word</span>
+  <span class="pill">round-trip test</span>
+  <span class="pill">token cost meter</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a01-s1">1 &middot; Why it exists <a class="hook" href="#a01-s1">#</a></h2>
+
+    <p>A neural network is a pile of matrix multiplications. It cannot multiply by the letter <code>r</code>.
+    So a decision had to be made before any learning could start: what is the atomic unit of text?
+    Character-level models make sequences brutally long &mdash; an 8,000-token budget is only a few kilobytes of
+    text &mdash; and attention is quadratic. Word-level models explode: any new word, typo, or
+    <code>\\x00</code> is out of vocabulary, so the model sees <code>&lt;unk&gt;</code> and loses information
+    permanently. Byte-pair encoding exists because it is the cheapest compromise that is also
+    <em>lossless</em>: start from bytes, then repeatedly glue together the most frequent adjacent pair.</p>
+
+    <p>The failure it was invented to stop is concrete: a vocabulary that cannot represent its input. Once you accept
+    <em>any</em> byte string must be representable, you inherit the whole cost model of modern LLM serving: a prompt is
+    billed per token, a context window is measured in tokens, and throughput is tokens/second. The tokenizer, not the
+    text, is the interface.</p>
+
+    <div class="callout boss">
+      <p>You do not have a "text" bill, you have a "token" bill. Every cost, latency and context-window number you
+      negotiate is denominated in tokens produced by one specific tokenizer, and re-tokenization between models is
+      not free.</p>
+    </div>
+
+    <p>Two consequences you can measure today, and will in section 4: English prose costs roughly 1.2&ndash;1.5 tokens per
+    word under common tokenizers (V=50k-class), code and non-Latin scripts cost substantially more per character than English,
+    and the same sentence passed through two different tokenizers yields different token counts, different truncation
+    points, and different per-token perplexity.</p>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a01-s2">2 &middot; The mental model <a class="hook" href="#a01-s2">#</a></h2>
+
+    <p><strong>Analogy (and where it breaks).</strong> A tokenizer is a lookup table applied before the model runs:
+    the encoder replaces the longest dictionary entries it knows with index numbers, and the model works entirely on
+    those numbers.</p>
+
+    <p>Where the analogy breaks: a compression dictionary is usually tuned to the <em>payload</em>, while a BPE
+    vocabulary is learned once from a general corpus and frozen. So it is optimal for average text and
+    expensive for your text. Try this now, because it is the whole sharp edge of the topic:</p>
+
+    <div class="code" data-lang="bash">
+python -c "t='CMS-2024-0042 / ledger/9f3a1c77e0b4d5a6.json'; print(len(t),'chars,',len(t.encode()),'bytes')"
+    </div>
+    <p>Verified: <code>44 chars, 44 bytes</code> &mdash; pure ASCII, so bytes equal characters here (section 4 shows where
+    that stops being true). Those 44 bytes are <em>six events</em> to a human (an agency, a year, a record number, a file name, a hash)
+    and will be roughly 8&ndash;14 tokens to a 50k-class vocabulary, because none of that structure appeared often
+    enough in the training corpus to earn a merge. Rare text pays full character price, and therefore full
+    attention price, since attention cost is quadratic in token count (<a class="tag-a" href="06-attention-core.html">L06</a>).</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the model actually sees</h4><p>An integer sequence <code>[id_0 &hellip; id_T-1]</code>, each id indexing a row of the embedding table. Position <em>t</em> is not a character, not a word, not a syntactic unit.</p></div>
+      <div class="card"><h4>What the model cannot see</h4><p>The string. <code>"1749"</code> might be five ids or two. Digit grouping is a property of the tokenizer, so "the model can't do arithmetic" is really "the tokenizer never showed it aligned columns".</p></div>
+      <div class="card"><h4>What stays deterministic</h4><p>Given the same vocabulary file and merge list, encoding is a pure function: no sampling, no device dependence. Token ids are reproducible exactly when generations are not &mdash; that is your primary audit anchor.</p></div>
+      <div class="card"><h4>What breaks</h4><p>Whitespace is fused into tokens (<code>"the"</code> &ne; <code>" the"</code>), so count depends on formatting, and one trailing newline can shift the final segmentation and change a scored logprob.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a01-s3">3 &middot; The mechanism <a class="hook" href="#a01-s3">#</a></h2>
+
+    <h3>Training: greedy pairwise merges</h3>
+    <p>Start from the byte sequence of every word (with an end-of-word sentinel so <code>"low"</code> and
+    <code>"lower"</code> are not forced into one token). Count every adjacent symbol pair, weighted by word frequency.
+    Merge the single most frequent pair into a new symbol. Repeat V<sub>target</sub> &minus; 256 times. This is exactly
+    what Sennrich et al. proposed for subword units and what GPT-2 popularised with bytes as the base alphabet.</p>
+
+    <div class="formula">
+      (a, b)* = argmax<sub>(a,b)</sub> &sum;<sub>w&isin;vocab</sub> freq(w) &middot; count<sub>ab</sub>(w)
+      <span class="note">a, b are adjacent symbols; frequency-weighted counts make rare words contribute almost nothing. Ties are broken by symbol order, which is what makes training reproducible.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># BPE trainer &mdash; stdlib only. Runs as-is.</span>
+<span class="kw">def</span> <span class="fn">bpe_train</span>(words, n_merges):
+    wl = {<span class="fn">tuple</span>(<span class="fn">list</span>(w) + [<span class="st">"&lt;/w&gt;"</span>]): c <span class="kw">for</span> w, c <span class="kw">in</span> words.items()}
+    merges = []
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(n_merges):
+        pairs = {}
+        <span class="kw">for</span> syms, c <span class="kw">in</span> wl.items():
+            <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="fn">len</span>(syms) - <span class="nm">1</span>):
+                pairs[syms[i], syms[i+<span class="nm">1</span>]] = pairs.get((syms[i], syms[i+<span class="nm">1</span>]), <span class="nm">0</span>) + c
+        <span class="kw">if not</span> pairs: <span class="kw">break</span>
+        best = <span class="fn">max</span>(pairs, key=<span class="kw">lambda</span> k: (pairs[k], k))      <span class="cm"># freq first, then lexicographic</span>
+        merges.append(best)
+        new = {}
+        <span class="kw">for</span> syms, c <span class="kw">in</span> wl.items():
+            out, i = [], <span class="nm">0</span>
+            <span class="kw">while</span> i &lt; <span class="fn">len</span>(syms):
+                <span class="kw">if</span> i &lt; <span class="fn">len</span>(syms) - <span class="nm">1</span> <span class="kw">and</span> (syms[i], syms[i+<span class="nm">1</span>]) == best:
+                    out.append(syms[i] + syms[i+<span class="nm">1</span>]); i += <span class="nm">2</span>
+                <span class="kw">else</span>:
+                    out.append(syms[i]); i += <span class="nm">1</span>
+            new[<span class="fn">tuple</span>(out)] = c
+        wl = new
+    <span class="kw">return</span> merges, wl
+
+corpus = {<span class="st">"low"</span>: <span class="nm">5</span>, <span class="st">"lower"</span>: <span class="nm">2</span>, <span class="st">"newest"</span>: <span class="nm">6</span>, <span class="st">"widest"</span>: <span class="nm">3</span>}
+merges, wl = <span class="fn">bpe_train</span>(corpus, <span class="nm">10</span>)
+<span class="fn">print</span>(<span class="st">"merges:"</span>, merges)
+<span class="kw">for</span> k <span class="kw">in</span> <span class="fn">sorted</span>(wl, key=<span class="kw">lambda</span> t: (-wl[t], t)):
+    <span class="fn">print</span>(wl[k], <span class="st">" "</span>.join(k))
+    </div>
+
+    <p>Verified output of that block on CPython 3.12:</p>
+    <div class="code" data-lang="output">
+merges: [('t', '&lt;/w&gt;'), ('s', 't&lt;/w&gt;'), ('e', 'st&lt;/w&gt;'), ('o', 'w'), ('l', 'ow'), ('w', 'est&lt;/w&gt;'), ('n', 'e'), ('ne', 'west&lt;/w&gt;'), ('low', '&lt;/w&gt;'), ('w', 'i')]
+6 newest&lt;/w&gt;
+5 low&lt;/w&gt;
+3 wi d est&lt;/w&gt;
+2 low e r &lt;/w&gt;
+    </div>
+
+    <p>Read that output carefully, because it is the whole lesson in four lines. <strong>Nothing merged in
+    <code>"lower"</code> except nothing at all</strong> &mdash; it stays <code>low e r</code>, three tokens, because frequency 2
+    loses every tie against <code>"newest"</code> (frequency 6). A domain word that appears rarely never gets a cheap token.
+    That is the "audit identifiers fragment" problem in miniature: BPE buys efficiency in proportion to how often
+    text appeared, so the long tail pays full character price.</p>
+
+    <h3>Encoding: apply merges in trained order, not in any order</h3>
+    <p>Encoding must replay the merge list in the exact order it was learned. Applying <code>(w,est)</code> before
+    <code>(e,st)</code> gives a different segmentation for the same string. This is <strong>merge order determinism</strong>
+    &mdash; it is why a tokenizer is a file, not a flag.</p>
+
+    <div class="formula">
+      encode(s) = fold over merges: ids &larr; replace first occurrence of (a, b) with ab, in merge-rank order<br>
+      decode(encode(s)) = s &nbsp;&nbsp;&forall; s &isin; byte*
+      <span class="note">The second line is the round-trip invariant. It must hold byte-for-byte. If it does not, your vocabulary has a hole and any non-ASCII or control character can be silently destroyed.</span>
+    </div>
+
+    <h3>The cost model you should memorise</h3>
+    <div class="formula">
+      cost(USD) &asymp; &sum;<sub>requests</sub> [ T<sub>in</sub> &middot; p<sub>in</sub> + T<sub>out</sub> &middot; p<sub>out</sub> ] &nbsp;&nbsp; where T = #tokens, p = price/token<br>
+      T<sub>in</sub> &asymp; &sum;<sub>words</sub> (1 + &epsilon;<sub>word</sub>) &nbsp;&nbsp; with &epsilon; from 0.14 (common words) to &gt;2 (hashes, non-Latin, base64)
+      <span class="note">T<sub>in</sub> is not a function of characters. It is a function of how well your text matches the tokenizer's training distribution. A URL, a JSON blob and a PEM key are the expensive cases.</span>
+    </div>
+
+    <p>Context windows are in tokens too, so the same 1 MB of logs that are "fine" as English are 10&times; too many tokens
+    as hex dumps. And because attention cost grows as O(n<sup>2</sup>) in prefill, the token count is squared into your
+    latency budget (see <a class="tag-a" href="../track-a/06-attention-core.html">L06</a>).</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a01-s4">4 &middot; Your hands <a class="hook" href="#a01-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Round-trip or it did not happen</h4>
+      <p>A tokenizer that cannot round-trip is a data-corruption bug, not a nuance. This test is diagnostic because
+      it fails on every byte sequence the vocabulary claimed to cover but does not.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> random
+random.seed(<span class="nm">0</span>)
+
+<span class="cm"># Toy byte-level vocabulary: ids 0..255 are bytes, ids 256+ are merged pairs.</span>
+<span class="kw">class</span> <span class="fn">ToyBPE</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(s, merges):
+        s.vocab = {i: <span class="fn">bytes</span>([i]) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">256</span>)}
+        s.ranks = {}
+        <span class="kw">for</span> rank, pair <span class="kw">in</span> <span class="fn">enumerate</span>(merges):
+            a, b = pair
+            new_id = <span class="nm">256</span> + rank
+            s.vocab[new_id] = s.vocab[a] + s.vocab[b]
+            s.ranks[pair] = (rank, new_id)
+    <span class="kw">def</span> <span class="fn">encode</span>(s, text):
+        ids = <span class="fn">list</span>(text.encode(<span class="st">"utf-8"</span>))            <span class="cm"># byte fallback: always representable</span>
+        <span class="kw">while</span> <span class="fn">len</span>(ids) &gt; <span class="nm">1</span>:
+            cand = [(s.ranks[p], i) <span class="kw">for</span> i, p <span class="kw">in</span> <span class="fn">enumerate</span>(<span class="fn">zip</span>(ids, ids[<span class="nm">1</span>:])) <span class="kw">if</span> p <span class="kw">in</span> s.ranks]
+            <span class="kw">if not</span> cand: <span class="kw">break</span>
+            (rank, new_id), i = <span class="fn">min</span>(cand)                 <span class="cm"># lowest merge rank wins = trained order</span>
+            ids[i:i+<span class="nm">2</span>] = [new_id]
+        <span class="kw">return</span> ids
+    <span class="kw">def</span> <span class="fn">decode</span>(s, ids):
+        <span class="kw">return</span> b<span class="st">""</span>.join(s.vocab[i] <span class="kw">for</span> i <span class="kw">in</span> ids).decode(<span class="st">"utf-8"</span>, errors=<span class="st">"replace"</span>)
+
+<span class="cm"># one merge for the byte pair "th" (0x74, 0x68 -&gt; id 256 here stands for b'th')</span>
+tb = <span class="fn">ToyBPE</span>([(<span class="nm">116</span>, <span class="nm">104</span>)])
+tests = [<span class="st">"hello"</span>, <span class="st">"the theme"</span>, <span class="st">"très tôt"</span>, <span class="st">"日本語"</span>, <span class="st">"\\x00\\x01\\xfe control"</span>, <span class="st">"🙂 emoji"</span>]
+<span class="kw">for</span> t <span class="kw">in</span> tests:
+    ids = tb.encode(t)
+    back = tb.decode(ids)
+    <span class="fn">print</span>(<span class="fn">repr</span>(t), <span class="st">"->"</span>, <span class="fn">len</span>(ids), <span class="st">"ids"</span>, <span class="st">"roundtrip"</span> <span class="kw">if</span> back == t <span class="kw">else</span> <span class="st">"MISMATCH "</span> + <span class="fn">repr</span>(back))
+      </div>
+      <p class="expect">Every line prints <code>roundtrip</code>, with counts 5, 7, 10, 9, 12, 10 &mdash; verified on
+      CPython 3.12 with <code>PYTHONIOENCODING=utf-8</code> (on a Windows console without that variable the
+      <code>print</code> itself raises <code>UnicodeEncodeError</code>, which is its own demonstration that the
+      text interface is bytes end-to-end). Read the counts: <code>"très tôt"</code> is 8 chars but 10 bytes because two
+      accents cost 2 bytes each; <code>"日本語"</code> is 9 bytes for 3 characters; the emoji line is 10 bytes for
+      7 characters. <strong>Token count tracks bytes, not characters.</strong>
+      Falsifier: any <code>MISMATCH</code> means your decode is not the inverse of encode, i.e. the vocabulary has holes.
+      Note that <code>errors="replace"</code> would <em>hide</em> truncation mid-codepoint &mdash; production streaming
+      tokenizers must buffer partial UTF-8 sequences instead.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Build the cost meter before you sign the invoice</h4>
+      <p>You cannot optimise prompt cost without knowing your own tokens-per-word ratio. This meter is the smallest
+      version of the calculator every serving team keeps in a notebook.</p>
+      <div class="code" data-lang="bash">
+python -c "import re; t='The auditor reconciled the ledger. CMS-2024-0042 hash 9f3a1c77e0b4d5a6'; w=re.findall(r'\\w+|[^\\w\\s]', t); print('chars', len(t)); print('whitespace chunks', len(w)); print('est. tokens at 1.3x', round(1.3*len(w)))"
+      </div>
+      <p class="expect">Observed: <code>chars 70 words 13 tokens(word-split) 13</code>, estimate 17 tokens, and
+      $0.00473 for 1,000 prompts &mdash; i.e. the whole exercise is five-tenths of a cent until you multiply by a real
+      request volume. The word-regex count is a <em>floor</em>, not the truth: real tokenizers split
+      <code>CMS-2024-0042</code> into more pieces than the whitespace chunks. The diagnostic value is the ratio
+      between your regex count and the tokenizer's actual count (use the model's tokenizer endpoint or a local
+      tokenizer library). If the ratio for your corpus is above ~1.5, your prompts are structurally expensive and
+      you should measure it on 100 real samples before optimising anything else.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; The frequency trap</h4>
+      <p>Prove to yourself that BPE's price is frequency, not importance. Take the trainer from section 3 and feed it a
+      corpus where one high-value string is rare.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># paste bpe_train from section 3 first</span>
+corpus = {<span class="st">"audit"</span>: <span class="nm">40</span>, <span class="st">"auditor"</span>: <span class="nm">12</span>, <span class="st">"ledger"</span>: <span class="nm">30</span>, <span class="st">"qzx"</span>: <span class="nm">1</span>}
+merges, wl = <span class="fn">bpe_train</span>(corpus, <span class="nm">8</span>)
+<span class="kw">for</span> k <span class="kw">in</span> <span class="fn">sorted</span>(wl, key=<span class="kw">lambda</span> t: (-wl[t], t)):
+    <span class="fn">print</span>(wl[k], <span class="st">" "</span>.join(k))
+      </div>
+      <p class="expect">Verified output: <code>40 audit&lt;/w&gt;</code>, <code>30 led g e r&lt;/w&gt;</code>,
+      <code>12 audit o r&lt;/w&gt;</code>, <code>1 q z x &lt;/w&gt;</code>. Two things to notice.
+      First, <code>"qzx"</code> is preserved at 4 symbols because its frequency is 1 &mdash; it can always be
+      encoded, it is just expensive. Second, and more instructive: <strong>"audit" collapsed to one token only
+      because its final pair closed at the end-of-word sentinel</strong>. "auditor" inherits the
+      <code>audit</code> merge (12 merges of <code>a+u</code>), which is exactly why the sentinel exists: without it,
+      <code>auditor</code>'s continuation would have polluted <code>audit</code>'s statistics and neither word would
+      get a clean token. Falsifier: if <code>qzx</code> had merged, your count weighting is wrong (you forgot to
+      multiply by frequency).</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a01-s5">5 &middot; Failure modes <a class="hook" href="#a01-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Cross-tokenizer comparison.</strong> You compare model A's loss or cost with model B's, but they used different vocabularies. Perplexity is not comparable across tokenizers at all &mdash; only bits-per-byte is (see <a class="tag-a" href="../track-a/16-loss-perplexity.html">L16</a>). Symptom: a "cheaper" model wins on cost per token but loses on cost per request.</li>
+        <li><strong>Truncation mid-structure.</strong> You truncate by character count and the cut lands inside a JSON object or a code fence. Symptom: the model receives unbalanced brackets and starts hallucinating the missing closing brace.</li>
+        <li><strong>Whitespace sensitivity.</strong> Trailing spaces and newlines are absorbed into tokens (<code>" the"</code> &ne; <code>"the"</code>). Symptom: two nominally identical prompts score differently; fixing one space flips a benchmark result.</li>
+        <li><strong>Numeric arithmetic failure.</strong> Digits are grouped arbitrarily by the tokenizer, so <code>1749</code> may be <code>"174"</code>+<code>"9"</code>. Symptom: errors concentrated on carry operations and digit alignment; the model "knows" the rule but miscarries. Mitigation is tool use, not prompting (see <a class="tag-d" href="../track-d/77-tool-calling.html">L77</a>).</li>
+        <li><strong>Silent byte fallback loss.</strong> A tokenizer without full byte coverage turns unknown characters into a single unknown id. Symptom: emoji and CJK in user input vanish from the model's view but remain in your logs &mdash; non-reproducible evaluations.</li>
+        <li><strong>Tokenizer drift across versions.</strong> Upgrading a tokenizer library changes merges or normalisation. Symptom: identical prompts produce different ids, cached prefixes stop hitting (see <a class="tag-b" href="../track-b/45-caching.html">L45</a>), and a "no-op" upgrade moves your eval numbers.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a01-s6">6 &middot; Connects to <a class="hook" href="#a01-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> nothing &mdash; this is the first layer. &nbsp; <strong>Unlocks:</strong> embeddings, perplexity, cost modelling, cache hit rates.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/02-embeddings.html">L02 &middot; Embeddings</a> &mdash; the embedding matrix has one row per token id; vocab size and embedding cost are the same number.</li>
+      <li><a class="tag-a" href="../track-a/16-loss-perplexity.html">L16 &middot; Loss &amp; perplexity</a> &mdash; why PPL is tokenizer-dependent and bits-per-byte is not.</li>
+      <li><a class="tag-a" href="../track-a/09-kv-cache.html">L09 &middot; KV cache</a> &mdash; context length in tokens is the multiplier on every byte of KV cache.</li>
+      <li><a class="tag-b" href="../track-b/35-long-context.html">L35 &middot; Long context</a> &mdash; what a "1M token context" means in GB and dollars once you multiply by L09's numbers.</li>
+      <li><a class="tag-b" href="../track-b/47-multimodal.html">L47 &middot; Multimodal</a> &mdash; pixels become token-like entries in the same sequence; the interface generalises.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: store <code>(tokenizer_name, tokenizer_version, sha256(vocab_file))</code> next to every logged prompt.
+      Without it, "the same prompt produced a different result" is unfalsifiable &mdash; you cannot distinguish a model
+      change from a tokenizer change.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a01-s7">7 &middot; Self-check <a class="hook" href="#a01-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is character-level tokenization quadratic-cost while byte-level BPE is not, when both are "lossless"?</p>
+        <details><summary>Reveal answer</summary><p>Both are lossless, so the difference is sequence length n: attention prefill costs O(n<sup>2</sup>). Character-level is ~1 unit per character; BPE collapses frequent substrings into single ids, typically 3&ndash;5 characters per token on English, so n shrinks by that factor and attention work by its square. Losslessness is not the axis &mdash; length is.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A document is 2,000 English words. Under a 1.3 tok/word tokenizer it costs how much per 1,000 such documents at $0.28 per million input tokens? And by how much does the bill change for a corpus that runs 2.0 tok/word?</p>
+        <details><summary>Reveal answer</summary><p>2,000 &times; 1.3 = 2,600 tokens/doc &times; 1,000 = 2.6M tokens. At $0.28/M = <strong>$0.728</strong>. At 2.0 tok/word: 4.0M tokens = <strong>$1.12</strong>, a +54% bill for the same document count. Cost scales linearly in tok/word while scope stayed flat &mdash; exactly the failure mode of comparing vendors by price per token.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your eval accuracy dropped 3 points after a "no-op" library upgrade. What do you check first and what is the signature?</p>
+        <details><summary>Reveal answer</summary><p>Hash the vocab file and the merge list, and re-encode a fixed eval split. If the token-id sequences changed (even though the text is identical), the tokenizer drifted; regenerate logits/probabilities accordingly. Signature: identical text, different <code>len(ids)</code> or different ids; cached prefix hit-rate collapses at the same time.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> In the trainer output above, <code>"lower"</code> stays <code>low e r</code> while <code>"newest"</code> becomes one token. State the rule that predicts this without running the code.</p>
+        <details><summary>Reveal answer</summary><p>Merge priority is frequency-weighted count, not word importance. The pair <code>e+r</code> in "lower" has count 2 (the word's frequency) and loses to <code>n+e</code>/<code>ne+w</code>/<code>w+est</code> at frequency 6. General rule: a substring merges only if its corpus-wide pair count beats all competitors in the same greedy round, so rare words pay character price.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why can you not swap a better tokenizer into an already-trained model?</p>
+        <details><summary>Reveal answer</summary><p>The embedding matrix and the output projection are indexed by token id; id <em>k</em> has a learned vector and a learned output direction. A new vocabulary has no correspondence to those ids, so every input would look like noise and the output head would sample from an unrelated basis. Changing the tokenizer requires retraining the embedding rows (at minimum) and usually the whole model &mdash; which is why tokenizers are versioned artefacts, not config.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev disabled"><span class="dir">&larr; PREVIOUS</span><span class="ttl">Start of Track A</span></a>
+    <a class="next" href="02-embeddings.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L02 &middot; Embeddings</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

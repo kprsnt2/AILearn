@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d100">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L100 · The 12-month plan: from here to level 100 — AILearn</title>
+<meta name="description" content="A month-by-month, hours-per-week schedule that turns 100 lessons into measurable artifacts — built around a full-time job and the systems you already ship.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .month {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+    margin: 18px 0; overflow: hidden;
+  }
+  .month-head {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    background: rgba(99,102,241,.07);
+  }
+  .month-head .m-num {
+    font-family: var(--mono); font-size: .7rem; font-weight: 700; letter-spacing: 1.6px;
+    color: var(--cyan);
+  }
+  .month-head .m-title { font-weight: 650; color: var(--txt); font-size: 1rem; }
+  .month-head .m-hrs {
+    margin-left: auto; font-family: var(--mono); font-size: .68rem; color: var(--txt-3);
+    border: 1px solid var(--line); border-radius: 99px; padding: 2px 9px;
+  }
+  .month-body { padding: 16px 20px; }
+  .month-body > p { margin: 0 0 12px; font-size: .9rem; }
+  .week { display: grid; grid-template-columns: 54px 1fr; gap: 12px; margin-bottom: 9px; }
+  @media (max-width: 700px) { .week { grid-template-columns: 1fr; gap: 3px; } }
+  .week .wk {
+    font-family: var(--mono); font-size: .66rem; color: var(--txt-3); letter-spacing: .8px;
+    padding-top: 2px;
+  }
+  .week .wt { font-size: .87rem; color: var(--txt-2); line-height: 1.55; }
+  .week .wt b { color: var(--txt); }
+  .gate {
+    margin-top: 14px; padding: 11px 15px; border-radius: 9px;
+    border: 1px solid rgba(16,185,129,.3); background: rgba(16,185,129,.06);
+    font-size: .85rem; color: var(--txt-2);
+  }
+  .gate::before {
+    content: "GATE \2713 "; font-family: var(--mono); font-size: .63rem; letter-spacing: 1.2px;
+    color: var(--emerald); font-weight: 700;
+  }
+  .gate b { color: #6ee7b7; }
+  .hours-bar { display: flex; height: 10px; border-radius: 99px; overflow: hidden; margin: 12px 0 6px; border: 1px solid var(--line); }
+  .hours-bar i { display: block; height: 100%; }
+  .hours-leg { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: .68rem; color: var(--txt-3); }
+  .hours-leg span i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .wr {
+    display: grid; grid-template-columns: 1fr 74px 74px; gap: 8px; font-family: var(--mono);
+    font-size: .72rem; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.05);
+  }
+  .wr:last-child { border-bottom: 0; }
+  .wr span:first-child { color: var(--txt-2); }
+  .wr span { text-align: right; color: var(--txt); }
+  .wr.head span { color: var(--txt-3); font-size: .63rem; letter-spacing: .8px; }
+  .risk { border-left: 2px solid var(--red); padding-left: 14px; margin: 14px 0; }
+  .risk b { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &middot; Agents, RAG, Evals, Production</a> <span>/</span> <span>L100</span></div>
+  <div class="track-tag">TRACK D &middot; THE PLAN</div>
+  <h1>L100 &middot; The twelve months from here to level 100</h1>
+  <p class="lede">Ninety-nine lessons describe the machine. This one is about your calendar &mdash; a full-time job, a family, and roughly <strong>ten hours a week</strong>. The plan assumes you will miss weeks. Its gates are written so that missing a week costs you nothing, and skipping a gate costs you everything.</p>
+  <div class="chips">
+    <span class="chip">~40 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: 5 published artifacts + 1 verifiable claim</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">time budget</span>
+  <span class="pill">evidence gates</span>
+  <span class="pill">extend not restart</span>
+  <span class="pill">one variable per month</span>
+  <span class="pill">pre-registered test</span>
+  <span class="pill">external citation</span>
+  <span class="pill">quarterly audit</span>
+  <span class="pill">decay risk</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d100-s1">1 &middot; Why it exists <a class="hook" href="#d100-s1">#</a></h2>
+
+    <p>The failure this plan is designed to prevent is specific, and it is not laziness. It is
+    <strong>the curriculum that dies at week six</strong>. You start with energy, read lessons 1&ndash;8 in
+    the first weekend, build something small, then a work deadline lands, and the tabs stay open for
+    three months. Nothing was wrong with your discipline. The plan was wrong: it was organised around
+    topics instead of around <em>artifacts and dates</em>, so there was never a moment at which the
+    absence of progress became visible.</p>
+
+    <p>The second failure it prevents is subtler and it is the one that would hurt more:
+    <strong>learning that produces nothing you can show.</strong> Twelve months of study with no
+    repository, no measurement, no published claim is indistinguishable &mdash; from the outside and,
+    eventually, from the inside &mdash; from twelve months of videos. Every month below ends with a gate
+    that names an artifact. If the artifact does not exist, the month did not happen.</p>
+
+    <div class="callout boss">
+      <p>The plan is not "do 100 lessons in 12 months." It is <strong>five published artifacts and
+      one verifiable claim</strong>, which happen to require most of the 100 lessons to produce honestly.
+      The lessons are the path. The artifacts are the proof. The claim is the point.</p>
+    </div>
+
+    <div class="callout audit">
+      <p>You already know this pattern. A CMS audit does not accept "we reviewed the enrollment
+      transactions" &mdash; it accepts a workpaper with a sample size, a selection method, a result and a
+      reviewer sign-off. The plan below is the same discipline applied to your own learning, which is
+      the only place you have probably never applied it.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The time budget">
+    <h2 id="d100-s2">2 &middot; The time budget <a class="hook" href="#d100-s2">#</a></h2>
+
+    <p>The honest constraint: a full-time job, a family with young children, and a side habit of
+    shipping large agent projects. That is not a schedule with room for twenty hours a week. It is a
+    schedule with room for <strong>ten focused hours</strong> and a margin for the weeks that collapse.</p>
+
+    <div class="hours-bar" aria-hidden="true">
+      <i style="width:30%;background:#38bdf8"></i>
+      <i style="width:30%;background:#8b5cf6"></i>
+      <i style="width:25%;background:#10b981"></i>
+      <i style="width:15%;background:#f59e0b"></i>
+    </div>
+    <div class="hours-leg">
+      <span><i style="background:#38bdf8"></i>reading &amp; derivation &mdash; 3 h/wk</span>
+      <span><i style="background:#8b5cf6"></i>building &mdash; 3 h/wk</span>
+      <span><i style="background:#10b981"></i>measuring &mdash; 2.5 h/wk</span>
+      <span><i style="background:#f59e0b"></i>writing up &mdash; 1.5 h/wk</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Slot</th><th>When</th><th>What</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Daily 20 min</strong></td><td>commute / before work</td><td>Flashcards only. <a href="../tools/flashcards.html">The deck</a> is useless if it is not daily, and it is the cheapest way to not lose what you built.</td></tr>
+        <tr><td><strong>Two 90-min blocks</strong></td><td>one weekday evening, one weekend morning</td><td>Reading + derivation, then building. Never both in one block &mdash; context-switching inside a block is how the hours disappear.</td></tr>
+        <tr><td><strong>One 2-hour block</strong></td><td>weekend</td><td>Measuring and writing. This is the block people skip, and it is the one that produces the artifact.</td></tr>
+        <tr><td><strong>Monthly 1 hour</strong></td><td>end of month</td><td>Gate check: does the artifact exist? Re-score <a href="../about/calibration.html">calibration</a>. Write three lines in a log.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <p><strong>The 60% rule.</strong> Plan for 60% of the hours you hope to have. If you plan ten and
+      achieve six, you will still finish the year. If you plan twenty and achieve six, you will quit in
+      month two. Every estimate below already assumes the 60% outcome.</p>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The rule: extend, don't restart">
+    <h2 id="d100-s3">3 &middot; The rule: extend, don't restart <a class="hook" href="#d100-s3">#</a></h2>
+
+    <p>You already have four production systems and a harness. The single biggest efficiency in this
+    plan is that <strong>most months add a measurement layer to something that already runs</strong>,
+    rather than starting a new toy project. A toy project teaches you the concept; a measurement
+    added to a live system teaches you the concept <em>and</em> produces an artifact nobody else has.</p>
+
+    <table class="table">
+      <thead><tr><th>Existing system</th><th>What it becomes</th><th>Lesson</th></tr></thead>
+      <tbody>
+        <tr><td><strong>AgentSwarm</strong> (hash-chained ledger, 32/32 intact)</td><td>Your integration surface: every claim below eventually lands in that ledger with an oracle verdict attached.</td><td>L95 RAKE</td></tr>
+        <tr><td><strong>BugAgents</strong> (dual-LLM arbiter, 4-point gate)</td><td>The promotion gate becomes a studied object: measure its false-positive and false-negative rate with a seeded ground truth, and report confidence intervals.</td><td>L74, L88, L89</td></tr>
+        <tr><td><strong>JobAgents</strong> (zero-LLM 5-factor scoring)</td><td>The deterministic gate becomes a baseline: an eval harness where the zero-cost scorer is the control condition and the LLM path must beat it statistically.</td><td>L63, L88</td></tr>
+        <tr><td><strong>BrandXY</strong> (20B fine-tune, 76.47% vs 25.49%)</td><td>A point estimate becomes a finding: re-run with n and a 95% interval. If the interval still clears the baseline, it is publishable.</td><td>L52, L66</td></tr>
+        <tr><td><strong>pRash</strong> (6-way CLI benchmark)</td><td>The benchmark methodology gets its own statistical treatment: power, CIs, and what the second-system regression actually was.</td><td>L88, L94</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Quarter 1: the arithmetic quarter">
+    <h2 id="d100-s4">4 &middot; Quarter 1: the arithmetic quarter <a class="hook" href="#d100-s4">#</a></h2>
+
+    <p><strong>Theme:</strong> close the two blind spots that block everything else &mdash; scaling
+    arithmetic and RL objectives. This quarter is deliberately front-loaded with Track B and Track C
+    because <a href="../about/prashanth.html">your profile</a> says those are where the gap is widest, and
+    because they are the most <em>immediately defensible</em> in a review.</p>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 01</span><span class="m-title">Scaling laws as a cost model</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>L26, L27</b> &mdash; Kaplan and Chinchilla. Read the papers alongside, fit the law yourself in numpy before reading the fit.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>L28, L29</b> &mdash; over-training and emergence. Then open <a href="../tools/scaling-lab.html">the scaling lab</a> and reproduce two of its claims by hand.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L33</b> (MLA, out of order on purpose) &mdash; do this before L09/L10 so the compression math lands before the intro version.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Build:</b> a single-page cost model. Inputs: architecture, workload. Outputs: training GPU-hours, serving cost per 1M queries, binding constraint. Verify against DeepSeek-V3's published 2.788M H800-hours.</span></div>
+        <div class="gate">Reproduce the 33.1% MFU figure from V3's published numbers without looking at L43. Write the one-line derivation.</div>
+      </div>
+    </div>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 02</span><span class="m-title">Sparse architectures and the KV problem</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>L30, L31</b> &mdash; MoE and auxiliary-loss-free balancing. Implement a toy router, watch it collapse, then fix it.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>L32, L34</b> &mdash; DeepSeekMoE and sparse attention. Compute the crossover length where sparsity stops paying.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L35, L45</b> &mdash; long context and caching. Then use <a href="../tools/kv-calc.html">the KV calculator</a> to price a real workload you care about.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Build:</b> a written architecture review of one 2026 model. Publishable as a blog post. The claim must be something a reader could falsify.</span></div>
+        <div class="gate">Publish the cost model page or the architecture review &mdash; one, not both. A published artifact with a number in it.</div>
+      </div>
+    </div>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 03</span><span class="m-title">Post-training objectives, implemented</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>L51, L52, L55</b> &mdash; post-training map, SFT, DPO. Implement the DPO loss in numpy and verify it on a hand-built preference pair.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>L56</b> &mdash; GRPO. Do not move on until you can derive the group baseline <em>without notes</em>. This is the month's hardest gate.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L57, L58</b> &mdash; PPO and reward modelling. Write down why PPO needs four models and what each is for.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Build:</b> a toy RL loop with a verifiable reward on a task you invented. Then attack your own reward function three ways.</span></div>
+        <div class="gate">Derive GRPO's advantage and explain zero-variance groups on a whiteboard, from memory. Then run a quarterly calibration audit.</div>
+      </div>
+    </div>
+
+    <div class="callout note">
+      <p><strong>Quarterly checkpoint:</strong> re-score <a href="../about/calibration.html">calibration</a>.
+      Expect L7 still &mdash; you have one published artifact and one verified derivation, which moves
+      Measure and Teach a little but not a level. That is correct. Levels are earned quarterly, not weekly.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Quarter 2: the machine quarter">
+    <h2 id="d100-s5">5 &middot; Quarter 2: the machine quarter <a class="hook" href="#d100-s5">#</a></h2>
+
+    <p><strong>Theme:</strong> actually build the thing. Track A's out-of-order path &mdash; attention,
+    cache, then the rest &mdash; ending in a trained transformer. This quarter is where the arithmetic
+    from Q1 becomes intuition you cannot unlearn.</p>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 04</span><span class="m-title">Attention, from scratch</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>L03, L04</b> &mdash; backprop and optimizers. Write micro-autograd by hand; this is the blind spot named in your profile.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>L06, L07</b> &mdash; self-attention and multi-head. Get the mask right, then verify with a unit test that a padding token cannot attend.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L09, L10</b> &mdash; KV cache and GQA. Now reread L33 with the code in front of you.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>L19</b> &mdash; assemble the full transformer. Train it on a corpus small enough that you can read all of it.</span></div>
+        <div class="gate">A training run that converges, with a loss curve you can explain point by point, and no unexplained spikes.</div>
+      </div>
+    </div>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 05</span><span class="m-title">The training loop as an engineering artifact</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>L05, L08, L11&ndash;L14</b> &mdash; normalization, position, activations, init, regularization, schedules. Skim the rote parts, derive the stability parts.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>L15, L16, L20</b> &mdash; masking, loss, and the loop. Build a resumable training harness &mdash; this is data-engineering muscle you already have.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L17, L18</b> &mdash; sampling and decoding. Implement speculative decoding and measure the actual speedup; the theory says it can also slow you down.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>L21&ndash;L24</b> &mdash; numerics, vector search, data, reading a repo. Then L25, the capstone.</span></div>
+        <div class="gate">Reproduce a GPT-2-small-scale curve, or document precisely why your hardware will not allow it and what the scaling says you would need.</div>
+      </div>
+    </div>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 06</span><span class="m-title">Reasoning: verifiers and test-time compute</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>L60&ndash;L62</b> &mdash; chain-of-thought, test-time compute, long CoT. Do the arithmetic on when extra samples stop paying.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>L63, L64, L75</b> &mdash; verifiable rewards, RLVR boundaries, and reward hacking. This is your home turf: generalise the promotion gate.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L66, L67</b> &mdash; reasoning distillation and synthetic data. Build a rejection-sampling loop end to end.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Build:</b> a reward-hacking test suite &mdash; 8 seeded violation classes, in the same shape as JobAgents' anti-fabrication guard.</span></div>
+        <div class="gate">Publish artifact #2: the reward-hacking suite, or a post on verifier design. Include the failure classes it catches and, honestly, the ones it does not.</div>
+      </div>
+    </div>
+
+    <div class="callout note">
+      <p><strong>Quarterly checkpoint:</strong> you should now be at L7&ndash;L8. Two published artifacts,
+      one reproduced training curve, and real Measure evidence. If calibration says otherwise, the
+      gap is in the evidence channel, not the knowledge &mdash; go look at which checkboxes are empty.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Quarter 3: the measurement quarter">
+    <h2 id="d100-s6">6 &middot; Quarter 3: the measurement quarter <a class="hook" href="#d100-s6">#</a></h2>
+
+    <p><strong>Theme:</strong> the quarter that produces the claim. Everything here exists to move one
+    number from "point estimate" to "estimate with an interval, obtained by a stranger from a
+    written procedure." This is the quarter that <a href="../about/calibration.html">calibration</a>
+    calls the difference between L8 and L9.</p>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 07</span><span class="m-title">Evals with statistical power</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>L88</b> &mdash; alone, for a full week. Wilson intervals, sample sizing, pass@k vs pass^k. Your single most important lesson.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>L89</b> &mdash; judges and arbiters. Calibrate a judge against human labels; measure its position and verbosity bias rather than assuming them away.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L74, L87</b> &mdash; contamination and RAG evaluation. Then design the experiment for month 09 and <b>pre-register it</b>: hypothesis, n, test, falsifier, written down before you look.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Build:</b> an eval harness that reports intervals, not point estimates. Retrofit it onto JobAgents or pRash.</span></div>
+        <div class="gate">A harness that produces an interval. Then apply it to one number you have already published elsewhere and see whether it survives.</div>
+      </div>
+    </div>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 08</span><span class="m-title">The RAKE harness</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>L95, L90</b> &mdash; the RAKE harness and observability. Design before building; the spec is the deliverable.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>Build:</b> the run manifest, the immutable artifact bundle, the hash-chained event log outside the writable area, and cost attribution per phase.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L96, L99</b> &mdash; the 16 acceptance criteria. Score one of your existing systems against them honestly. Expect a poor score; that is the finding.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Build:</b> the reviewer script &mdash; a stranger drops in a bundle, gets a pass/fail per criterion, with no conversation.</span></div>
+        <div class="gate">Hand the bundle to one person who has never seen your harness. They must be able to recompute the result. <b>Count every question they ask &mdash; each one is a defect.</b></div>
+      </div>
+    </div>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 09</span><span class="m-title">Run the pre-registered experiment</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>Run it.</b> Do not change the design. If it breaks, note the break and run the plan anyway.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>Analyse honestly.</b> Report the interval, the failures, and what would have changed your mind. A null result is a result.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>L91&ndash;L94</b> &mdash; cost, reliability, safety and determinism. These fill in the failure modes your experiment probably exposed.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Write it up</b> as a report, not a blog post: procedure, n, result, interval, threats to validity, and the raw bundle.</span></div>
+        <div class="gate">Publish artifact #3: a pre-registered experiment with a result, a confidence interval, and a public evidence bundle.</div>
+      </div>
+    </div>
+
+    <div class="callout note">
+      <p><strong>Quarterly checkpoint:</strong> this is where L9 becomes reachable. L9 requires evidence
+      that people reproduce <em>when you are in the room</em>. If month 08's stranger needed zero questions,
+      you may already be there.</p>
+    </div>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Quarter 4: the claim quarter">
+    <h2 id="d100-s7">7 &middot; Quarter 4: the claim quarter <a class="hook" href="#d100-s7">#</a></h2>
+
+    <p><strong>Theme:</strong> turn the result into something that travels without you. This is the
+    <a href="../agi/benchmark.html">FABLE</a> and <a href="../agi/index.html">SKILLA</a> quarter, and it is
+    the only part of this plan that is genuinely novel rather than well-taught.</p>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 10</span><span class="m-title">Make it reproducible by strangers</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt"><b>Write the spec</b> so completely that a competent stranger needs no conversation: environment, seed, procedure, expected numbers, tolerances.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt"><b>Recruit two independent reproducers.</b> People you have not corresponded with on this. Give them the document and nothing else.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt"><b>Fix what they stumbled on</b> without explaining it to them. That is the whole exercise.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>L97, L98</b> &mdash; production RAG and the fine-tune decision rule, as the practical back half of this track.</span></div>
+        <div class="gate">Two strangers reproduce your number from the document alone, inside your declared interval, without asking you a question.</div>
+      </div>
+    </div>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 11</span><span class="m-title">Run FABLE on your own systems</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt">Grade 20 existing runs from AgentSwarm and BugAgents against <a href="../agi/benchmark.html">the nine FABLE questions</a> by hand. Baseline first.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt">Upgrade <b>one</b> harness from R2 to R3: oracle verdicts written into the hash chain, re-runnable by a verifier.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt">Re-score. The before/after is the result.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Publish honestly</b>, including the unflattering starting score. A negative result about your own systems is more credible than any positive claim.</span></div>
+        <div class="gate">Publish artifact #4: the FABLE rubric and your own systems' scores, before and after.</div>
+      </div>
+    </div>
+
+    <div class="month">
+      <div class="month-head"><span class="m-num">MONTH 12</span><span class="m-title">The claim, and the year after</span><span class="m-hrs">~40 h</span></div>
+      <div class="month-body">
+        <div class="week"><span class="wk">W1</span><span class="wt">Assemble everything: 5 artifacts, 1 pre-registered experiment, 2 independent reproductions, the FABLE scores. Write the paper or the long post.</span></div>
+        <div class="week"><span class="wk">W2</span><span class="wt">Submit / publish with a stable identifier and a versioned release tag. A DOI or a tagged release, not a moving link.</span></div>
+        <div class="week"><span class="wk">W3</span><span class="wt">Engage critically: answer the falsification questions in the open. Update the work if someone breaks it.</span></div>
+        <div class="week"><span class="wk">W4</span><span class="wt"><b>Plan year two</b> around what actually happened, not what you hoped. Re-score calibration. Decide whether to continue SKILLA, pivot to FABLE-only, or go deeper on measurement.</span></div>
+        <div class="gate">An accurate citation from someone with no prior connection to you. That is the L10 condition, and it is not something you can award yourself.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="8" data-title="8 · What to skip">
+    <h2 id="d100-s8">8 &middot; What to skip, and why <a class="hook" href="#d100-s8">#</a></h2>
+
+    <p>A twelve-month plan that includes everything is a lie. These are deliberate omissions, and the
+    reasons are specific to you.</p>
+
+    <table class="table">
+      <thead><tr><th>Skip</th><th>Why</th><th>Revisit when</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Training from scratch at scale</strong> (L42&ndash;L43 beyond the arithmetic)</td><td>You will never buy 10,000 GPUs. The arithmetic is essential; the practical parallelism engineering is not, for you.</td><td>Never, unless you join a lab that trains base models.</td></tr>
+        <tr><td><strong>Kernel authoring</strong> (L39 beyond reading)</td><td>Writing Triton kernels is a specialist's job. Reading them well enough to understand a bandwidth argument is the useful part.</td><td>If you ever need to debug a serving bottleneck at the matmul level.</td></tr>
+        <tr><td><strong>Full multimodal deep-dive</strong> (L47 beyond one pass)</td><td>Interesting, but it competes directly with time for L88&ndash;L95, which is where your scarce advantage already is.</td><td>Year two, if your products need vision.</td></tr>
+        <tr><td><strong>Fine-tuning a large model again</strong></td><td>You have done this (BrandXY). The marginal lesson now is in measuring it properly, not in doing it again.</td><td>Once you have the statistical harness from month 07.</td></tr>
+        <tr><td><strong>Reading every paper on the list</strong></td><td>60 papers at three hours each is 180 hours, which is half your year for reading alone.</td><td>Read 12, deeply, tied to the months above.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 9 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="9" data-title="9 · Failure modes">
+    <h2 id="d100-s9">9 &middot; Failure modes <a class="hook" href="#d100-s9">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>The silent stop.</strong> Symptom: three weeks pass with no flashcard activity and no commit. Cause: the plan was never instrumented. Fix: the daily 20-minute deck is the only non-negotiable, because it is small enough to survive a bad week and it makes the absence visible.</li>
+        <li><strong>Artifact capture.</strong> Symptom: you did the work but cannot show it. Cause: the write-up was scheduled for "later." Fix: the artifact gets its own 2-hour weekend block, every week. If the work and the write-up compete, the write-up wins.</li>
+        <li><strong>Scope inflation.</strong> Symptom: month 02's project is still open in month 05. Cause: a learning project grown into a product. Fix: every month's build has a hard scope line, and an artifact is published whether or not you are proud of it.</li>
+        <li><strong>Publishing only wins.</strong> Symptom: every post is a success story. Cause: the negative results were quietly dropped. Fix: pre-registration is not optional. It is what makes the publication mean anything, and it is the one habit your audit background gives you that most researchers lack.</li>
+        <li><strong>Level-chasing.</strong> Symptom: you fill checkboxes to move the number. Cause: the rubric became a game. Fix: the calibration page's own anti-deception rules &mdash; every point needs a resolvable pointer, and decay handles the rest. If you have to argue for the point, it is zero.</li>
+        <li><strong>The year that produces nothing novel.</strong> Symptom: at month 12 you are a well-informed practitioner with no claim of your own. Cause: months 01&ndash;06 are all consumption. Fix: if by month 07 you have no pre-registered experiment, stop the curriculum and run one, even a small one.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 10 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="10" data-title="10 · The weekly and monthly loop">
+    <h2 id="d100-s10">10 &middot; The loop that keeps it alive <a class="hook" href="#d100-s10">#</a></h2>
+
+    <p>Plans fail in the gap between the intention and the calendar. This is the smallest possible
+    instrumentation that closes that gap.</p>
+
+    <div class="code" data-lang="weekly-review">
+<span class="cm"># 10 minutes, every Sunday. Write it in a file. Do not improvise it.</span>
+
+<span class="nm">WEEK 34</span>
+  hours_planned     6        <span class="cm"># 60% rule: 10 intended -> 6 realistic</span>
+  hours_actual      4.5
+  lessons_done      L61, L62
+  artifact_moved    rake-bundle/schema.md      <span class="cm"># must name a file</span>
+  blocked_by        none
+  next_week         wire oracle verdicts into the hash chain
+  flashcard_streak  34 days
+
+<span class="ok">GATE THIS MONTH</span>   a stranger recomputes the result  <span class="cm">[ ]</span>
+    </div>
+
+    <p>The single most important field is <code>artifact_moved</code>. If it says "none" for two
+    consecutive weeks, the month's gate is already at risk and you need to cut scope immediately
+    &mdash; not increase effort.</p>
+
+    <div class="callout boss">
+      <p><strong>What level 100 actually means.</strong> Not that you know everything on the list. It
+      means: one other person, with no connection to you, reads something you wrote, reproduces a number
+      you claimed, cites it correctly, and the citation is still accurate a year later. Everything in this
+      course is scaffolding for that one sentence &mdash; and you already have most of the discipline
+      it requires.</p>
+    </div>
+
+    <div class="callout audit">
+      <p>Final accounting, in your own idiom. The plan commits to: 10 hours a week for 48 working weeks
+      (~480 hours), 5 published artifacts, 1 pre-registered experiment, 2 independent reproductions,
+      and 1 claim a stranger can check. That is the workpaper. The sign-off is someone else's.</p>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="99-capstone.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L99 &middot; Capstone: ship an audited autonomous agent</span></a>
+    <a class="next" href="../about/calibration.html"><span class="dir">FINISH &rarr;</span><span class="ttl">Level calibration &mdash; score where you are</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">level calibration</a> &middot;
+  <a href="../agi/index.html">SKILLA</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

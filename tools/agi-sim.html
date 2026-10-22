@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="tools/agi-sim">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SKILLA Simulator — watch a swarm learn or rot</title>
+<meta name="description" content="A working simulation of the SKILLA autonomous discovery economy: skill libraries, falsification pressure, staked escrow, earned authority, and drift.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .sim-head { padding: 36px 0 6px; max-width: 920px; }
+  .sim-head h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); letter-spacing: -1.2px; line-height: 1.1; }
+  .grid { display: grid; grid-template-columns: 330px minmax(0,1fr); gap: 20px; align-items: start; }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 20px; }
+  .panel h3 { margin: 0 0 14px !important; font-size: .72rem; letter-spacing: 1.4px; text-transform: uppercase; color: var(--txt-3); font-family: var(--mono); }
+  .ctrl { margin-bottom: 15px; }
+  .ctrl label { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .75rem; color: var(--txt-2); margin-bottom: 5px; }
+  .ctrl label b { color: var(--cyan); font-weight: 600; }
+  .ctrl input[type=range] { width: 100%; accent-color: var(--violet); }
+  .ctrl .note { font-size: .7rem; color: var(--txt-3); margin-top: 3px; line-height: 1.4; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+  .simbtn {
+    flex: 1 1 auto; padding: 9px 14px; border-radius: 9px; cursor: pointer; font-weight: 600;
+    font-size: .82rem; font-family: var(--sans); border: 1px solid var(--line);
+    background: var(--card-2); color: var(--txt); transition: .16s;
+  }
+  .simbtn:hover { border-color: rgba(99,102,241,.5); transform: translateY(-1px); }
+  .simbtn.go { background: var(--grad); border: 0; color: #fff; }
+  .simbtn.warn { border-color: rgba(239,68,68,.4); color: #fca5a5; }
+  .presets { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .preset {
+    font-family: var(--mono); font-size: .68rem; padding: 5px 10px; border-radius: 99px;
+    border: 1px solid var(--line); background: transparent; color: var(--txt-2); cursor: pointer; transition: .15s;
+  }
+  .preset:hover { color: var(--cyan); border-color: rgba(56,189,248,.45); }
+  .preset.on { background: rgba(56,189,248,.12); border-color: rgba(56,189,248,.5); color: var(--cyan); }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .kpi-box { background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; }
+  .kpi-box .v { font-family: var(--mono); font-size: 1.28rem; font-weight: 700; color: var(--txt); }
+  .kpi-box .l { font-size: .64rem; color: var(--txt-3); text-transform: uppercase; letter-spacing: .7px; margin-top: 2px; }
+  .kpi-box .d { font-size: .64rem; font-family: var(--mono); margin-top: 3px; }
+  .up { color: var(--emerald); } .down { color: var(--red); } .flat { color: var(--txt-3); }
+
+  canvas { width: 100%; height: 250px; display: block; background: #060910; border-radius: 10px; border: 1px solid var(--line); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-family: var(--mono); font-size: .68rem; color: var(--txt-3); margin-top: 8px; }
+  .legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+
+  .log {
+    height: 210px; overflow-y: auto; background: #060910; border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; font-family: var(--mono); font-size: .72rem;
+    line-height: 1.65; color: var(--txt-2); margin-top: 14px;
+  }
+  .log span.cyc { color: var(--cyan); }
+  .log span.ok { color: var(--emerald); }
+  .log span.bad { color: var(--red); }
+  .log span.amb { color: var(--amber); }
+  .log span.dim { color: var(--txt-3); }
+  .log::-webkit-scrollbar { width: 5px; }
+  .log::-webkit-scrollbar-thumb { background: var(--line-strong); }
+
+  .skilltable { width: 100%; border-collapse: collapse; font-size: .74rem; font-family: var(--mono); }
+  .skilltable th { text-align: left; color: var(--txt-3); font-weight: 500; padding: 5px 8px; border-bottom: 1px solid var(--line); font-size: .63rem; letter-spacing: .8px; text-transform: uppercase; }
+  .skilltable td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,.04); color: var(--txt-2); }
+  .skilltable tr:hover td { background: var(--hover); }
+  .abar { height: 4px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; width: 54px; display: inline-block; vertical-align: middle; }
+  .abar i { display: block; height: 100%; border-radius: 3px; }
+  .hint { font-size: .78rem; color: var(--txt-3); margin-top: 12px; line-height: 1.6; }
+  kbd { font-family: var(--mono); font-size: .7rem; background: var(--card-2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="../agi/index.html">AGI Lab</a>
+      <a href="index.html">Tools</a>
+    </div>
+    <div class="nav-tools">
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="sim-head">
+  <div class="track-tag">SIMULATOR · SKILLA ECONOMY</div>
+  <h1>Watch a swarm either learn or rot.</h1>
+  <p class="lede">
+    This runs the SKILLA loop for real: skills with validity conditions, re-tests that update confidence
+    intervals, staked bids, earned authority with decay, reward hacking, and drift. Change the knobs and
+    watch which regimes actually accumulate verified knowledge — and which quietly produce beautiful
+    ledgers full of nothing.
+  </p>
+</header>
+
+<div class="grid">
+  <!-- ============ CONTROLS ============ -->
+  <div>
+    <div class="panel">
+      <h3>Regime presets</h3>
+      <div class="presets">
+        <button class="preset on" data-p="default">Balanced</button>
+        <button class="preset" data-p="noexplore">No falsification</button>
+        <button class="preset" data-p="nostake">No staking</button>
+        <button class="preset" data-p="landfill">Landfill</button>
+        <button class="preset" data-p="hacker">Reward hacker</button>
+      </div>
+      <p class="hint" id="preset-desc">Balanced: frontier probing with falsification jobs, staked bids, and authority decay. This is the reference behaviour.</p>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Parameters</h3>
+
+      <div class="ctrl">
+        <label>frontier emphasis <b id="v-front">0.60</b></label>
+        <input type="range" id="p-front" min="0" max="1" step="0.05" value="0.6">
+        <div class="note">Share of jobs aimed at thin-evidence skills vs. random re-tests.</div>
+      </div>
+
+      <div class="ctrl">
+        <label>staking pressure <b id="v-stake">1.0</b></label>
+        <input type="range" id="p-stake" min="0" max="1" step="0.1" value="1">
+        <div class="note">How much a failed bid costs. 0 = free enthusiasm for everyone.</div>
+      </div>
+
+      <div class="ctrl">
+        <label>retirement threshold (σ) <b id="v-sigma">2.0</b></label>
+        <input type="range" id="p-sigma" min="0.5" max="5" step="0.5" value="2">
+        <div class="note">Deviation below record that halves authority. Higher = slower to demote.</div>
+      </div>
+
+      <div class="ctrl">
+        <label>decay rate μ <b id="v-mu">0.06</b></label>
+        <input type="range" id="p-mu" min="0" max="0.25" step="0.01" value="0.06">
+        <div class="note">Authority lost per cycle since last re-test. 0 = immortal beliefs.</div>
+      </div>
+
+      <div class="ctrl">
+        <label>environment drift <b id="v-drift">0.08</b></label>
+        <input type="range" id="p-drift" min="0" max="0.4" step="0.01" value="0.08">
+        <div class="note">Per-cycle chance a skill's validity silently breaks (model update, serving change).</div>
+      </div>
+
+      <div class="ctrl">
+        <label>skill quality ceiling <b id="v-q">0.88</b></label>
+        <input type="range" id="p-q" min="0.6" max="0.98" step="0.02" value="0.88">
+        <div class="note">How good the swarm's methods are when they are right. Low quality = nothing can ever earn authority.</div>
+      </div>
+
+      <div class="ctrl">
+        <label>reward-hacking tendency <b id="v-hack">0.10</b></label>
+        <input type="range" id="p-hack" min="0" max="0.6" step="0.02" value="0.1">
+        <div class="note">Chance a run claims success it did not earn. Oracles catch some of it.</div>
+      </div>
+
+      <div class="btnrow">
+        <button class="simbtn go" id="run">▶ Run</button>
+        <button class="simbtn" id="step">Step</button>
+        <button class="simbtn warn" id="reset">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ OUTPUT ============ -->
+  <div>
+    <div class="kpis">
+      <div class="kpi-box"><div class="v" id="k-cycles">0</div><div class="l">cycles</div><div class="d flat" id="k-cycles-d">—</div></div>
+      <div class="kpi-box"><div class="v" id="k-skills">0</div><div class="l">live skills</div><div class="d flat" id="k-skills-d">—</div></div>
+      <div class="kpi-box"><div class="v" id="k-value">0.00</div><div class="l">verified value</div><div class="d flat" id="k-value-d">—</div></div>
+      <div class="kpi-box"><div class="v" id="k-auth">0.00</div><div class="l">mean authority</div><div class="d flat" id="k-auth-d">—</div></div>
+      <div class="kpi-box"><div class="v" id="k-div">0%</div><div class="l">divergence</div><div class="d flat" id="k-div-d">—</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>Trajectory</h3>
+      <canvas id="chart" width="900" height="250"></canvas>
+      <div class="legend">
+        <span><i style="background:#38bdf8"></i>verified value (cumulative)</span>
+        <span><i style="background:#8b5cf6"></i>live skills</span>
+        <span><i style="background:#10b981"></i>mean authority ×100</span>
+        <span><i style="background:#ef4444"></i>divergence %</span>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Cycle log</h3>
+      <div class="log" id="log"><span class="dim">Press Run or Step to begin. Each cycle: frontier sample → auction → sandbox runs → oracle verdicts → settle → diverge check.</span></div>
+      <p class="hint">Tip: run <b>No falsification</b> for 40 cycles, note the value curve, then hit Reset and run <b>Balanced</b>. The difference is the whole argument.</p>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Library sample <span style="float:right;text-transform:none;letter-spacing:0;color:var(--txt-3)">top 8 by authority</span></h3>
+      <table class="skilltable">
+        <thead><tr><th>skill</th><th>hit rate</th><th>n</th><th>age</th><th>authority</th></tr></thead>
+        <tbody id="skills"><tr><td colspan="5" style="color:var(--txt-3)">empty library</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<h2 style="font-size:1.3rem;margin-top:48px;letter-spacing:-.4px;">What you are looking at</h2>
+<p style="color:var(--txt-2);max-width:80ch;">
+  Each cycle the swarm samples skills from the frontier of its own uncertainty, auctions a fixed escrow
+  among candidate jobs, runs them, verdicts them with an independent oracle, and settles the stakes.
+  A skill's <strong>authority</strong> is recomputed every cycle from its lower confidence bound,
+  its evidence count, its age, and its observed cheating rate. Skills whose authority falls too far are
+  demoted; skills that fail a re-test by more than the σ threshold are the most informative events in
+  the whole simulation, because they are the ones that remove accumulated drift.
+</p>
+<p style="color:var(--txt-2);max-width:80ch;">
+  The <strong>divergence</strong> number is the fraction of claims that failed replication in the last
+  three cycles — the same quantity the kill-switch uses. Watch what happens to it when you set decay to
+  zero and drift to maximum: the system stays confident while the ground moves under it. That is the
+  failure mode of every ledger-only agent system.
+</p>
+
+<nav class="pager">
+  <a class="prev" href="index.html"><span class="dir">← BACK</span><span class="ttl">Tools</span></a>
+  <a class="next" href="../agi/index.html"><span class="dir">NEXT →</span><span class="ttl">SKILLA · the design</span></a>
+</nav>
+</main>
+
+<footer>AILearn · Tools · <span class="asof">simulation, not a result</span></footer>
+<script src="../_shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ---------------- RNG (seeded so a single run is reproducible) ---------------- */
+  var seed = 1337;
+  function rnd() { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; }
+  function gauss() { var u = 1 - rnd(), v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+  function pick(a) { return a[Math.floor(rnd() * a.length)]; }
+
+  /* ---------------- drag this to compare knobs on the SAME environment ---------------- */
+  var RUN_SEED = 1337;
+
+  /* ---------------- params bound to sliders ---------------- */
+  var P = {
+    front: 0.6, stake: 1.0, sigma: 2.0, mu: 0.06, drift: 0.08, hack: 0.10, q: 0.88
+  };
+  var bind = [
+    ['front', 'front', function (v) { return v.toFixed(2); }],
+    ['stake', 'stake', function (v) { return v.toFixed(1); }],
+    ['sigma', 'sigma', function (v) { return v.toFixed(1); }],
+    ['mu', 'mu', function (v) { return v.toFixed(2); }],
+    ['drift', 'drift', function (v) { return v.toFixed(2); }],
+    ['hack', 'hack', function (v) { return v.toFixed(2); }],
+    ['q', 'q', function (v) { return v.toFixed(2); }]
+  ];
+  bind.forEach(function (b) {
+    var input = document.getElementById('p-' + b[0]);
+    var out = document.getElementById('v-' + b[0]);
+    var sync = function () { P[b[1]] = parseFloat(input.value); out.textContent = b[2](P[b[1]]); };
+    input.addEventListener('input', function () { sync(); markPreset('custom'); });
+    sync();
+  });
+
+  /* ---------------- state ---------------- */
+  var S, timer = null;
+
+  function newSkill(i) {
+    return {
+      id: 's_' + String(i).padStart(4, '0'),
+      // true underlying reliability of the skill in the current environment:
+      // a right method lands between 0.62 and P.q; a dud sits just above chance
+      trueRate: 0.62 + rnd() * Math.max(0.02, P.q - 0.62),
+      hits: 0, n: 0, age: 0, auth: 0, cheats: 0, claims: 0,
+      alive: true, deadReason: null
+    };
+  }
+
+  function reset() {
+    seed = RUN_SEED;
+    S = {
+      cycle: 0, skills: [], nextId: 1, value: 0, valueHist: [0], skillsHist: [0],
+      authHist: [0], divHist: [0], recent: [], curDiv: 0
+    };
+    for (var i = 0; i < 12; i++) S.skills.push(newSkill(S.nextId++));
+    stop();
+    log.innerHTML = '<span class="dim">Reset. Library seeded with 12 unvalidated skills.</span>';
+    render();
+  }
+
+  var logEl = document.getElementById('log');
+  function log(html) {
+    logEl.innerHTML = html + logEl.innerHTML;
+    // cap
+    var kids = logEl.children;
+    while (logEl.innerHTML.length > 14000) logEl.removeChild(logEl.lastChild);
+  }
+
+  /* ---------------- authority formula ---------------- */
+  function lowerBound(hits, n) {
+    if (n === 0) return 0;
+    var p = hits / n;
+    var z = 1.96;
+    var d = 1 + z * z / n;
+    var c = p + z * z / (2 * n);
+    var m = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n));
+    return Math.max(0, (c - m) / d); /* Wilson lower bound */
+  }
+  function logistic(x) { return 1 / (1 + Math.exp(-x)); }
+  function authorityOf(s) {
+    if (s.n === 0) return 0;
+    var lo = lowerBound(s.hits, s.n);
+    var r0 = 0.60;   /* the floor rate the org requires */
+    var lam = 14;    /* how sharply authority rises above the floor */
+    var n0 = 12;     /* trials needed for full evidence credit */
+    var rho = s.claims > 0 ? s.cheats / s.claims : 0;
+    var A = logistic(lam * (lo - r0)) * Math.min(1, s.n / n0) * Math.exp(-P.mu * s.age) * (1 - rho);
+    return Math.max(0, Math.min(1, A));
+  }
+
+  /* ---------------- one cycle ---------------- */
+  function cycle() {
+    S.cycle++;
+    var alive = S.skills.filter(function (s) { return s.alive; });
+    if (alive.length === 0) { log('<span class="bad">library empty — nothing to do</span>'); stop(); return; }
+
+    /* decay + environmental drift */
+    alive.forEach(function (s) {
+      s.age++;
+      if (rnd() < P.drift) {
+        var before = s.trueRate;
+        s.trueRate = Math.max(0.15, s.trueRate - (0.15 + rnd() * 0.35));
+        if (before - s.trueRate > 0.3) s.broken = true;
+      }
+    });
+
+    /* --- frontier sampling: thin evidence first --- */
+    var scored = alive.map(function (s) {
+      return { s: s, thin: s.n === 0 ? 99 : (1 / Math.sqrt(s.n)) * (1 - lowerBound(s.hits, s.n)) };
+    }).sort(function (a, b) { return b.thin - a.thin; });
+
+    var jobs = [];
+    var nJobs = 6;    for (var i = 0; i < nJobs; i++) {
+      var useFrontier = rnd() < P.front;
+      var target = useFrontier ? scored[Math.min(i, scored.length - 1)].s : pick(alive);
+      if (!target) continue;
+      var kind = target.n === 0 ? 'EXPLORE' : (rnd() < 0.7 ? 'REPLICATE' : 'PROBE');
+      jobs.push({ s: target, kind: kind });
+    }
+
+    /* --- execute --- */
+    var ok = 0, fail = 0, cheatsCaught = 0, claims = 0;
+    jobs.forEach(function (j) {
+      var s = j.s;
+      var success = rnd() < s.trueRate;
+      claims++;
+      var claimed = success;
+      /* reward hacking: claim success that did not happen */
+      if (!success && rnd() < P.hack) claimed = true;
+
+      /* oracle: detects a fraction of false claims. An independent oracle is
+         strong by construction (deepseek-style dual-arbiter + replication gate);
+         staking pressure only adds a little more scrutiny. */
+      var oraclePower = 0.82 + 0.15 * P.stake;
+      var caught = false;
+      if (claimed && !success && rnd() < oraclePower) { caught = true; s.cheats++; cheatsCaught++; }
+
+      /* every trial feeds the recent-evidence window used by the deviation test */
+      s.rn = (s.rn || 0) + 1;
+      if (success) s.rh = (s.rh || 0) + 1;
+
+      if (caught) {
+        /* false claim rejected: no evidence credit, negative authority pressure */
+        s.claims++;
+        s.n++; /* failed trial still counts as evidence */
+        s.age = 0;
+      } else if (success) {
+        s.hits++; s.n++; s.age = 0; s.claims++;
+      } else {
+        s.n++; s.age = 0; s.claims++;
+      }
+
+      if (success && !caught) {
+        ok++;
+        S.value += 0.4 + rnd() * 0.8; /* verified value per confirmed result */
+      } else { fail++; }
+    });
+
+    /* --- settle authority + retirement ---
+       Deviation test: after the cycle's evidence, compare the skill's recent
+       performance against its recorded rate with a proper normal approximation.
+       A single binary outcome is NOT evidence of drift (one failure against a
+       0.8 rate is well inside noise); only a sustained shortfall demotes. */
+    var demoted = [];
+    alive.forEach(function (s) {
+      var prev = s.auth;
+      var now = authorityOf(s);
+      if (s.n >= 12) {
+        var recorded = s.hits / s.n;
+        var recentHits = (s.rh || 0), recentN = (s.rn || 0);
+        if (recentN >= 8) {
+          var phat = recentHits / recentN;
+          var se = Math.sqrt(recorded * (1 - recorded) / recentN);
+          var dev = se > 0 ? (recorded - phat) / se : 0;
+          if (dev > P.sigma && now > 0.15) {
+            now = now * 0.5;
+            s.rn = 0; s.rh = 0; /* reset the window so we do not double-penalise */
+            if (!s.demotedAt || S.cycle - s.demotedAt > 6) { demoted.push(s); s.demotedAt = S.cycle; }
+          }
+        }
+      }
+      s.auth = now;
+    });
+
+    /* --- expansion: add a new skill occasionally --- */
+    if (S.cycle % 3 === 0 && S.skills.filter(function (x) { return x.alive; }).length < 60) {
+      S.skills.push(newSkill(S.nextId++));
+    }
+
+    /* --- kill landfill: retire skills with catastrophic evidence --- */
+    var retired = 0;
+    S.skills.forEach(function (s) {
+      if (!s.alive) return;
+      if (s.n >= 20 && s.hits / s.n < 0.3) { s.alive = false; s.deadReason = 'chronic failure'; retired++; }
+    });
+
+    /* --- divergence = claims our verification layer caught lying ---
+       An honest failure is NOT a false claim: if the run reports failure and the
+       oracle agrees, nothing was misrepresented. Divergence counts only claims
+       that an independent check proved wrong — which is exactly the kill-switch
+       quantity (claims that failed replication). */
+    S.recent.push(claims > 0 ? cheatsCaught / Math.max(1, claims) : 0);
+    if (S.recent.length > 3) S.recent.shift();
+    S.curDiv = S.recent.reduce(function (a, b) { return a + b; }, 0) / S.recent.length;
+
+    var aliveNow = S.skills.filter(function (s) { return s.alive; });
+    /* Mean authority across VALIDATED skills only (n >= 5). Freshly spawned skills
+       have no evidence, so including them would measure the spawn rate, not the
+       learning. This is the number that tells you whether the swarm can be trusted. */
+    var val = aliveNow.filter(function (s) { return s.n >= 5; });
+    var meanAuth = val.length ? val.reduce(function (a, s) { return a + s.auth; }, 0) / val.length : 0;
+    S.validatedN = val.length;
+
+    S.valueHist.push(S.value);
+    S.skillsHist.push(aliveNow.length);
+    S.authHist.push(meanAuth * 100);
+    S.divHist.push(S.curDiv * 100);
+
+    /* --- log --- */
+    var h = '<span class="cyc">c' + String(S.cycle).padStart(2, '0') + '</span> ';
+    h += 'jobs ' + jobs.length + ' · <span class="ok">ok ' + ok + '</span> · <span class="bad">fail ' + fail + '</span>';
+    if (cheatsCaught) h += ' · <span class="amb">caught ' + cheatsCaught + ' false claims</span>';
+    if (demoted.length) h += ' · <span class="amb">demoted ' + demoted.length + '</span>';
+    if (retired) h += ' · <span class="dim">retired ' + retired + '</span>';
+    h += ' · auth ' + meanAuth.toFixed(2) + ' · div ' + (S.curDiv * 100).toFixed(0) + '%';
+    if (S.curDiv > 0.15) h += ' · <span class="bad">⚠ kill-switch condition 1 breached</span>';
+    log(h);
+
+    render();
+  }
+
+  /* ---------------- render ---------------- */
+  function render() {
+    var alive = S.skills.filter(function (s) { return s.alive; });
+    var val = alive.filter(function (s) { return s.n >= 5; });
+    var meanAuth = val.length ? val.reduce(function (a, s) { return a + s.auth; }, 0) / val.length : 0;
+    set('k-cycles', S.cycle); set('k-skills', alive.length);
+    set('k-value', S.value.toFixed(1)); set('k-auth', meanAuth.toFixed(2));
+    set('k-div', Math.round(S.curDiv * 100) + '%');
+
+    /* delta readouts */
+    var dv = S.valueHist.length > 5 ? S.value - S.valueHist[S.valueHist.length - 6] : 0;
+    delta('k-value-d', dv, dv.toFixed(1) + ' last 5c');
+    var ds = S.skillsHist.length > 5 ? alive.length - S.skillsHist[S.skillsHist.length - 6] : 0;
+    delta('k-skills-d', ds, (ds > 0 ? '+' : '') + ds + ' last 5c');
+    var da = S.authHist.length > 5 ? meanAuth * 100 - S.authHist[S.authHist.length - 6] : 0;
+    delta('k-auth-d', da, (da > 0 ? '+' : '') + da.toFixed(0) + ' last 5c');
+    var dd = S.divHist.length > 5 ? S.curDiv * 100 - S.divHist[S.divHist.length - 6] : 0;
+    delta('k-div-d', -dd, (dd > 0 ? '+' : '') + dd.toFixed(0) + 'pt last 5c');
+    setInner('k-cycles-d', 'cycle ' + S.cycle);
+
+    /* skill table */
+    var top = alive.slice().sort(function (a, b) { return b.auth - a.auth; }).slice(0, 8);
+    var tb = document.getElementById('skills');
+    if (!top.length) { tb.innerHTML = '<tr><td colspan="5" style="color:var(--txt-3)">empty library</td></tr>'; }
+    else {
+      tb.innerHTML = top.map(function (s) {
+        var rate = s.n ? (s.hits / s.n) : 0;
+        var col = s.auth > 0.5 ? '#10b981' : s.auth > 0.25 ? '#f59e0b' : '#ef4444';
+        return '<tr><td style="color:var(--txt)">' + s.id + '</td>' +
+          '<td>' + (s.n ? (rate * 100).toFixed(0) + '%' : '—') + '</td>' +
+          '<td>' + s.n + '</td><td>' + s.age + '</td>' +
+          '<td><span class="abar"><i style="width:' + (s.auth * 100).toFixed(0) + '%;background:' + col + '"></i></span> ' + s.auth.toFixed(2) + '</td></tr>';
+      }).join('');
+    }
+
+    draw();
+  }
+  function set(id, v) { var e = document.getElementById(id); if (e) e.textContent = v; }
+  function setInner(id, v) { var e = document.getElementById(id); if (e) e.innerHTML = v; }
+  function delta(id, d, txt) {
+    var e = document.getElementById(id); if (!e) return;
+    e.textContent = txt;
+    e.className = 'd ' + (d > 0.0001 ? 'up' : d < -0.0001 ? 'down' : 'flat');
+  }
+
+  /* ---------------- chart ---------------- */
+  var cv = document.getElementById('chart');
+  function draw() {
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height, pad = 8;
+    ctx.clearRect(0, 0, W, H);
+    /* grid */
+    ctx.strokeStyle = 'rgba(255,255,255,.05)'; ctx.lineWidth = 1;
+    for (var g = 1; g < 4; g++) { var y = (H / 4) * g; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+    var n = S.valueHist.length;
+    if (n < 2) return;
+    var maxV = Math.max.apply(null, S.valueHist) || 1;
+    var maxS = Math.max.apply(null, S.skillsHist) || 1;
+
+    function line(arr, max, color, width, scale) {
+      ctx.strokeStyle = color; ctx.lineWidth = width || 2; ctx.beginPath();
+      for (var i = 0; i < arr.length; i++) {
+        var x = pad + (i / Math.max(1, arr.length - 1)) * (W - pad * 2);
+        var y = H - pad - (arr[i] / (max || 1)) * (H - pad * 2);
+        if (scale) y = H - pad - (arr[i] / 100) * (H - pad * 2);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke();
+    }
+    line(S.valueHist, maxV, '#38bdf8', 2.2);
+    line(S.skillsHist, maxS, '#8b5cf6', 1.6);
+    line(S.authHist, 100, '#10b981', 1.6);
+    line(S.divHist, 100, '#ef4444', 1.4);
+    /* 15% divergence threshold */
+    var ty = H - pad - (15 / 100) * (H - pad * 2);
+    ctx.strokeStyle = 'rgba(239,68,68,.25)'; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, ty); ctx.lineTo(W, ty); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  /* ---------------- presets ---------------- */
+  var presets = {
+    default: { front: 0.6, stake: 1.0, sigma: 2.0, mu: 0.06, drift: 0.08, hack: 0.10 },
+    noexplore: { front: 0.0, stake: 1.0, sigma: 5.0, mu: 0.0, drift: 0.08, hack: 0.10 },
+    nostake: { front: 0.6, stake: 0.0, sigma: 2.0, mu: 0.06, drift: 0.08, hack: 0.10 },
+    landfill: { front: 0.3, stake: 0.5, sigma: 5.0, mu: 0.0, drift: 0.08, hack: 0.10 },
+    hacker: { front: 0.6, stake: 0.2, sigma: 4.0, mu: 0.02, drift: 0.08, hack: 0.55 }
+  };
+  var descs = {
+    default: 'Balanced: frontier probing with falsification jobs, staked bids, and authority decay. Reference behaviour — verified value climbs steadily and divergence sits near the kill-switch line.',
+    noexplore: 'No falsification, no decay, σ=5. Skills are never demoted and stale claims are never corrected. Verified value grows more slowly because effort is not directed at the real uncertainty.',
+    nostake: 'Free enthusiasm: bids cost nothing, so bad ideas are never priced out. Claims rise faster while verified value does not follow — watch value-per-claim instead of value.',
+    landfill: 'Slow retirement and no decay. Stale skills accumulate and quietly poison later decisions; the library grows while usable authority stays flat.',
+    hacker: 'High reward-hacking with weak staking and slow demotion. Divergence climbs sharply above 15% — the kill-switch condition — while authority stays flattering. This is the failure mode the whole program exists to catch.'
+  };
+  function markPreset(name) {
+    [].slice.call(document.querySelectorAll('.preset')).forEach(function (b) {
+      b.classList.toggle('on', b.getAttribute('data-p') === name);
+    });
+  }
+  [].slice.call(document.querySelectorAll('.preset')).forEach(function (b) {
+    b.addEventListener('click', function () {
+      var p = presets[b.getAttribute('data-p')];
+      Object.keys(p).forEach(function (k) {
+        var input = document.getElementById('p-' + k);
+        if (input) { input.value = p[k]; input.dispatchEvent(new Event('input')); }
+      });
+      /* restore the correct label after the input handlers marked it custom */
+      markPreset(b.getAttribute('data-p'));
+      document.getElementById('preset-desc').textContent = descs[b.getAttribute('data-p')];
+      reset();
+    });
+  });
+
+  /* ---------------- controls ---------------- */
+  function stop() { if (timer) { clearInterval(timer); timer = null; document.getElementById('run').textContent = '▶ Run'; } }
+  document.getElementById('run').addEventListener('click', function () {
+    if (timer) { stop(); return; }
+    this.textContent = '⏸ Pause';
+    timer = setInterval(cycle, 420);
+  });
+  document.getElementById('step').addEventListener('click', function () { stop(); cycle(); });
+  document.getElementById('reset').addEventListener('click', reset);
+
+  reset();
+})();
+</script>
+</body>
+</html>

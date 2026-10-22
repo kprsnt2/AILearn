@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="track-d/index">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Track D - Agents, RAG, Evals, Production - AILearn</title>
+<meta name="description" content="Where the money and the risk live. Systems that run unattended and can be audited.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .hero { padding: 44px 0 8px; max-width: 92ch; }
+  .hero h1 { font-size: clamp(1.9rem, 4.4vw, 2.9rem); letter-spacing: -1.4px; line-height: 1.1; }
+  .thesis { border-left: 3px solid #10b981; padding-left: 20px; margin: 26px 0; font-size: 1.04rem;
+    color: var(--txt-2); line-height: 1.75; max-width: 88ch; }
+  .sec { margin: 46px 0; }
+  .sec h2 { font-size: 1.32rem; letter-spacing: -.5px; margin: 0 0 14px; color: var(--txt); }
+  .lesson-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px,1fr)); gap: 10px; }
+  .L { display: flex; gap: 12px; text-decoration: none; background: var(--card); border: 1px solid var(--line);
+    border-radius: 11px; padding: 12px 14px; transition: .16s; align-items: flex-start; }
+  .L:hover { border-color: #10b98166; transform: translateY(-2px); background: var(--card-2); }
+  .L .n { font-family: var(--mono); font-size: .72rem; font-weight: 700; color: #10b981; min-width: 26px; padding-top: 2px; }
+  .L .t { color: var(--txt); font-size: .89rem; font-weight: 550; line-height: 1.4; }
+  .L .b { color: var(--txt-3); font-size: .74rem; font-family: var(--mono); margin-top: 3px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 14px; }
+  .card h4 { margin: 0 0 7px !important; color: #10b981; font-size: .8rem; letter-spacing: .6px;
+    text-transform: uppercase; font-family: var(--mono); }
+  .card p { margin: 0; font-size: .87rem; }
+  ul.check { list-style: none; padding: 0; margin: 0; }
+  ul.check li { position: relative; padding-left: 26px; margin-bottom: 9px; font-size: .9rem; color: var(--txt-2); }
+  ul.check li::before { content: "\2713"; position: absolute; left: 0; color: #10b981; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="../agi/index.html">AGI Lab</a>
+      <a href="../tools/index.html">Tools</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="hero">
+  <div class="track-tag" style="color:#10b981;border-color:#10b98155;background:#10b98114;">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>Agents, RAG, Evals, Production - 25 lessons</h1>
+  <p class="lede">Where the money and the risk live. Systems that run unattended and can be audited.</p>
+  <p class="thesis">You already ship agents. This track is deliberately written one level below what you do: the measurement, the invariant, the failure math, the economic model. It treats every agent system as a control system with a budget and an audit trail, and it ends with the one artifact almost nobody produces: a run whose record proves it was correct.</p>
+  <div class="chips">
+    <span class="chip">L76 &rarr; L10</span>
+    <span class="chip">build: An audited autonomous agent: verifiable evidence bundle</span>
+    <span class="chip">prereq: Track C lessons 60-63 for the reasoning/verifier half</span>
+  </div>
+</header>
+
+<div class="sec">
+  <h2>Why this track exists</h2>
+  <div class="grid3">
+    <div class="card"><h4>01</h4><h4>Your existing systems get a measurement layer</h4><p>JobAgents, BugAgents and AgentSwarm become instruments, not just deployments.</p></div>
+<div class="card"><h4>02</h4><h4>Evals stop being a demo</h4><p>Statistical power, confidence intervals, pass@k vs pass^k, and judge calibration that survives review.</p></div>
+<div class="card"><h4>03</h4><h4>The audit moat becomes a product</h4><p>The RAKE harness and the production checklist are the deliverables an enterprise would actually buy.</p></div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>By the end you can</h2>
+  <ul class="check"><li>Design an eval with adequate statistical power and state the CI on your result</li>
+    <li>Build an evidence bundle a stranger can recompute without asking you anything</li>
+    <li>State your blast radius in one sentence and defend each of the three controls</li>
+    <li>Run the FABLE auditability rubric on your own systems and publish the honest score</li></ul>
+</div>
+
+<div class="sec">
+  <h2>Prerequisites</h2>
+  <p style="color:var(--txt-2);">Track C lessons 60-63 for the reasoning/verifier half. Everything else assumes you build agents already.</p>
+  <p style="color:var(--txt-2);"><strong>The artifact:</strong> An audited autonomous agent: verifiable evidence bundle, independent oracle, promotion gates, cost attribution, and a run you can hand to a stranger.</p>
+</div>
+
+<div class="sec">
+  <h2>Lessons</h2>
+  <div class="lesson-list">
+    <a class="L" href="76-agents.html"><span class="n">76</span><span><span class="t">What an agent actually is: a budgeted control loop</span><span class="b">minimal ReAct loop</span></span></a>
+    <a class="L" href="77-tool-calling.html"><span class="n">77</span><span><span class="t">Tool calling and MCP: schemas as the product</span><span class="b">schema linter</span></span></a>
+    <a class="L" href="78-planning.html"><span class="n">78</span><span><span class="t">Planning, decomposition, replanning</span><span class="b">plan executor</span></span></a>
+    <a class="L" href="79-context-engineering.html"><span class="n">79</span><span><span class="t">Context budgets, compaction, summarization</span><span class="b">context planner</span></span></a>
+    <a class="L" href="80-memory.html"><span class="n">80</span><span><span class="t">Memory: working, episodic, semantic, procedural</span><span class="b">memory store with decay</span></span></a>
+    <a class="L" href="81-subagents.html"><span class="n">81</span><span><span class="t">Subagents and orchestration</span><span class="b">orchestrator with scopes</span></span></a>
+    <a class="L" href="82-long-horizon.html"><span class="n">82</span><span><span class="t">Long-horizon autonomy and failure compounding</span><span class="b">compounding model</span></span></a>
+    <a class="L" href="83-swarms.html"><span class="n">83</span><span><span class="t">Swarms, roles, consensus</span><span class="b">role-selection experiment</span></span></a>
+    <a class="L" href="84-safety-sandboxing.html"><span class="n">84</span><span><span class="t">Sandboxing and the blast-radius question</span><span class="b">scope guard</span></span></a>
+    <a class="L" href="85-rag-retrieval.html"><span class="n">85</span><span><span class="t">Retrieval: hybrid search and chunking</span><span class="b">hybrid retriever</span></span></a>
+    <a class="L" href="86-rag-reranking.html"><span class="n">86</span><span><span class="t">Reranking, query expansion, multi-hop</span><span class="b">reranker eval</span></span></a>
+    <a class="L" href="87-rag-evaluation.html"><span class="n">87</span><span><span class="t">RAG evaluation: recall, faithfulness, A/B</span><span class="b">RAG eval harness</span></span></a>
+    <a class="L" href="88-evals.html"><span class="n">88</span><span><span class="t">Evals: golden sets and statistical power</span><span class="b">eval harness with CIs</span></span></a>
+    <a class="L" href="89-llm-as-judge.html"><span class="n">89</span><span><span class="t">LLM-as-judge and arbiters</span><span class="b">judge calibration report</span></span></a>
+    <a class="L" href="90-observability.html"><span class="n">90</span><span><span class="t">Observability and tracing</span><span class="b">trace schema + cost attribution</span></span></a>
+    <a class="L" href="91-cost-latency.html"><span class="n">91</span><span><span class="t">Cost and latency budgets, cascades</span><span class="b">cascade router</span></span></a>
+    <a class="L" href="92-reliability.html"><span class="n">92</span><span><span class="t">Retries, idempotency, degradation</span><span class="b">failure-injection tests</span></span></a>
+    <a class="L" href="93-safety-alignment.html"><span class="n">93</span><span><span class="t">Jailbreaks, injection, containment</span><span class="b">injection defense suite</span></span></a>
+    <a class="L" href="94-determinism.html"><span class="n">94</span><span><span class="t">Determinism and reproducibility</span><span class="b">seeded reproducibility audit</span></span></a>
+    <a class="L" href="95-rake-reporting-harness.html"><span class="n">95</span><span><span class="t">The RAKE reporting harness</span><span class="b">full harness spec</span></span></a>
+    <a class="L" href="96-production-checklist.html"><span class="n">96</span><span><span class="t">Production checklist for autonomous agents</span><span class="b">go/no-go checklist</span></span></a>
+    <a class="L" href="97-rag-in-production.html"><span class="n">97</span><span><span class="t">RAG in production: freshness and drift</span><span class="b">index lifecycle plan</span></span></a>
+    <a class="L" href="98-finetune-vs-rag.html"><span class="n">98</span><span><span class="t">Fine-tune vs RAG vs prompting</span><span class="b">decision matrix</span></span></a>
+    <a class="L" href="99-capstone.html"><span class="n">99</span><span><span class="t">Capstone: ship an audited autonomous agent</span><span class="b">acceptance criteria</span></span></a>
+    <a class="L" href="100-annual-plan.html"><span class="n">10</span><span><span class="t">The 12-month plan to level 100</span><span class="b">week-by-week schedule</span></span></a>
+  </div>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="../track-c/index.html"><span class="dir">&larr; PREVIOUS TRACK</span><span class="ttl">Track C &middot; Post-training &amp; Reasoning</span></a>
+  <a class="next" href="../about/calibration.html"><span class="dir">NEXT &rarr;</span><span class="ttl">Level calibration</span></a>
+</nav>
+
+</main>
+
+<footer>AILearn &middot; <a href="../about/calibration.html">level calibration</a> &middot; <a href="../tools/flashcards.html">flashcards</a></footer>
+<script src="../_shell.js"></script>
+</body>
+</html>

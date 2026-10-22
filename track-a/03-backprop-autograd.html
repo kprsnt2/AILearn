@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a03">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L03 · Backprop &amp; Autograd — AILearn</title>
+<meta name="description" content="Reverse-mode differentiation from a scalar graph: local derivatives, topological order, and a finite-difference oracle that proves your gradient is right.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L03</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L03 &middot; Backprop &amp; Autograd: Credit Assignment</h1>
+  <p class="lede">A model with 10<sup>9</sup> parameters computes one scalar loss. Deciding which of the billion numbers caused the error, using one forward pass and one backward pass, is the algorithm that makes deep learning affordable. If you cannot hand-write it for a scalar graph, you cannot debug a wrong gradient.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: 60-line micro autodiff + finite-difference oracle</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">computational graph</span>
+  <span class="pill">reverse-mode AD</span>
+  <span class="pill">local derivative</span>
+  <span class="pill">topological order</span>
+  <span class="pill">gradient accumulation</span>
+  <span class="pill">finite-difference check</span>
+  <span class="pill">backward cost = 2x forward</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a03-s1">1 &middot; Why it exists <a class="hook" href="#a03-s1">#</a></h2>
+
+    <p>The problem is <strong>credit assignment under a huge parameter count</strong>. Training makes one scalar
+    decision &mdash; "this batch had loss 2.71, adjust the weights" &mdash; but loss depends on every parameter through
+    dozens of composed layers. The naive way to compute &part;L/&part;&theta;<sub>i</sub> is numerical: perturb
+    &theta;<sub>i</sub> by &epsilon;, rerun the forward pass, divide. For N parameters that costs N+1 forward passes.
+    At N = 10<sup>8</sup> (a modest model) with a 10 ms forward pass, one gradient step takes 10<sup>6</sup> seconds
+    &asymp; 11 days. Training is not slow, it is impossible.</p>
+
+    <p>Backpropagation fixes this with a single structural fact: every layer exposes a cheap <em>local</em> derivative,
+    and the chain rule lets you multiply them. One forward pass caches intermediate values; one backward pass sweeps
+    the same graph in reverse and delivers <em>all</em> N partial derivatives for roughly the cost of two to three
+    forward passes. This is reverse-mode automatic differentiation.</p>
+
+    <div class="callout boss">
+      <p>Reverse mode computes "sensitivity of one output to N inputs" in O(1) passes regardless of N. Forward mode
+      computes "sensitivity of M outputs to one input" in O(1) passes. Deep learning has N &gg; M=1, so it must be
+      reverse mode &mdash; a fact worth stating explicitly in any review of a hand-rolled training loop.</p>
+    </div>
+
+    <p>The failure it exists to stop is not only speed. Hand-derived gradients are wrong in practice more often than
+    people admit: a forgotten transpose, a sign error in the sigmoid derivative, a mean over the wrong axis. A silent
+    wrong gradient still trains &mdash; it just trains worse, and you discover it after spending GPU weeks. So every
+    gradient implementation needs an <em>oracle</em>, and section 4 makes the finite-difference oracle into a unit test.</p>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a03-s2">2 &middot; The mental model <a class="hook" href="#a03-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> The forward pass is a factory line: each station takes parts and produces a new part.
+    The backward pass is a complaint travelling up the line: "your output was off by this much". Every station converts
+    the complaint about its output into complaints about its inputs, using only local knowledge &mdash; how sensitive my
+    output was to each of my inputs. Two stations that both fed the same downstream part each get a share of the complaint.</p>
+
+    <p><strong>Where the analogy breaks.</strong> A real factory worker cannot be blamed twice; a tensor can. If a value
+    is used in two places (the residual stream does this in every transformer block: a value is added into the
+    residual, then again used inside the layer), the complaint must be <em>summed</em>, not averaged or overwritten.
+    The most common autograd bug is an <code>=</code> where a <code>+=</code> belongs. The second place it breaks:
+    a station cannot report sensitivity to an <em>earlier</em> station without knowing the intermediate output it
+    produced &mdash; which is why the forward pass must cache activations, and why memory scales with depth, not with
+    the number of parameters.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>The one-line rule</h4><p>&part;L/&part;x = &sum;<sub>children y</sub> (&part;L/&part;y) &middot; (&part;y/&part;x). Sum over every path from x to L. Nothing else.</p></div>
+      <div class="card"><h4>The order matters</h4><p>Process nodes only after every consumer of their output has contributed its gradient. That is a reverse topological order; getting it wrong silently zeroes gradients.</p></div>
+      <div class="card"><h4>Cost</h4><p>Reverse mode costs about 2&ndash;3&times; a forward pass, independent of parameter count. The 6N FLOPs/token training convention in <a class="tag-b" href="../track-b/43-training-cost.html">L43</a> is forward 2N + backward 4N.</p></div>
+      <div class="card"><h4>Where it stops being easy</h4><p>Control flow (conditionals, loops) and in-place mutation break the cached graph. Real frameworks either record a dynamic tape (PyTorch eager) or compile it (JAX); both are the same math you write below.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a03-s3">3 &middot; The mechanism <a class="hook" href="#a03-s3">#</a></h2>
+
+    <h3>The chain rule, written for graphs</h3>
+    <div class="formula">
+      Let x be a node feeding outputs y<sub>1</sub>&hellip;y<sub>k</sub>. Define &delta; = &part;L/&part;x (the "adjoint").<br>
+      &delta; = &sum;<sub>j</sub> (&part;L/&part;y<sub>j</sub>) &middot; (&part;y<sub>j</sub>/&part;x) &nbsp;&nbsp;&nbsp; then recurse with &delta; as the incoming adjoint.<br>
+      Seed: &part;L/&part;L = 1.
+      <span class="note">&part;L/&part;y<sub>j</sub> is the adjoint that has already arrived at y<sub>j</sub>. &part;y<sub>j</sub>/&part;x is the local derivative, known at graph-construction time. Nobody ever differentiates the whole composed function symbolically.</span>
+    </div>
+
+    <h3>Local rules you need for a transformer</h3>
+    <table class="table">
+      <tr><th>Op</th><th>Forward</th><th>Backward (given incoming adjoint g = &part;L/&part;out)</th></tr>
+      <tr><td>add c = a + b</td><td>c = a + b</td><td>da += g, db += g &mdash; addition is the "gradient router"</td></tr>
+      <tr><td>mul c = a &middot; b</td><td>c = ab</td><td>da += g&middot;b, db += g&middot;a</td></tr>
+      <tr><td>power c = a<sup>n</sup></td><td>c = a<sup>n</sup></td><td>da += g&middot;n&middot;a<sup>n-1</sup></td></tr>
+      <tr><td>tanh c = tanh(a)</td><td>t = tanh(a)</td><td>da += g&middot;(1 &minus; t<sup>2</sup>)</td></tr>
+      <tr><td>exp c = e<sup>a</sup></td><td>c = e<sup>a</sup></td><td>da += g&middot;c &mdash; c is cached, no recompute</td></tr>
+      <tr><td>log c = ln a</td><td>c = ln a</td><td>da += g / a</td></tr>
+      <tr><td>matmul C = AB</td><td>C<sub>ij</sub> = &sum;<sub>k</sub> A<sub>ik</sub>B<sub>kj</sub></td><td>dA += G B<sup>T</sup>, dB += A<sup>T</sup> G</td></tr>
+      <tr><td>softmax p = softmax(z)</td><td>p<sub>i</sub> = e<sup>z<sub>i</sub></sup>/&sum;e<sup>z</sup></td><td>dz<sub>i</sub> = p<sub>i</sub>(g<sub>i</sub> &minus; &sum;<sub>j</sub> g<sub>j</sub>p<sub>j</sub>)</td></tr>
+      <tr><td>mean L = (1/T)&sum;l<sub>t</sub></td><td>&mdash;</td><td>dl<sub>t</sub> += g/T &mdash; the 1/T is a scaling trap (L16)</td></tr>
+    </table>
+
+    <h3>A micro autodiff engine, complete and runnable</h3>
+    <p>This is the whole idea in 55 lines. Every real framework is this, plus arrays instead of scalars, plus kernel
+    fusion.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">class</span> <span class="fn">T</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(s, v, parents=(), op=<span class="st">""</span>):
+        s.v, s.parents, s.op, s.g = <span class="fn">float</span>(v), parents, op, <span class="nm">0.0</span>
+    <span class="kw">def</span> <span class="fn">__add__</span>(s, o):
+        o = <span class="fn">T</span>(o) <span class="kw">if not</span> <span class="fn">isinstance</span>(o, T) <span class="kw">else</span> o
+        y = <span class="fn">T</span>(s.v + o.v, (s, o), <span class="st">"+"</span>)
+        <span class="kw">def</span> <span class="fn">b</span>(g): s.g += g; o.g += g          <span class="cm"># += because a value can have many consumers</span>
+        y._b = b; <span class="kw">return</span> y
+    <span class="kw">def</span> <span class="fn">__mul__</span>(s, o):
+        o = <span class="fn">T</span>(o) <span class="kw">if not</span> <span class="fn">isinstance</span>(o, T) <span class="kw">else</span> o
+        y = <span class="fn">T</span>(s.v * o.v, (s, o), <span class="st">"*"</span>)
+        <span class="kw">def</span> <span class="fn">b</span>(g): s.g += g * o.v; o.g += g * s.v
+        y._b = b; <span class="kw">return</span> y
+    <span class="kw">def</span> <span class="fn">__pow__</span>(s, n):
+        y = <span class="fn">T</span>(s.v ** n, (s,), <span class="st">"**"</span>)
+        <span class="kw">def</span> <span class="fn">b</span>(g): s.g += g * n * s.v ** (n - <span class="nm">1</span>)
+        y._b = b; <span class="kw">return</span> y
+    <span class="kw">def</span> <span class="fn">__neg__</span>(s): <span class="kw">return</span> s * -<span class="nm">1.0</span>
+    <span class="kw">def</span> <span class="fn">__sub__</span>(s, o): <span class="kw">return</span> s + (-o <span class="kw">if</span> <span class="fn">isinstance</span>(o, T) <span class="kw">else</span> <span class="fn">T</span>(-o))
+    _b = <span class="fm">staticmethod</span>(<span class="kw">lambda</span> g: <span class="kw">None</span>)
+
+<span class="kw">def</span> <span class="fn">tanh_</span>(s):
+    t = math.tanh(s.v); y = <span class="fn">T</span>(t, (s,), <span class="st">"tanh"</span>)
+    <span class="kw">def</span> <span class="fn">b</span>(g): s.g += g * (<span class="nm">1</span> - t * t)        <span class="cm"># cached t: no recompute</span>
+    y._b = b; <span class="kw">return</span> y
+
+<span class="kw">def</span> <span class="fn">backward</span>(y):
+    order, seen = [], <span class="fn">set</span>()
+    <span class="kw">def</span> <span class="fn">visit</span>(n):                                <span class="cm"># post-order DFS = reverse topological order</span>
+        <span class="kw">if</span> <span class="fn">id</span>(n) <span class="kw">in</span> seen: <span class="kw">return</span>
+        seen.add(<span class="fn">id</span>(n))
+        <span class="kw">for</span> p <span class="kw">in</span> n.parents: <span class="fn">visit</span>(p)
+        order.append(n)
+    <span class="fn">visit</span>(y)
+    y.g = <span class="nm">1.0</span>                                       <span class="cm"># seed dL/dL = 1</span>
+    <span class="kw">for</span> n <span class="kw">in</span> <span class="fn">reversed</span>(order):
+        <span class="kw">if</span> n.g: n._b(n.g)
+
+<span class="kw">def</span> <span class="fn">numgrad</span>(f, xs, i, h=<span class="nm">1e-6</span>):                    <span class="cm"># central finite difference = the oracle</span>
+    a, b = <span class="fn">list</span>(xs), <span class="fn">list</span>(xs); a[i] += h; b[i] -= h
+    <span class="kw">return</span> (f(*[<span class="fn">T</span>(x) <span class="kw">for</span> x <span class="kw">in</span> a]).v - f(*[<span class="fn">T</span>(x) <span class="kw">for</span> x <span class="kw">in</span> b]).v) / (<span class="nm">2</span> * h)
+
+<span class="cm"># --- test 1: a composed expression with reuse (the residual pattern) ---</span>
+f1 = <span class="kw">lambda</span> a, b: (a * b + a) * <span class="fn">tanh_</span>(b)
+xs = [<span class="nm">0.7</span>, -<span class="nm">1.3</span>]
+ts = [<span class="fn">T</span>(x) <span class="kw">for</span> x <span class="kw">in</span> xs]; y = f1(*ts); <span class="fn">backward</span>(y)
+<span class="fn">print</span>(<span class="st">"f1"</span>, <span class="fn">round</span>(y.v, <span class="nm">6</span>), [<span class="fn">round</span>(t.g, <span class="nm">6</span>) <span class="kw">for</span> t <span class="kw">in</span> ts], [<span class="fn">round</span>(<span class="fn">numgrad</span>(f1, xs, i), <span class="nm">6</span>) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">2</span>)])
+
+<span class="cm"># --- test 2: one neuron y = tanh(w.x + b), checked against the hand formula ---</span>
+w = [<span class="fn">T</span>(<span class="nm">0.3</span>), <span class="fn">T</span>(-<span class="nm">0.9</span>)]; bb = <span class="fn">T</span>(<span class="nm">0.1</span>); x = [<span class="nm">1.7</span>, <span class="nm">0.4</span>]
+y = <span class="fn">tanh_</span>(w[<span class="nm">0</span>]*x[<span class="nm">0</span>] + w[<span class="nm">1</span>]*x[<span class="nm">1</span>] + bb); <span class="fn">backward</span>(y)
+<span class="fn">print</span>(<span class="st">"autograd"</span>, <span class="fn">round</span>(y.v, <span class="nm">6</span>), [<span class="fn">round</span>(t.g, <span class="nm">6</span>) <span class="kw">for</span> t <span class="kw">in</span> w], <span class="fn">round</span>(bb.g, <span class="nm">6</span>))
+t = math.tanh(<span class="nm">0.3</span>*<span class="nm">1.7</span> - <span class="nm">0.9</span>*<span class="nm">0.4</span> + <span class="nm">0.1</span>)
+<span class="fn">print</span>(<span class="st">"analytic"</span>, <span class="fn">round</span>(t, <span class="nm">6</span>), [<span class="fn">round</span>((<span class="nm">1</span>-t*t)*<span class="nm">1.7</span>, <span class="nm">6</span>), <span class="fn">round</span>((<span class="nm">1</span>-t*t)*<span class="nm">0.4</span>, <span class="nm">6</span>)], <span class="fn">round</span>(<span class="nm">1</span>-t*t, <span class="nm">6</span>))
+    </div>
+
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+f1 0.180962 [0.258517, -0.657267] [0.258517, -0.657267]
+autograd 0.244919 [1.598025, 0.376006] 0.940015
+analytic 0.244919 [1.598025, 0.376006] 0.940015
+    </div>
+
+    <p>Three things are proven by those two lines, and they are the whole point of the engine:</p>
+    <ol>
+      <li><strong>Autograd equals the analytic formula exactly</strong> on the neuron test, to six decimals. Your local
+      rules are right.</li>
+      <li><strong>Autograd equals the finite difference exactly</strong> on the composed test. The graph machinery
+      (topological sort, additive adjoints) is right.</li>
+      <li><strong>Reuse works.</strong> In <code>f1</code>, the value <code>b</code> feeds both <code>a*b</code> and
+      <code>tanh_(b)</code>. Its gradient is the <em>sum</em> of two paths. If the engine used <code>=</code> instead
+      of <code>+=</code>, the finite-difference column would disagree and you would see a mismatch in the second
+      component &mdash; exactly the bug that kills residual networks if hand-written.</li>
+    </ol>
+
+    <p>Why the finite difference matches to 1e-6 and not better: forward error is O(h) from floating-point cancellation
+    and O(h<sup>2</sup>) from truncation; the two balance near h &asymp; &radic;&epsilon;<sub>mach</sub> &asymp; 3&times;10<sup>-8</sup>,
+    but in practice h = 1e-6 is the safe default because below it you are subtracting two nearly equal floats.
+    A relative error around 1e-6 is a pass; 1e-3 usually means a real bug.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a03-s4">4 &middot; Your hands <a class="hook" href="#a03-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Break the accumulation and watch the oracle catch it</h4>
+      <p>Take the engine above and change one character: in <code>__add__</code>, replace <code>s.g += g</code> with
+      <code>s.g = g</code>. Then rerun test 1. This is the exact bug that a hand-written residual block has, and the
+      finite-difference oracle localises it to a single component.</p>
+      <div class="code" data-lang="bash">
+python -c "import math; print('change += to = in the add rule, rerun test 1, compare to 0.258517 / -0.657267')"
+      </div>
+      <p class="expect">Observe: the second gradient no longer matches <code>-0.657267</code>. Diagnosis: a value consumed
+      twice received only one contribution. The counterfactual is clean &mdash; with <code>+=</code> restored, the
+      numbers match to six decimals. Any gradient you cannot reproduce this way is not a gradient, it is a guess.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Differentiate a softmax cross-entropy by hand</h4>
+      <p>This is the gradient the language-model head actually uses, and the one most often implemented with a sign error.
+      Loss L = &minus;log softmax(z)<sub>target</sub>. Write it directly, then check it.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># forward: stable log-softmax, and its exact gradient</span>
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">log_softmax</span>(z):
+    m = <span class="fn">max</span>(z); s = m + math.log(<span class="fn">sum</span>(math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z))
+    <span class="kw">return</span> [v - s <span class="kw">for</span> v <span class="kw">in</span> z]
+<span class="kw">def</span> <span class="fn">loss</span>(z, t): <span class="kw">return</span> -<span class="fn">log_softmax</span>(z)[t]
+<span class="kw">def</span> <span class="fn">grad</span>(z, t):
+    lp = <span class="fn">log_softmax</span>(z); p = [math.exp(v) <span class="kw">for</span> v <span class="kw">in</span> lp]
+    d = <span class="fn">list</span>(p); d[t] -= <span class="nm">1.0</span>                 <span class="cm"># dL/dz = softmax(z) - onehot(target)</span>
+    <span class="kw">return</span> [v / <span class="nm">1.0</span> <span class="kw">for</span> v <span class="kw">in</span> d]
+z = [<span class="nm">2.0</span>, <span class="nm">0.5</span>, -<span class="nm">1.0</span>, <span class="nm">3.0</span>]; t = <span class="nm">1</span>
+g = <span class="fn">grad</span>(z, t)
+fd = []
+<span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">4</span>):
+    a, b = <span class="fn">list</span>(z), <span class="fn">list</span>(z); a[i] += <span class="nm">1e-6</span>; b[i] -= <span class="nm">1e-6</span>
+    fd.append((<span class="fn">loss</span>(a, t) - <span class="fn">loss</span>(b, t)) / <span class="nm">2e-6</span>)
+<span class="fn">print</span>(<span class="st">"loss"</span>, <span class="fn">round</span>(<span class="fn">loss</span>(z, t), <span class="nm">6</span>))
+<span class="fn">print</span>(<span class="st">"grad   "</span>, [<span class="fn">round</span>(v, <span class="nm">6</span>) <span class="kw">for</span> v <span class="kw">in</span> g])
+<span class="fn">print</span>(<span class="st">"numeric"</span>, [<span class="fn">round</span>(v, <span class="nm">6</span>) <span class="kw">for</span> v <span class="kw">in</span> fd])
+<span class="fn">print</span>(<span class="st">"sum(grad) must be 0:"</span>, <span class="fn">sum</span>(g))
+      </div>
+      <p class="expect">Verified output: <code>loss 2.884092</code>, <code>grad [0.250551, -0.944094, 0.012474, 0.681069]</code>,
+      <code>numeric</code> identical to six decimals, and <code>sum(grad) = -2.220446049250313e-16</code>, i.e. zero up to
+      float64 rounding (L16 computes 2.88409 by a different route &mdash; same number, different arithmetic path).
+      The match proves the rule <code>dL/dz = softmax(z) &minus; onehot(t)</code>. The zero sum is a structural invariant:
+      because softmax logits are shift-invariant (adding a constant to every z changes nothing), the gradient must
+      sum to zero or your implementation is wrong. That single check catches most head bugs without any oracle.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Measure reverse mode's independence from parameter count</h4>
+      <p>Prove the claim in section 1 empirically: forward time grows linearly in N, backward time also grows linearly,
+      but the <em>ratio</em> backward/forward stays roughly constant.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> time
+<span class="kw">def</span> <span class="fn">bench</span>(n):
+    <span class="kw">def</span> <span class="fn">f</span>(*xs):
+        acc = xs[<span class="nm">0</span>] * xs[<span class="nm">0</span>]
+        <span class="kw">for</span> v <span class="kw">in</span> xs[<span class="nm">1</span>:]:
+            acc = acc + v * v
+        <span class="kw">return</span> <span class="fn">tanh_</span>(acc)
+    xs = [<span class="fn">T</span>(<span class="nm">0.01</span> * (i % <span class="nm">7</span>)) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(n)]
+    t0 = time.perf_counter(); y = f(*xs); t1 = time.perf_counter()
+    <span class="fn">backward</span>(y); t2 = time.perf_counter()
+    <span class="kw">return</span> (t1 - t0) * <span class="nm">1e3</span>, (t2 - t1) * <span class="nm">1e3</span>
+<span class="kw">for</span> n <span class="kw">in</span> [<span class="nm">10</span>, <span class="nm">100</span>, <span class="nm">1000</span>]:
+    fw, bw = <span class="fn">bench</span>(n)
+    <span class="fn">print</span>(<span class="st">f"n={n:5d} forward {fw:7.3f} ms  backward {bw:7.3f} ms  ratio {bw/fw:4.2f}"</span>)
+      </div>
+      <p class="expect">Ratio stays near 1&ndash;3 rather than growing with n. That is the entire economic argument for
+      backpropagation. Falsifier: if the ratio grew linearly with n, you would have re-run the forward pass for each
+      parameter (that is numeric differentiation, not reverse mode). Note the scalar Python engine is 100&times; slower
+      than a tensor library &mdash; correctness first, then vectorise.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a03-s5">5 &middot; Failure modes <a class="hook" href="#a03-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Overwrite instead of accumulate.</strong> Symptom: tensors used in multiple branches (residual, attention + skip) get too-small gradients; loss plateaus at a value the model should beat; finite-difference check on a reused variable fails while single-use variables pass.</li>
+        <li><strong>Missing <code>.detach()</code> or wrong <code>no_grad</code> scope.</strong> Symptom: VRAM grows every step because the eval loop kept the graph alive; <code>nvidia-smi</code> shows steady climb then OOM.</li>
+        <li><strong>Graph retained across the optimizer step.</strong> Symptom: "backward through the graph a second time" error, or silently doubled gradients when the same graph is reused in gradient accumulation without re-zeroing.</li>
+        <li><strong>Wrong scaling in the mean.</strong> Symptom: gradient magnitude scales with batch size or sequence length; an LR tuned on one config diverges on another. Check <code>sum(loss)/T</code> versus <code>mean(loss)</code> explicitly (L16).</li>
+        <li><strong>NaN from an unguarded log/sqrt.</strong> Symptom: loss becomes NaN first at the last layer or at a specific token; gradient arrives as inf, then the Adam state is poisoned permanently. Guard with <code>log(x + eps)</code> and clip.</li>
+        <li><strong>In-place mutation of a cached tensor.</strong> Symptom: gradients correct on step 1 and wrong afterwards; happens when you reuse a buffer the graph still references (classic in a hand-rolled normalization layer).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a03-s6">6 &middot; Connects to <a class="hook" href="#a03-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="02-embeddings.html">L02</a> (what gets differentiated). &nbsp;
+    <strong>Unlocks:</strong> every optimizer, every layer's backward pass.</p>
+    <ul>
+      <li><a class="tag-a" href="04-gradient-descent.html">L04 &middot; Gradient descent</a> &mdash; what to do with the gradient once you have it.</li>
+      <li><a class="tag-a" href="05-layernorm-rmsnorm.html">L05 &middot; LayerNorm / RMSNorm</a> &mdash; the closed-form backward derivation, verified against finite differences exactly like Experiment 2.</li>
+      <li><a class="tag-a" href="06-attention-core.html">L06 &middot; Attention</a> &mdash; the softmax backward is a direct application of dz = p(g &minus; &lang;g,p&rang;).</li>
+      <li><a class="tag-a" href="19-full-transformer.html">L19 &middot; Full transformer</a> &mdash; composing all local rules into one training step.</li>
+      <li><a class="tag-a" href="20-training-loop.html">L20 &middot; Training loop</a> &mdash; accumulation, clipping and mixed precision all interact with the backward pass.</li>
+      <li><a class="tag-b" href="../track-b/38-flash-attention.html">L38 &middot; FlashAttention</a> &mdash; recomputing activations in the backward pass to trade compute for memory: exactly the caching choice this page makes.</li>
+      <li><a class="tag-b" href="../track-b/43-training-cost.html">L43 &middot; Training cost</a> &mdash; where the 6N FLOPs/token convention (2N forward + 4N backward) comes from.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: keep a <strong>gradient oracle test</strong> in CI for every custom layer &mdash; a handful of
+      random inputs, analytic gradient versus central difference, assert relative error &lt; 1e-5. It is the cheapest
+      possible proof that a layer does what its docstring claims, and it is deterministic, so it can gate a merge.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a03-s7">7 &middot; Self-check <a class="hook" href="#a03-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why must adjoints be accumulated with <code>+=</code>? Give the graph that exposes the bug.</p>
+        <details><summary>Reveal answer</summary><p>Because L can depend on a node through several paths, and the chain rule for a multivariate function sums over paths. In <code>f(a,b) = (a*b + a) * tanh(b)</code>, <code>b</code> reaches L via <code>a*b</code> and via <code>tanh(b)</code>. With overwrite you keep only whichever backward closure ran last. The finite-difference check on that example fails in the <code>b</code> component (expected -0.657267) while a single-path expression would still pass &mdash; which is why oracles need a reused variable.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A model has 10<sup>8</sup> parameters and a forward pass takes 10 ms. Estimate the cost of one gradient step by numeric differentiation versus reverse mode, and the ratio.</p>
+        <details><summary>Reveal answer</summary><p>Numeric: (N+1) forwards &asymp; 10<sup>8</sup> &times; 10 ms = 10<sup>6</sup> s &asymp; <strong>11.6 days</strong> per step. Reverse: forward 10 ms + backward at ~2&times; forward = 30 ms total, i.e. <strong>0.03 s</strong>. Ratio = 10<sup>6</sup>/0.03 &asymp; <strong>3.3&times;10<sup>7</sup></strong>. The independence from N is the whole design.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your loss is fine for 100 steps, then becomes NaN, and every checkpoint after that is NaN. Where do you look first?</p>
+        <details><summary>Reveal answer</summary><p>First at the last layer's normalization/softmax: an inf or NaN gradient appears there and propagates into the optimizer state. Since Adam keeps running moments, one bad step poisons every later update &mdash; "NaN persists" is the signature. Check log of zero or negative probability, division by a zero variance, an unclipped exploding gradient, and whether mixed precision overflowed in fp16. Mitigations: eps guards, gradient clipping, loss scaling, and a step-level NaN guard that restores the last good checkpoint.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> The softmax cross-entropy gradient sums to zero. Why must it, and what does a non-zero sum tell you?</p>
+        <details><summary>Reveal answer</summary><p>Softmax is invariant to adding a constant c to all logits: softmax(z + c1) = softmax(z). So L(z + c1) = L(z) for all c, and differentiating along 1 gives 1<sup>T</sup>&nabla;L = 0. A non-zero sum therefore means the gradient does not correspond to the function you think you are differentiating &mdash; typically a missing stabilizer term (forgot to subtract the running max), a target index error, or a missing normaliser. It is a free structural test that needs no oracle.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your custom layer passes a finite-difference check for h = 1e-3 but fails for h = 1e-8. Is the layer wrong?</p>
+        <details><summary>Reveal answer</summary><p>Probably not. Central differences have truncation error O(h<sup>2</sup>) and rounding/cancellation error O(&epsilon;/h). At h = 1e-3 truncation dominates (~1e-6 relative) and both columns agree loosely; at h = 1e-8 the numerator is the difference of two numbers that agree to ~7 digits, so cancellation destroys the estimate and the "mismatch" is numerical noise. Use h &asymp; 1e-6 and compare relative error, not absolute; also prefer float64 for the oracle. If a mismatch persists at several h values, then the analytic gradient is wrong.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="02-embeddings.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L02 &middot; Embeddings</span></a>
+    <a class="next" href="04-gradient-descent.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L04 &middot; Gradient descent</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

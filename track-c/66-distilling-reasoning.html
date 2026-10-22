@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c66">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L66 &middot; Distilling reasoning: rejection sampling and trace recycling &mdash; AILearn</title>
+<meta name="description" content="Rejection sampling as offline policy improvement: yield economics per difficulty band, the student ceiling, and the failure modes of filtered traces.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L66</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L66 &middot; Distilling reasoning: rejection sampling and trace recycling</h1>
+  <p class="lede">The reasoning model you can afford to train is not the one you can afford to serve. Rejection sampling turns a teacher's successes into a student's ceiling &mdash; and its yield, not its accuracy, decides whether the pipeline is economic.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: rejection-sampling loop</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">rejection sampling</span>
+  <span class="pill">yield</span>
+  <span class="pill">teacher-student</span>
+  <span class="pill">verifier filter</span>
+  <span class="pill">zero-yield band</span>
+  <span class="pill">trace recycling</span>
+  <span class="pill">offline policy improvement</span>
+  <span class="pill">provenance</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c66-s1">1 &middot; Why it exists <a class="hook" href="#c66-s1">#</a></h2>
+
+    <p>The best reasoning model you can afford to train is almost never the one you can afford to serve. And
+    the obvious fix &mdash; train the small model with RL directly &mdash; often fails: small models explore
+    less usefully and their reasoning traces are short and shallow, so there is little to reinforce. The
+    failure this lesson exists to fix is <strong>capability sitting in a teacher you cannot deploy</strong>.</p>
+
+    <p>Reasoning distillation is the published answer. Generate a large pool of traces from the teacher,
+    <em>keep only the ones that pass a verifier</em>, and run ordinary SFT on the student. No reward model,
+    no RL loop, no critic &mdash; the verifier is used as a filter rather than as a reward. DeepSeek-R1
+    (arXiv:2501.12948) reports this stage as part of its pipeline, and it is the reason consumer-scale models
+    shipped with visible reasoning traces at all.</p>
+
+    <div class="callout boss">
+      <p>Rejection sampling is a search procedure disguised as a data pipeline. You are looking for outputs
+      that clear a bar the teacher sometimes fails to clear. The yield &mdash; the fraction of sampled traces that
+      pass &mdash; is the quantity that determines whether the whole approach is economic, and it is a number
+      you can measure before spending on training.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c66-s2">2 &middot; The mental model <a class="hook" href="#c66-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> SFT on filtered teacher outputs is offline policy improvement. The
+    teacher is a policy; the verifier is a filter; the student imitates the filtered distribution. The
+    student's ceiling is the teacher's <em>filtered</em> capability, not the teacher's average behaviour &mdash;
+    which is why filtering can make a student beat its teacher's average score.</p>
+
+    <div class="formula">
+      yield = E<sub>prompt</sub> [ 1 &minus; (1 &minus; p<sub>teacher</sub>)<sup>k</sup> ] &nbsp;&nbsp;|&nbsp;&nbsp; student ceiling &asymp; teacher accuracy under the filter
+      <span class="note">p is the teacher's pass rate on a prompt, k the samples per prompt. With k samples, the expected number of passing traces per prompt is 1 &minus; (1&minus;p)^k.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Failure of the naive plan</th><th>Why</th><th>Fix in the recipe</th></tr></thead>
+      <tbody>
+        <tr><td>Train on the first trace, whatever it is</td><td>You copy the teacher's failures verbatim</td><td>Verifier filter; discard failures</td></tr>
+        <tr><td>Train only on passing traces</td><td>Distribution mismatch: the student never sees a failure and cannot recover from one</td><td>Mix in a small fraction of repaired or failed-then-corrected traces, or add "detect the error" tasks</td></tr>
+        <tr><td>One trace per prompt</td><td>Low yield on hard prompts; the student never sees a solution to them</td><td>k samples per prompt with a cap; log yield per difficulty band</td></tr>
+        <tr><td>Full-length traces</td><td>Token cost and truncation; the student learns where the trace was cut, not how it ended</td><td>Truncate at a natural end marker; never at the budget</td></tr>
+        <tr><td>Teacher traces as-is</td><td>Format drift, language mixing, unreadable style</td><td>Normalise format; a second filter for style/format rules</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "offline policy improvement" gets right</h4><p>It explains why filtering beats
+      imitation: you are not fitting the teacher's noise, you are fitting its successes. And it predicts the
+      main failure: the student inherits the <em>hole</em> in the teacher's coverage &mdash; prompts where the
+      teacher never passed produce no data at all.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>RL can explore past the teacher; SFT cannot. A distilled
+      student is bounded by what the teacher produced, while an RL-trained student can in principle discover
+      a method the teacher never used. Distillation buys a cheaper deployment, not a better policy.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c66-s3">3 &middot; The mechanism <a class="hook" href="#c66-s3">#</a></h2>
+
+    <p>The pipeline, in the order that decides whether it is economic:</p>
+
+    <div class="formula">
+      yield<sub>band</sub> = passes / samples &nbsp;&nbsp;&rarr;&nbsp;&nbsp; cost per usable trace = (k &middot; trace cost) / passes
+      <span class="note">Compute this per difficulty band before training. A band with yield below a few percent is paying for traces you discard, and its prompts will have no data at all.</span>
+    </div>
+
+    <p>Track three numbers per band: yield, mean trace length of accepted traces, and the fraction of prompts
+    with zero accepted traces. Then run SFT only on the prompts that produced data, and add an eval
+    specifically for the prompts that did not.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L66: rejection sampling -- the economics of turning a teacher into a student.</span>
+<span class="cm"># Pure stdlib. Yield is a binomial process; cost per usable trace follows.</span>
+<span class="kw">import</span> math
+
+BANDS = {
+    <span class="st">"band A (easy)"</span>:   dict(n_prompts=<span class="nm">4000</span>, p_teacher=<span class="nm">0.70</span>),
+    <span class="st">"band B (medium)"</span>: dict(n_prompts=<span class="nm">3000</span>, p_teacher=<span class="nm">0.40</span>),
+    <span class="st">"band C (hard)"</span>:   dict(n_prompts=<span class="nm">3000</span>, p_teacher=<span class="nm">0.12</span>),
+}
+K = <span class="nm">8</span>                          <span class="cm"># samples per prompt</span>
+TRACE_TOKENS = <span class="nm">1400</span>            <span class="cm"># mean accepted trace length</span>
+MAX_ACCEPT = <span class="nm">2</span>                 <span class="cm"># cap accepted traces per prompt (avoid imbalanced weighting)</span>
+
+<span class="kw">print</span>(f<span class="st">"{'band':&lt;17}{'p':&gt;5}{'yield':&gt;8}{'acc/prompt':&gt;12}{'useful/prompt':&gt;15}"</span>
+      f<span class="st">"{'zero-yield prompts':&gt;20}{'tokens per usable trace':&gt;24}"</span>)
+
+tot_prompts = tot_usable = tot_tokens = <span class="nm">0</span>
+<span class="kw">for</span> name, b <span class="kw">in</span> BANDS.items():
+    n, p = b[<span class="st">"n_prompts"</span>], b[<span class="st">"p_teacher"</span>]
+    <span class="cm"># probability at least one of k passes</span>
+    yield_ = <span class="nm">1</span> - (<span class="nm">1</span> - p) ** K
+    <span class="cm"># expected number of passes, capped</span>
+    expected = min(K * p, MAX_ACCEPT)
+    zero = (<span class="nm">1</span> - p) ** K
+    tokens_per_useful = (K * TRACE_TOKENS) / expected <span class="kw">if</span> expected &gt; <span class="nm">0</span> <span class="kw">else</span> float(<span class="st">"inf"</span>)
+    <span class="kw">print</span>(f<span class="st">"{name:&lt;17}{p:&gt;5.2f}{yield_:&gt;8.3f}{K * p:&gt;12.3f}{expected:&gt;15.3f}"</span>
+          f<span class="st">"{zero:&gt;20.3f}{tokens_per_useful:&gt;24.0f}"</span>)
+    tot_prompts += n
+    tot_usable += n * expected
+    tot_tokens += n * K * TRACE_TOKENS
+
+<span class="kw">print</span>(f<span class="st">"\ntotal prompts {tot_prompts}, usable traces {tot_usable:.0f}, tokens sampled {tot_tokens:,}"</span>)
+<span class="kw">print</span>(f<span class="st">"tokens per usable trace, whole pool: {tot_tokens / tot_usable:,.0f}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nband C: prompts needed to produce 40,000 usable traces, vs 3,000 prompts available"</span>)
+<span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">4</span>, <span class="nm">8</span>, <span class="nm">16</span>, <span class="nm">32</span>):
+    exp = min(k * BANDS[<span class="st">"band C (hard)"</span>][<span class="st">"p_teacher"</span>], MAX_ACCEPT)
+    need_prompts = <span class="nm">40000</span> / exp
+    <span class="kw">print</span>(f<span class="st">"  k={k:&gt;2}: {exp:.2f} usable per prompt -&gt; {need_prompts:,.0f} prompts "</span>
+          f<span class="st">"({BANDS['band C (hard)']['n_prompts']:,} available) -&gt; "</span>
+          f<span class="st">"{'feasible' if need_prompts &lt;= BANDS['band C (hard)']['n_prompts'] else 'NOT feasible'}"</span>)
+</div><div class="code out-block" data-lang="output">
+band                 p   yield  acc/prompt  useful/prompt  zero-yield prompts tokens per usable trace
+band A (easy)     0.70   1.000       5.600          2.000               0.000                    5600
+band B (medium)   0.40   0.983       3.200          2.000               0.017                    5600
+band C (hard)     0.12   0.640       0.960          0.960               0.360                   11667
+
+total prompts 10000, usable traces 16880, tokens sampled 112,000,000
+tokens per usable trace, whole pool: 6,635
+
+band C: prompts needed to produce 40,000 usable traces, vs 3,000 prompts available
+  k= 4: 0.48 usable per prompt -&gt; 83,333 prompts (3,000 available) -&gt; NOT feasible
+  k= 8: 0.96 usable per prompt -&gt; 41,667 prompts (3,000 available) -&gt; NOT feasible
+  k=16: 1.92 usable per prompt -&gt; 20,833 prompts (3,000 available) -&gt; NOT feasible
+  k=32: 2.00 usable per prompt -&gt; 20,000 prompts (3,000 available) -&gt; NOT feasible
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c66-s4">4 &middot; Your hands <a class="hook" href="#c66-s4">#</a></h2>
+
+    <p>Three labs: simulate the rejection-sampling loop and its economics, measure the ceiling a student can
+    inherit, and decide how many samples per prompt you need before the yield is acceptable.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; compute the yield before you spend</h4>
+      <p>Three difficulty bands, k = 8 samples per prompt, a cap of 2 accepted traces per prompt. The script prints yield, usable traces per prompt, the fraction of prompts with no usable trace at all, and tokens per usable trace.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L66: rejection sampling -- the economics of turning a teacher into a student.</span>
+<span class="cm"># Pure stdlib. Yield is a binomial process; cost per usable trace follows.</span>
+<span class="kw">import</span> math
+
+BANDS = {
+    <span class="st">"band A (easy)"</span>:   dict(n_prompts=<span class="nm">4000</span>, p_teacher=<span class="nm">0.70</span>),
+    <span class="st">"band B (medium)"</span>: dict(n_prompts=<span class="nm">3000</span>, p_teacher=<span class="nm">0.40</span>),
+    <span class="st">"band C (hard)"</span>:   dict(n_prompts=<span class="nm">3000</span>, p_teacher=<span class="nm">0.12</span>),
+}
+K = <span class="nm">8</span>                          <span class="cm"># samples per prompt</span>
+TRACE_TOKENS = <span class="nm">1400</span>            <span class="cm"># mean accepted trace length</span>
+MAX_ACCEPT = <span class="nm">2</span>                 <span class="cm"># cap accepted traces per prompt (avoid imbalanced weighting)</span>
+
+<span class="kw">print</span>(f<span class="st">"{'band':&lt;17}{'p':&gt;5}{'yield':&gt;8}{'acc/prompt':&gt;12}{'useful/prompt':&gt;15}"</span>
+      f<span class="st">"{'zero-yield prompts':&gt;20}{'tokens per usable trace':&gt;24}"</span>)
+
+tot_prompts = tot_usable = tot_tokens = <span class="nm">0</span>
+<span class="kw">for</span> name, b <span class="kw">in</span> BANDS.items():
+    n, p = b[<span class="st">"n_prompts"</span>], b[<span class="st">"p_teacher"</span>]
+    <span class="cm"># probability at least one of k passes</span>
+    yield_ = <span class="nm">1</span> - (<span class="nm">1</span> - p) ** K
+    <span class="cm"># expected number of passes, capped</span>
+    expected = min(K * p, MAX_ACCEPT)
+    zero = (<span class="nm">1</span> - p) ** K
+    tokens_per_useful = (K * TRACE_TOKENS) / expected <span class="kw">if</span> expected &gt; <span class="nm">0</span> <span class="kw">else</span> float(<span class="st">"inf"</span>)
+    <span class="kw">print</span>(f<span class="st">"{name:&lt;17}{p:&gt;5.2f}{yield_:&gt;8.3f}{K * p:&gt;12.3f}{expected:&gt;15.3f}"</span>
+          f<span class="st">"{zero:&gt;20.3f}{tokens_per_useful:&gt;24.0f}"</span>)
+    tot_prompts += n
+    tot_usable += n * expected
+    tot_tokens += n * K * TRACE_TOKENS
+
+<span class="kw">print</span>(f<span class="st">"\ntotal prompts {tot_prompts}, usable traces {tot_usable:.0f}, tokens sampled {tot_tokens:,}"</span>)
+<span class="kw">print</span>(f<span class="st">"tokens per usable trace, whole pool: {tot_tokens / tot_usable:,.0f}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nband C: prompts needed to produce 40,000 usable traces, vs 3,000 prompts available"</span>)
+<span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">4</span>, <span class="nm">8</span>, <span class="nm">16</span>, <span class="nm">32</span>):
+    exp = min(k * BANDS[<span class="st">"band C (hard)"</span>][<span class="st">"p_teacher"</span>], MAX_ACCEPT)
+    need_prompts = <span class="nm">40000</span> / exp
+    <span class="kw">print</span>(f<span class="st">"  k={k:&gt;2}: {exp:.2f} usable per prompt -&gt; {need_prompts:,.0f} prompts "</span>
+          f<span class="st">"({BANDS['band C (hard)']['n_prompts']:,} available) -&gt; "</span>
+          f<span class="st">"{'feasible' if need_prompts &lt;= BANDS['band C (hard)']['n_prompts'] else 'NOT feasible'}"</span>)
+</div><div class="code out-block" data-lang="output">
+band                 p   yield  acc/prompt  useful/prompt  zero-yield prompts tokens per usable trace
+band A (easy)     0.70   1.000       5.600          2.000               0.000                    5600
+band B (medium)   0.40   0.983       3.200          2.000               0.017                    5600
+band C (hard)     0.12   0.640       0.960          0.960               0.360                   11667
+
+total prompts 10000, usable traces 16880, tokens sampled 112,000,000
+tokens per usable trace, whole pool: 6,635
+
+band C: prompts needed to produce 40,000 usable traces, vs 3,000 prompts available
+  k= 4: 0.48 usable per prompt -&gt; 83,333 prompts (3,000 available) -&gt; NOT feasible
+  k= 8: 0.96 usable per prompt -&gt; 41,667 prompts (3,000 available) -&gt; NOT feasible
+  k=16: 1.92 usable per prompt -&gt; 20,833 prompts (3,000 available) -&gt; NOT feasible
+  k=32: 2.00 usable per prompt -&gt; 20,000 prompts (3,000 available) -&gt; NOT feasible
+</div>
+      <p class="expect">Easy and medium bands both hit the cap and produce usable data at 5,600 tokens per trace. Hard band C costs twice as much per usable trace and leaves 36% of its prompts with no data whatsoever. The last block answers the decision that matters: no number of samples makes band C supply 40,000 traces from 3,000 prompts, because the cap is the pass rate.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the ceiling the student inherits</h4>
+      <p>Do not measure student capability against the teacher's average. Measure it against the teacher's <em>filtered</em> accuracy and against the teacher's accuracy on the prompts that produced data.</p>
+<div class="code" data-lang="python">
+teacher_acc_all       = <span class="nm">0.41</span>     <span class="cm"># every prompt in the eval</span>
+teacher_acc_covered   = <span class="nm">0.58</span>     <span class="cm"># only prompts where at least one trace passed</span>
+student_acc_all       = <span class="nm">0.39</span>
+student_acc_covered   = <span class="nm">0.55</span>
+<span class="cm"># the honest comparison is the middle column, and the gap that matters is</span>
+<span class="cm"># student_acc_all - student_acc on ZERO-yield prompts (measured separately)</span>
+</div>
+      <p class="expect">A student at 0.55 on covered prompts looks like a 14-point gain against the teacher's 0.41 average, and looks like a 3-point loss against the teacher's 0.58 filtered performance. Both statements are true and only one is useful for planning. Report the zero-yield band as its own line, always.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; provenance record for every accepted trace</h4>
+      <p>Rejection-sampled data is generated, filtered, and mixed into an SFT stage. This is the minimum record per trace.</p>
+      <div class="code" data-lang="json">
+{"trace_id": "t_00b1c2",
+ "prompt_hash": "sha256:...",
+ "teacher": {"model": "...", "version": "...", "sampler": {"temp": 0.8, "top_p": 0.95, "max_tokens": 8192}},
+ "verifier": {"name": "grader.py", "sha256": "...", "rule": "exact_match"},
+ "accepted": true,
+ "reason": "answer_parsed_and_matched",
+ "trace_tokens": 1384,
+ "truncated": false}
+      </div>
+      <p class="expect">Without <code>verifier.sha256</code> you cannot reproduce the filter; without <code>truncated</code> you cannot"
+      " explain why some traces stop mid-step; without the sampler settings the pool cannot be regenerated at all. These three fields"
+      " are what makes a synthetic-data stage reviewable rather than magical.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c66-s5">5 &middot; Failure modes <a class="hook" href="#c66-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Zero-yield bands.</strong> Symptom: whole categories of prompts have no accepted traces, so the student is untrained on them; accuracy on those bands equals the base model's.</li>
+        <li><strong>Verifier-filtered artefact.</strong> Symptom: student reasoning contains syntax the verifier likes rather than the method; test by scoring student traces with an independent grader.</li>
+        <li><strong>Length mismatch.</strong> Symptom: student traces are much shorter than teacher traces because most long ones were truncated; accuracy collapses on long-chain items.</li>
+        <li><strong>Format drift.</strong> Symptom: mixed languages or style artefacts inside traces; they are copied perfectly by the student because SFT has no preference.</li>
+        <li><strong>Silent distribution shift.</strong> Symptom: student excels on the training prompts and fails on paraphrases; the prompt pool was narrow.</li>
+        <li><strong>Teacher overfit.</strong> Symptom: student reproduces the teacher's specific errors on items where the verifier is weak. Filter strength is only as good as the verifier's coverage (lesson 63).</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Keep the sampling record: for every accepted trace, the teacher id, sampler settings, verifier
+      version and hash, and the acceptance rule. Rejection-sampled data is the most provenance-critical data in
+      the pipeline &mdash; it is generated, filtered, and mixed into a stage where contamination checks
+      (lesson 74) need to know exactly what came from where.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c66-s6">6 &middot; Connects to <a class="hook" href="#c66-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="62-long-cot-r1.html">L62 &middot; Long CoT</a>,
+    <a class="tag-c" href="63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a>,
+    <a class="tag-c" href="52-sft.html">L52 &middot; SFT</a>.</p>
+    <p><strong>Unlocks:</strong> deployable reasoning models and self-generated data for the next round.</p>
+
+    <ul>
+      <li><a class="tag-c" href="67-data-synthesis.html">L67 &middot; Synthetic data</a> &mdash; the same generator-and-filter shape applied to environments.</li>
+      <li><a class="tag-c" href="68-self-feedback.html">L68 &middot; Self-feedback</a> &mdash; filtering with the model's own critique instead of a verifier.</li>
+      <li><a class="tag-c" href="53-standard-pipeline.html">L53 &middot; The standard pipeline</a> &mdash; the distillation stage's gate.</li>
+      <li><a class="tag-c" href="74-eval-contamination.html">L74 &middot; Contamination</a> &mdash; trace recycling across evals is the fastest way to fake an improvement.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c66-s7">7 &middot; Self-check <a class="hook" href="#c66-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Teacher pass rate 0.4 on a band, k = 5 samples per prompt. What is the yield, and what does it cost per usable trace?</p>
+        <details><summary>Reveal answer</summary><p>Yield = 1 &minus; 0.6<sup>5</sup> = 1 &minus; 0.0778 = 0.922. But the number of accepted traces per prompt isk&middot;p = 2.0, so if you cap at one accepted trace per prompt you accept about 1.0 of the 2 available and the marginalcost per usable trace is roughly half a prompt's k-sample cost. The distinction matters: yield measures whether you have dataat all, cost per usable trace measures whether it is worth generating.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why can a distilled student beat its teacher's average accuracy, even though it never exceeds the teacher on any prompt?</p>
+        <details><summary>Reveal answer</summary><p>Because the student is trained on the teacher's <em>successes</em>. The teacher's average includes the prompts it fails on,and the student learns from the accepted traces only &mdash; effectively an offline policy improvement over the teacher's samplingdistribution. It cannot beat the teacher on prompts where the teacher never passes, which is exactly why zero-yield bands needtheir own eval.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Quantitative: traces cost 1,200 tokens on average, sampling costs nothing per token today, and training costs are fixed. Yield is 8% on a band. What is the argument against using that band?</p>
+        <details><summary>Reveal answer</summary><p>8% yield means about 12.5 samples per accepted trace. If the trace pool is capped, that band consumes the majority of thesampling budget for a minority of the data. The decision is not never but cap it: take the accepted traces you get, but donot scale sampling there, and record the zero-yield prompts for a future RL stage that can improve the teacher first.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: distilled student passes the eval but fails on paraphrases of the same questions. What is the likely cause and the check?</p>
+        <details><summary>Reveal answer</summary><p>The prompt pool was too narrow relative to the eval's semantic range. Check: sample the accepted traces by prompt template andmeasure how many distinct templates exist; then run an eval slice of paraphrases. If the drop is large, the data pipeline needsprompt augmentation (paraphrase the prompt, not the trace) before more sampling.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What is one thing RL training can do that rejection-sampling distillation cannot, and why does that matter for pipeline order?</p>
+        <details><summary>Reveal answer</summary><p>RL can explore outside the teacher's output distribution and discover methods the teacher never produced. Distillation isbounded by the teacher's coverage. So the pipeline order matters: run RL to push capability, then distil to deploy it. If youdistil first and RL second, the RL stage starts from a student that cannot produce the novel traces it would need to explore.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="65-self-play-dialectic.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L65 &middot; Self-play, debate, and dialectic self-improvement</span></a>
+    <a class="next" href="67-data-synthesis.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L67 &middot; Synthetic data and agent-environment synthesis</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

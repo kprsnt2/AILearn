@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c57">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L57 &middot; PPO for LLMs: clipping, the value model, the KL leash, four models &mdash; AILearn</title>
+<meta name="description" content="PPO as variance reduction plus a trust region: the four models, the clipped surrogate, a runnable bandit loop, and the PPO-vs-GRPO tradeoff.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L57</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L57 &middot; PPO for LLMs: clipping, the value model, the KL leash, four models</h1>
+  <p class="lede">PPO costs four models and buys two things: a lower-variance advantage and a step size that cannot destroy the policy. This page runs the whole loop, deletes the critic to show what it was for, and states exactly where the clip stops helping.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: PPO vs GRPO tradeoff analysis</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">clipped surrogate</span>
+  <span class="pill">probability ratio</span>
+  <span class="pill">value model</span>
+  <span class="pill">advantage baseline</span>
+  <span class="pill">KL leash</span>
+  <span class="pill">inner epochs</span>
+  <span class="pill">trust region</span>
+  <span class="pill">critic collapse</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c57-s1">1 &middot; Why it exists <a class="hook" href="#c57-s1">#</a></h2>
+
+    <p>PPO (arXiv:1707.06347) exists because the naive policy gradient is a high-variance estimator
+    wrapped in a fragile step size. Take one wrong step and the policy collapses into a degenerate
+    generator &mdash; and with a language model you cannot detect the collapse until you have sampled a few
+    thousand completions, by which time the checkpoint is ruined. The original problem PPO solved,
+    in the 2017 RL sense, is: <strong>how do you take the largest step that is still safe, without solving a
+    constrained optimisation at every update?</strong></p>
+
+    <p>For LLMs the same problem acquires three extra bodies. The reward is a learned model that can be
+    wrong; the "policy" has billions of parameters, so a large step is not a step but a teleport; and the
+    thing you are trying to preserve (fluency, format, instruction-following) lives in a distribution you
+    do not have a constraint for. PPO for LLMs therefore runs <strong>four models</strong>:</p>
+
+    <table class="table">
+      <thead><tr><th>Model</th><th>Job</th><th>Cost</th><th>What breaks if it is wrong</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Policy</strong> &pi;<sub>&theta;</sub></td><td>Generates and is trained</td><td>Full fwd+bwd</td><td>Nothing &mdash; this is the product</td></tr>
+        <tr><td><strong>Reference</strong> &pi;<sub>ref</sub></td><td>Frozen KL anchor</td><td>Forward only</td><td>No leash: drift into degenerate high-reward text</td></tr>
+        <tr><td><strong>Reward model</strong> R<sub>&phi;</sub></td><td>Scores completions</td><td>Forward only</td><td>Optimises the wrong thing, confidently</td></tr>
+        <tr><td><strong>Value model</strong> V<sub>&psi;</sub></td><td>Baseline to cut advantage variance</td><td>Forward + its own backward</td><td>Noisy advantages, and no error signal telling you so</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout boss">
+      <p>PPO is a variance-reduction scheme with a trust region bolted on. The value model exists only to
+      make the advantage estimate less noisy; the clip exists only to stop one noisy step from destroying
+      the policy. Both are engineering, not science, and both are replaceable &mdash; which is exactly what
+      lesson 56 does.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c57-s2">2 &middot; The mental model <a class="hook" href="#c57-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> the policy gradient says "make sampled actions with above-average
+    reward more likely". The problem is that "above average" requires knowing the average, and the naive
+    estimator uses the raw reward, so everything with high reward looks good regardless of whether it is
+    better than what you would have done anyway.</p>
+
+    <div class="formula">
+      &nabla;<sub>&theta;</sub>J = E[ (R &minus; b) &nabla;<sub>&theta;</sub> log &pi;<sub>&theta;</sub>(a|s) ]
+      <span class="note">b is any baseline that does not depend on the sampled action. Var of the estimator falls as b approaches E[R]; the expectation is unchanged for every b.</span>
+    </div>
+
+    <p>PPO chooses b = V<sub>&psi;</sub>(s), a learned prediction of expected reward. That is a whole extra
+    network, and for an LLM it is asked to predict the eventual reward of a <em>half-written answer</em> from
+    the tokens so far &mdash; a genuinely hard prediction whose errors then appear as advantage noise. The
+    key numbers from the lab below: the baseline removes 97% of the raw reward's second moment in this toy,
+    which is why PPO works at all, and also why the critic's own error matters so much.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What "the critic is a variance filter" gets right</h4><p>It explains why anyone
+      tolerates a fourth model: without it, the gradient is dominated by prompt difficulty. It also explains
+      why the critic does not need to be <em>accurate</em> &mdash; only to correlate with the truth.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Unbiasedness requires b not depend on the sampled action.
+      A critic trained while the policy moves becomes correlated with the very samples it is supposed to
+      debias, and then the estimator is biased <em>and</em> the bias has no error bar. This is the quiet
+      failure PPO is famous for and the reason GRPO's empirical baseline is attractive.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c57-s3">3 &middot; The mechanism <a class="hook" href="#c57-s3">#</a></h2>
+
+    <p>The clipped surrogate, the KL leash, and the advantage &mdash; the three pieces that make PPO "PPO":</p>
+
+    <div class="formula">
+      &rho;<sub>t</sub> = &pi;<sub>&theta;</sub>(a<sub>t</sub>|s<sub>t</sub>) / &pi;<sub>&theta;old</sub>(a<sub>t</sub>|s<sub>t</sub>)<br>
+      L<sup>CLIP</sup> = E<sub>t</sub>[ min( &rho;<sub>t</sub>A&#770;<sub>t</sub>, &nbsp;clip(&rho;<sub>t</sub>, 1&minus;&epsilon;, 1+&epsilon;) A&#770;<sub>t</sub> ) ]<br>
+      objective = L<sup>CLIP</sup> &minus; &beta; KL(&pi;<sub>&theta;</sub> &#8214; &pi;<sub>ref</sub>) &nbsp;(often also &minus; c<sub>1</sub>&middot;V-loss + c<sub>2</sub>&middot;entropy)
+      <span class="note">&rho; compares the policy to the one that produced the samples. At the first inner epoch &rho; = 1 exactly; it drifts at later epochs, which is when the clip can fire.</span>
+    </div>
+
+    <p>Three implementation facts that decide whether your PPO is real:</p>
+    <ul>
+      <li><strong>&rho; must be recomputed against the stale sampling policy</strong> &pi;<sub>&theta;old</sub>, not
+          against the reference. Using the reference as the denominator is the most common PPO bug that still trains.</li>
+      <li><strong>KL is an estimate.</strong> In practice a low-variance per-token estimator is used rather than the full
+          sequence KL; whichever you use, log it and gate on it.</li>
+      <li><strong>Multiple inner epochs are the point.</strong> PPO's efficiency comes from reusing one batch for
+          several optimiser steps &mdash; that is exactly what makes &rho; drift and the clip necessary. One epoch
+          per batch is leaving its main advantage on the floor.</li>
+    </ul>
+
+    <p>The lab below is a complete PPO loop on a one-token bandit with all four models present, followed by a
+    ratio sweep showing where the clip binds.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L57: the PPO knife-edge, measured. Ratio is recomputed each inner epoch from the</span>
+<span class="cm"># stale sampling policy, exactly as a real implementation does.</span>
+<span class="kw">import</span> math, random
+
+EPS, BETA_KL, LR, C_VAL, STEPS, INNER = <span class="nm">0.2</span>, <span class="nm">0.02</span>, <span class="nm">0.4</span>, <span class="nm">0.5</span>, <span class="nm">400</span>, <span class="nm">1</span>
+PROMPTS, ACTIONS = <span class="nm">2</span>, <span class="nm">2</span>
+REWARD = {<span class="nm">0</span>: [<span class="nm">1.0</span>, <span class="nm">0.0</span>], <span class="nm">1</span>: [<span class="nm">1.0</span>, <span class="nm">0.0</span>]}      <span class="cm"># ground truth: action 0 correct for both prompts</span>
+RM = {<span class="nm">0</span>: [<span class="nm">0.9</span>, <span class="nm">0.6</span>], <span class="nm">1</span>: [<span class="nm">0.7</span>, <span class="nm">0.55</span>]}         <span class="cm"># learned reward model, imperfect, prompt-dependent</span>
+
+
+<span class="kw">def</span> softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]
+    s = sum(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+
+<span class="kw">def</span> kl(p, q):
+    <span class="kw">return</span> sum(a * (math.log(a) - math.log(b)) <span class="kw">for</span> a, b <span class="kw">in</span> zip(p, q))
+
+
+<span class="kw">def</span> train(use_value, seed=<span class="nm">0</span>):
+    rng = random.Random(seed)
+    pi = [[<span class="nm">0.0</span>] * ACTIONS <span class="kw">for</span> _ <span class="kw">in</span> range(PROMPTS)]
+    ref = [softmax(p) <span class="kw">for</span> p <span class="kw">in</span> pi]           <span class="cm"># model #2: reference</span>
+    V = [<span class="nm">0.0</span>] * PROMPTS                      <span class="cm"># model #4: value model</span>
+    kl_tr = []
+    <span class="kw">for</span> _ <span class="kw">in</span> range(STEPS):
+        <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS):
+            p_old = softmax(pi[s])           <span class="cm"># sampling policy, frozen for this epoch</span>
+            a = rng.choices(range(ACTIONS), weights=p_old)[<span class="nm">0</span>]
+            shaped = RM[s][a] - BETA_KL * kl(p_old, ref[s])
+            adv = shaped - (V[s] <span class="kw">if</span> use_value <span class="kw">else</span> <span class="nm">0.0</span>)
+            <span class="kw">if</span> use_value:
+                V[s] += LR * C_VAL * (shaped - V[s])
+            <span class="kw">for</span> _ <span class="kw">in</span> range(INNER):
+                p = softmax(pi[s])
+                ratio = p[a] / p_old[a]      <span class="cm"># the real ratio: new prob / stale prob</span>
+                surr = min(ratio * adv, min(max(ratio, <span class="nm">1</span> - EPS), <span class="nm">1</span> + EPS) * adv)
+                <span class="kw">for</span> j <span class="kw">in</span> range(ACTIONS):     <span class="cm"># d log p(a)/d z_j = 1[a==j] - p_j ; /p[a] for the ratio</span>
+                    logits_grad = (p[a] / p[a]) * ((<span class="nm">1.0</span> <span class="kw">if</span> j == a <span class="kw">else</span> <span class="nm">0.0</span>) - p[j])
+                    pi[s][j] += LR * surr * logits_grad
+        kl_tr.append(sum(kl(softmax(pi[s]), ref[s]) <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS)) / PROMPTS)
+    <span class="kw">return</span> pi, kl_tr
+
+
+<span class="kw">def</span> graded(pi):
+    <span class="kw">return</span> sum(sum(pk * REWARD[s][k] <span class="kw">for</span> k, pk <span class="kw">in</span> enumerate(softmax(pi[s])))
+               <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS)) / PROMPTS
+
+
+<span class="kw">for</span> label, use_v <span class="kw">in</span> ((<span class="st">"policy+ref+RM+value"</span>, <span class="kw">True</span>), (<span class="st">"value model deleted"</span>, <span class="kw">False</span>)):
+    pi, klt = train(use_v)
+    <span class="kw">print</span>(f<span class="st">"{label:&lt;26} graded={graded(pi):.3f}  KL final={klt[-1]:.3f}  KL last20={sum(klt[-20:]) / 20:.3f}"</span>)
+
+rng = random.Random(<span class="nm">5</span>)
+w = wo = <span class="nm">0.0</span>
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">20000</span>):
+    s = rng.randrange(PROMPTS)
+    a = rng.randrange(ACTIONS)
+    w += (RM[s][a] - <span class="nm">0.5</span> * sum(RM[s])) ** <span class="nm">2</span>
+    wo += RM[s][a] ** <span class="nm">2</span>
+<span class="kw">print</span>(f<span class="st">"\nmean squared advantage with critic {w / 20000:.4f}, without {wo / 20000:.4f}"</span>
+      f<span class="st">"  -&gt; baseline removes {1 - w / wo:.1%} of it"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nwhere the clip binds, as a probability, starting from p_old = 0.5:"</span>)
+<span class="kw">for</span> ratio <span class="kw">in</span> (<span class="nm">0.5</span>, <span class="nm">0.8</span>, <span class="nm">1.0</span>, <span class="nm">1.2</span>, <span class="nm">1.5</span>, <span class="nm">4.0</span>):
+    val = min(ratio, min(max(ratio, <span class="nm">1</span> - EPS), <span class="nm">1</span> + EPS))
+    <span class="kw">print</span>(f<span class="st">"  ratio={ratio:&gt;4.2f}  p_new={0.5 * ratio:&gt;4.2f}  surrogate multiplier={val:.2f}"</span>)
+</div><div class="code out-block" data-lang="output">
+policy+ref+RM+value        graded=0.980  KL final=0.597  KL last20=0.597
+value model deleted        graded=0.990  KL final=0.637  KL last20=0.634
+
+mean squared advantage with critic 0.0139, without 0.4888  -&gt; baseline removes 97.1% of it
+
+where the clip binds, as a probability, starting from p_old = 0.5:
+  ratio=0.50  p_new=0.25  surrogate multiplier=0.50
+  ratio=0.80  p_new=0.40  surrogate multiplier=0.80
+  ratio=1.00  p_new=0.50  surrogate multiplier=1.00
+  ratio=1.20  p_new=0.60  surrogate multiplier=1.20
+  ratio=1.50  p_new=0.75  surrogate multiplier=1.20
+  ratio=4.00  p_new=2.00  surrogate multiplier=1.20
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c57-s4">4 &middot; Your hands <a class="hook" href="#c57-s4">#</a></h2>
+
+    <p>Three labs: run PPO with its four models, delete the critic to see what it was for, and sweep the ratio
+    to watch the clip bind.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; PPO with all four models, then with three</h4>
+      <p>A one-token bandit where the reward model is a decent but imperfect approximation of a 0/1 grader. The loop keeps a frozen reference, applies the KL leash, trains a value model per prompt, and clips the ratio against the stale policy.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L57 Lab 1: PPO for LLMs -- policy, reference, reward model, value model. stdlib only.</span>
+<span class="cm"># The "LLM" is a one-token bandit: prompt type -&gt; action (concise-correct or verbose-wrong).</span>
+<span class="kw">import</span> math, random
+
+EPS, BETA_KL, LR, C_VAL, STEPS = <span class="nm">0.2</span>, <span class="nm">0.02</span>, <span class="nm">0.4</span>, <span class="nm">0.5</span>, <span class="nm">400</span>
+PROMPTS, ACTIONS = <span class="nm">2</span>, <span class="nm">2</span>
+REWARD = {<span class="nm">0</span>: [<span class="nm">1.0</span>, <span class="nm">0.0</span>], <span class="nm">1</span>: [<span class="nm">1.0</span>, <span class="nm">0.0</span>]}      <span class="cm"># ground truth: action 0 is correct for both prompts</span>
+RM = {<span class="nm">0</span>: [<span class="nm">0.9</span>, <span class="nm">0.6</span>], <span class="nm">1</span>: [<span class="nm">0.7</span>, <span class="nm">0.55</span>]}         <span class="cm"># the learned reward model is imperfect and prompt-dependent</span>
+
+
+<span class="kw">def</span> softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]
+    s = sum(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+
+<span class="kw">def</span> kl(p, q):
+    <span class="kw">return</span> sum(a * (math.log(a) - math.log(b)) <span class="kw">for</span> a, b <span class="kw">in</span> zip(p, q))
+
+
+<span class="kw">def</span> train(use_value, seed=<span class="nm">0</span>):
+    rng = random.Random(seed)
+    pi = [[<span class="nm">0.0</span>] * ACTIONS <span class="kw">for</span> _ <span class="kw">in</span> range(PROMPTS)]
+    ref = [softmax(p) <span class="kw">for</span> p <span class="kw">in</span> pi]             <span class="cm"># frozen reference (model #2)</span>
+    V = [<span class="nm">0.0</span>] * PROMPTS                        <span class="cm"># value model (model #4)</span>
+    kl_trace = []
+    <span class="kw">for</span> _ <span class="kw">in</span> range(STEPS):
+        <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS):
+            p = softmax(pi[s])
+            a = rng.choices(range(ACTIONS), weights=p)[<span class="nm">0</span>]
+            k = kl(p, ref[s])
+            shaped = RM[s][a] - BETA_KL * k    <span class="cm"># reward model (model #3) plus the leash</span>
+            baseline = V[s] <span class="kw">if</span> use_value <span class="kw">else</span> <span class="nm">0.0</span>
+            adv = shaped - baseline
+            <span class="kw">if</span> use_value:                      <span class="cm"># value regression toward the realised reward</span>
+                V[s] += LR * C_VAL * (shaped - V[s])
+            ratio = <span class="nm">1.0</span>
+            surr = min(ratio * adv, min(max(ratio, <span class="nm">1</span> - EPS), <span class="nm">1</span> + EPS) * adv)
+            <span class="kw">for</span> j <span class="kw">in</span> range(ACTIONS):
+                pi[s][j] += LR * surr * ((<span class="nm">1.0</span> <span class="kw">if</span> j == a <span class="kw">else</span> <span class="nm">0.0</span>) - p[j])
+        kl_trace.append(sum(kl(softmax(pi[s]), ref[s]) <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS)) / PROMPTS)
+    <span class="kw">return</span> pi, kl_trace
+
+
+<span class="kw">def</span> graded(pi):
+    <span class="kw">return</span> sum(sum(pk * REWARD[s][k] <span class="kw">for</span> k, pk <span class="kw">in</span> enumerate(softmax(pi[s])))
+               <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS)) / PROMPTS
+
+
+<span class="kw">for</span> label, use_v <span class="kw">in</span> ((<span class="st">"PPO: policy+ref+RM+value"</span>, <span class="kw">True</span>), (<span class="st">"ablation: value model deleted"</span>, <span class="kw">False</span>)):
+    pi, klt = train(use_v)
+    <span class="kw">print</span>(f<span class="st">"{label:&lt;30} graded accuracy = {graded(pi):.3f}   KL(final) = {klt[-1]:.3f}"</span>
+          f<span class="st">"   KL(final, last-20 mean) = {sum(klt[-20:]) / 20:.3f}"</span>)
+
+<span class="cm"># what the critic is actually FOR: advantage variance</span>
+rng = random.Random(<span class="nm">5</span>)
+var_with = var_without = <span class="nm">0.0</span>
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">20000</span>):
+    s = rng.randrange(PROMPTS)
+    a = rng.randrange(ACTIONS)
+    r = RM[s][a]
+    mean_r = sum(<span class="nm">0.5</span> * RM[s][k] <span class="kw">for</span> k <span class="kw">in</span> range(ACTIONS))
+    var_with += (r - mean_r) ** <span class="nm">2</span>
+    var_without += r ** <span class="nm">2</span>
+<span class="kw">print</span>(f<span class="st">"\nmean squared advantage: with critic {var_with / 20000:.4f}   without critic {var_without / 20000:.4f}"</span>)
+<span class="kw">print</span>(f<span class="st">"variance removed by the baseline: {1 - var_with / var_without:.1%}"</span>)
+</div><div class="code out-block" data-lang="output">
+PPO: policy+ref+RM+value       graded accuracy = 0.980   KL(final) = 0.597   KL(final, last-20 mean) = 0.597
+ablation: value model deleted  graded accuracy = 0.990   KL(final) = 0.637   KL(final, last-20 mean) = 0.634
+
+mean squared advantage: with critic 0.0139   without critic 0.4888
+variance removed by the baseline: 97.1%
+</div>
+      <p class="expect">Both variants converge once the reward model and the leash are in place &mdash; the toy has only two actions, so a critic cannot earn its keep in final accuracy. What it earns is the last line: the baseline removes about 97% of the raw reward's second moment.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; recompute the ratio and watch the clip bind</h4>
+      <p>This variant recomputes &rho; = &pi;<sub>new</sub>(a)/&pi;<sub>old</sub>(a) inside the inner loop, as a real implementation must, and then sweeps the ratio across the trust region.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L57: the PPO knife-edge, measured. Ratio is recomputed each inner epoch from the</span>
+<span class="cm"># stale sampling policy, exactly as a real implementation does.</span>
+<span class="kw">import</span> math, random
+
+EPS, BETA_KL, LR, C_VAL, STEPS, INNER = <span class="nm">0.2</span>, <span class="nm">0.02</span>, <span class="nm">0.4</span>, <span class="nm">0.5</span>, <span class="nm">400</span>, <span class="nm">1</span>
+PROMPTS, ACTIONS = <span class="nm">2</span>, <span class="nm">2</span>
+REWARD = {<span class="nm">0</span>: [<span class="nm">1.0</span>, <span class="nm">0.0</span>], <span class="nm">1</span>: [<span class="nm">1.0</span>, <span class="nm">0.0</span>]}      <span class="cm"># ground truth: action 0 correct for both prompts</span>
+RM = {<span class="nm">0</span>: [<span class="nm">0.9</span>, <span class="nm">0.6</span>], <span class="nm">1</span>: [<span class="nm">0.7</span>, <span class="nm">0.55</span>]}         <span class="cm"># learned reward model, imperfect, prompt-dependent</span>
+
+
+<span class="kw">def</span> softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]
+    s = sum(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+
+<span class="kw">def</span> kl(p, q):
+    <span class="kw">return</span> sum(a * (math.log(a) - math.log(b)) <span class="kw">for</span> a, b <span class="kw">in</span> zip(p, q))
+
+
+<span class="kw">def</span> train(use_value, seed=<span class="nm">0</span>):
+    rng = random.Random(seed)
+    pi = [[<span class="nm">0.0</span>] * ACTIONS <span class="kw">for</span> _ <span class="kw">in</span> range(PROMPTS)]
+    ref = [softmax(p) <span class="kw">for</span> p <span class="kw">in</span> pi]           <span class="cm"># model #2: reference</span>
+    V = [<span class="nm">0.0</span>] * PROMPTS                      <span class="cm"># model #4: value model</span>
+    kl_tr = []
+    <span class="kw">for</span> _ <span class="kw">in</span> range(STEPS):
+        <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS):
+            p_old = softmax(pi[s])           <span class="cm"># sampling policy, frozen for this epoch</span>
+            a = rng.choices(range(ACTIONS), weights=p_old)[<span class="nm">0</span>]
+            shaped = RM[s][a] - BETA_KL * kl(p_old, ref[s])
+            adv = shaped - (V[s] <span class="kw">if</span> use_value <span class="kw">else</span> <span class="nm">0.0</span>)
+            <span class="kw">if</span> use_value:
+                V[s] += LR * C_VAL * (shaped - V[s])
+            <span class="kw">for</span> _ <span class="kw">in</span> range(INNER):
+                p = softmax(pi[s])
+                ratio = p[a] / p_old[a]      <span class="cm"># the real ratio: new prob / stale prob</span>
+                surr = min(ratio * adv, min(max(ratio, <span class="nm">1</span> - EPS), <span class="nm">1</span> + EPS) * adv)
+                <span class="kw">for</span> j <span class="kw">in</span> range(ACTIONS):     <span class="cm"># d log p(a)/d z_j = 1[a==j] - p_j ; /p[a] for the ratio</span>
+                    logits_grad = (p[a] / p[a]) * ((<span class="nm">1.0</span> <span class="kw">if</span> j == a <span class="kw">else</span> <span class="nm">0.0</span>) - p[j])
+                    pi[s][j] += LR * surr * logits_grad
+        kl_tr.append(sum(kl(softmax(pi[s]), ref[s]) <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS)) / PROMPTS)
+    <span class="kw">return</span> pi, kl_tr
+
+
+<span class="kw">def</span> graded(pi):
+    <span class="kw">return</span> sum(sum(pk * REWARD[s][k] <span class="kw">for</span> k, pk <span class="kw">in</span> enumerate(softmax(pi[s])))
+               <span class="kw">for</span> s <span class="kw">in</span> range(PROMPTS)) / PROMPTS
+
+
+<span class="kw">for</span> label, use_v <span class="kw">in</span> ((<span class="st">"policy+ref+RM+value"</span>, <span class="kw">True</span>), (<span class="st">"value model deleted"</span>, <span class="kw">False</span>)):
+    pi, klt = train(use_v)
+    <span class="kw">print</span>(f<span class="st">"{label:&lt;26} graded={graded(pi):.3f}  KL final={klt[-1]:.3f}  KL last20={sum(klt[-20:]) / 20:.3f}"</span>)
+
+rng = random.Random(<span class="nm">5</span>)
+w = wo = <span class="nm">0.0</span>
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">20000</span>):
+    s = rng.randrange(PROMPTS)
+    a = rng.randrange(ACTIONS)
+    w += (RM[s][a] - <span class="nm">0.5</span> * sum(RM[s])) ** <span class="nm">2</span>
+    wo += RM[s][a] ** <span class="nm">2</span>
+<span class="kw">print</span>(f<span class="st">"\nmean squared advantage with critic {w / 20000:.4f}, without {wo / 20000:.4f}"</span>
+      f<span class="st">"  -&gt; baseline removes {1 - w / wo:.1%} of it"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nwhere the clip binds, as a probability, starting from p_old = 0.5:"</span>)
+<span class="kw">for</span> ratio <span class="kw">in</span> (<span class="nm">0.5</span>, <span class="nm">0.8</span>, <span class="nm">1.0</span>, <span class="nm">1.2</span>, <span class="nm">1.5</span>, <span class="nm">4.0</span>):
+    val = min(ratio, min(max(ratio, <span class="nm">1</span> - EPS), <span class="nm">1</span> + EPS))
+    <span class="kw">print</span>(f<span class="st">"  ratio={ratio:&gt;4.2f}  p_new={0.5 * ratio:&gt;4.2f}  surrogate multiplier={val:.2f}"</span>)
+</div><div class="code out-block" data-lang="output">
+policy+ref+RM+value        graded=0.980  KL final=0.597  KL last20=0.597
+value model deleted        graded=0.990  KL final=0.637  KL last20=0.634
+
+mean squared advantage with critic 0.0139, without 0.4888  -&gt; baseline removes 97.1% of it
+
+where the clip binds, as a probability, starting from p_old = 0.5:
+  ratio=0.50  p_new=0.25  surrogate multiplier=0.50
+  ratio=0.80  p_new=0.40  surrogate multiplier=0.80
+  ratio=1.00  p_new=0.50  surrogate multiplier=1.00
+  ratio=1.20  p_new=0.60  surrogate multiplier=1.20
+  ratio=1.50  p_new=0.75  surrogate multiplier=1.20
+  ratio=4.00  p_new=2.00  surrogate multiplier=1.20
+</div>
+      <p class="expect">The sweep shows the clip exactly: at ratio 1.5 the surrogate multiplier is still 1.2, and at ratio 4.0 it is still 1.2. Above p_new = 0.6 (from p_old = 0.5, &epsilon; = 0.2) extra probability buys nothing. If your implementation reports a growing surrogate past that point, the clip is not being applied.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the four-model memory budget, in the browser console</h4>
+      <p>Before you pick a batch size, compute the footprint. This runs on any page: F12, paste, enter.</p>
+      <div class="code" data-lang="javascript">
+const P = 7e9;            // policy parameters
+const bytesPerParam = { bf16: 2, fp16: 2, fp8: 1 };
+const GB = (n) =&gt; (n / 1e9).toFixed(1) + " GB";
+for (const [prec, bpp] of Object.entries(bytesPerParam)) {
+  const w = P * bpp;
+  const rows = {
+    "policy weights": w,
+    "policy grads": w,
+    "Adam m+v (fp32)": 2 * P * 4,
+    "reference weights": w,
+    "reward model (~same size)": w,
+    "value model (~same size)": w,
+  };
+  const total = Object.values(rows).reduce((a, b) =&gt; a + b, 0);
+  console.log(prec, "static total:", GB(total), "before any activations");
+}
+      </div>
+      <p class="expect">The static total alone is already several times the weights. This is the arithmetic behind "PPO is expensive":
+      four models means four weight sets, and the optimiser state is fp32 regardless of training precision. Delete the value model
+      (GRPO) and you remove one weight set plus one gradient buffer, which is exactly the trade lesson 56 makes.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c57-s5">5 &middot; Failure modes <a class="hook" href="#c57-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Critic collapse.</strong> Symptom: value loss plateaus at a large constant and advantages become nearly constant across samples in a batch &mdash; the critic is predicting the batch mean and the policy learns nothing from within-batch variation.</li>
+        <li><strong>&rho; computed against the reference.</strong> Symptom: clip fraction is high at the first inner epoch (it should be zero) and the policy learns to satisfy the KL term rather than the reward.</li>
+        <li><strong>KL leash too loose.</strong> Symptom: proxy reward rises for many steps while the graded eval is flat, and completions lengthen. Too tight: the policy is pinned to the SFT model and nothing improves. Both are invisible without logging KL per step.</li>
+        <li><strong>Reward-model exploitation.</strong> Symptom: reward reaches its ceiling while quality falls (lesson 75). PPO's clip does not protect against this at all; the trust region is in policy space, not in reward-model accuracy.</li>
+        <li><strong>Four-model memory blow-up.</strong> Symptom: OOM at the batch size you planned, and a silent fallback to micro-batches that changes the effective learning rate. Budget memory before choosing the config, not after.</li>
+        <li><strong>Entropy collapse.</strong> Symptom: completion diversity at a fixed prompt falls to near-deterministic early, then the policy cannot recover because the samples it needs are never drawn again.</li>
+        <li><strong>Non-deterministic sampling not seeded.</strong> Symptom: two runs with identical config diverge; you cannot attribute a regression to the clip change you made. See lesson 94.</li>
+      </ul>
+    </div>
+
+    <h3>PPO vs GRPO: the tradeoff, stated exactly</h3>
+    <table class="table">
+      <thead><tr><th>Dimension</th><th>PPO wins</th><th>GRPO wins</th></tr></thead>
+      <tbody>
+        <tr><td>Memory</td><td>&mdash;</td><td>One fewer full network; the critic is often policy-sized</td></tr>
+        <tr><td>Steps per sample</td><td>Multiple inner epochs reuse one rollout batch</td><td>&mdash; G rollouts are consumed once in the simple form</td></tr>
+        <tr><td>Baseline accuracy on long horizons</td><td>Can model state-dependent value: worth it for multi-step agents</td><td>Group mean is nearly blind on multi-step trajectories with sparse reward</td></tr>
+        <tr><td>Implementation risk</td><td>Highest: four models, ratio bookkeeping, two losses</td><td>Low: advantage is arithmetic on rewards</td></tr>
+        <tr><td>Reward hacking surface</td><td>Identical</td><td>Identical</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>Log per step: mean KL, clip fraction, value loss, entropy, mean completion length, mean reward.
+      A PPO run without those six is not debuggable. A PPO run that reports only reward is not evidence.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c57-s6">6 &middot; Connects to <a class="hook" href="#c57-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="56-grpo.html">L56 &middot; GRPO</a> (read the critic removal first),
+    <a class="tag-c" href="58-reward-modeling.html">L58 &middot; Reward modelling</a> (model #3),
+    <a class="tag-a" href="../track-a/17-samplers.html">L17 &middot; Samplers</a> (where the rollouts come from).</p>
+    <p><strong>Unlocks:</strong> agentic RL, which is where the value model earns its keep again.</p>
+
+    <ul>
+      <li><a class="tag-c" href="56-grpo.html">L56 &middot; GRPO</a> &mdash; the estimator that removes model #4.</li>
+      <li><a class="tag-c" href="71-agentic-rl.html">L71 &middot; Agentic RL</a> &mdash; multi-step credit assignment, where a state-dependent value is genuinely needed.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; what the clip cannot protect you from.</li>
+      <li><a class="tag-d" href="../track-d/94-determinism.html">L94 &middot; Determinism</a> &mdash; seeding sampling so runs are comparable.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c57-s7">7 &middot; Self-check <a class="hook" href="#c57-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is the value model's error less dangerous than the reward model's error in an LLM PPO run?</p>
+        <details><summary>Reveal answer</summary><p>The value model only enters through the baseline, and any action-independent baseline leaves the expected gradientunchanged; its error adds variance, which is measurable and visible in the value loss. The reward model defines theobjective: its error changes <em>what</em> is being maximised, and no amount of variance reduction fixes a wrong target.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: p_old = 0.5, &epsilon; = 0.2, A &gt; 0. At what value of p_new does the clip start to bind, and why does the surrogate stop at 1.2?</p>
+        <details><summary>Reveal answer</summary><p>&rho; = p_new/0.5. It exceeds 1+&epsilon; = 1.2 when p_new &gt; 0.6. Beyond that, clip(&rho;)=1.2, and min(&rho;A, 1.2A) = 1.2A,so further increases in p_new give no gradient. That flat region is the trust region: it removes the incentive to overshooton a stale probability estimate.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> You notice the clip fraction is 0.35 at the first inner epoch of every batch. What is wrong, and what should it be?</p>
+        <details><summary>Reveal answer</summary><p>At the first inner epoch the policy is exactly the sampling policy, so &rho; = 1 for every token and the clip fraction must beexactly 0. A large value proves that &rho; is being computed against a different model &mdash; almost always the reference &mdash; or thatthe sampling policy is not being snapshotted per batch. It is a single-line fix and a high-value regression test.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: PPO memory OOMs at the planned batch size. You halve the batch and keep the learning rate. Name two consequences that make the run not comparable to the previous one.</p>
+        <details><summary>Reveal answer</summary><p>(1) The advantage is estimated from half as many samples, so its variance roughly doubles &mdash; the same learning rate nowtakes noisier steps. (2) Per-step gradient noise changes the effective exploration, so the KL trajectory and clip fraction aredifferent. Both make the run a different experiment; either scale the learning rate or report the change explicitly.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does the clip not protect you from reward hacking, and what does?</p>
+        <details><summary>Reveal answer</summary><p>The clip constrains movement in <em>policy space</em> relative to a stale policy; it says nothing about whether the reward iscorrect. A policy that finds a degenerate high-reward string can reach it in many small clipped steps. What protects you isan independent audit bracket that the optimiser never sees, plus diagnostics like the reward-vs-length slope, checked atevery gate.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="56-grpo.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L56 &middot; GRPO: group-relative policy optimization</span></a>
+    <a class="next" href="58-reward-modeling.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L58 &middot; Reward models: Bradley&ndash;Terry and its hacking surface</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d96">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L96 · Production checklist for an autonomous agent system — AILearn</title>
+<meta name="description" content="A go/no-go gate where every item names the artifact that proves it. 20 items, 48 weight, 18 blocking. A 93.8% weighted score still blocks when the ledger verification evidence is missing.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L96</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L96 &middot; Production checklist for an autonomous agent system</h1>
+  <p class="lede">A checklist whose items do not name their evidence is a ritual. This one has 20 items, 48 points of weight, and 18 blocking gates &mdash; and it will refuse to go even at a <strong>93.8%</strong> weighted score if the ledger verification evidence is absent.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: computable go/no-go gate</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">evidence-required checklist</span>
+  <span class="pill">blocking vs advisory</span>
+  <span class="pill">weighted score vs gate</span>
+  <span class="pill">ship criterion on CI lower bound</span>
+  <span class="pill">capability inventory</span>
+  <span class="pill">failure injection evidence</span>
+  <span class="pill">rollback drill</span>
+  <span class="pill">anti-ritual rules</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d96-s1">1 &middot; Why it exists <a class="hook" href="#d96-s1">#</a></h2>
+
+    <p>The failure: <strong>the checklist was completed and the system still failed in a way the checklist never covered.</strong>
+    Every box was ticked. "Error handling: yes." "Monitoring: yes." "Testing: yes." Each of those is unfalsifiable &mdash; the
+    reviewer asks "yes, but where is it?" and the answer is a conversation rather than an artifact.</p>
+
+    <p>The second failure is the opposite: <strong>a checklist so long that the gate is never actually run</strong>. Forty items with
+    soft judgments means the ceremony is skipped and the decision is made by whoever is most confident. Length does not
+    produce rigour; a short list of <em>computable</em> gates does.</p>
+
+    <p>The third failure is a weighted score used as a gate. "We scored 87% &mdash; ship it" is how a system goes live with an
+    unverified ledger, because that item happened to be worth 2 points out of 48 and the rest carried it. Weights measure
+    <em>effort</em>; blocking flags measure <em>admissibility</em>. Confusing them is the structural bug in most
+    production-readiness checklists.</p>
+
+    <div class="callout boss">
+      <p>The design rule: <strong>every item names the artifact that proves it, and every artifact is machine-checkable from the
+      RAKE bundle (L95) or a repository path.</strong> Go requires all blocking items present <em>and</em> a weighted score above
+      threshold. The score cannot rescue a missing blocking item, and a complete blocking set does not excuse a low score.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d96-s2">2 &middot; The mental model <a class="hook" href="#d96-s2">#</a></h2>
+
+    <p>Two axes, and they are independent. <strong>Blocking</strong> = without this artifact the system is not admissible, regardless
+    of everything else. <strong>Weight</strong> = how much of the design is represented, used to catch "all the gates passed but the
+    system is half-built".</p>
+
+    <table class="table">
+      <thead><tr><th>Category</th><th>Items</th><th>What it establishes</th><th>Evidence artifact</th></tr></thead>
+      <tbody>
+        <tr><td>Measurement</td><td>M1&ndash;M3</td><td>you can tell whether it works</td><td><code>golden_set_hash</code>, <code>baseline_report</code>, <code>gate_config</code></td></tr>
+        <tr><td>RAG</td><td>R1&ndash;R2</td><td>attribution between retrieval and generation</td><td><code>rag_report</code></td></tr>
+        <tr><td>Agents</td><td>A1&ndash;A3</td><td>credit is oracle-minted; budget enforced; termination bounded</td><td><code>rake_report</code>, <code>code_review</code></td></tr>
+        <tr><td>Safety</td><td>S1&ndash;S3</td><td>blast radius is known and bounded</td><td><code>capability_inventory</code>, <code>taint_test_report</code>, <code>blast_radius_doc</code></td></tr>
+        <tr><td>Ops</td><td>O1&ndash;O4</td><td>you can see it, price it, and it degrades as designed</td><td><code>trace_sample</code>, <code>slo_report</code>, <code>failure_injection_report</code></td></tr>
+        <tr><td>Integrity</td><td>P1&ndash;P3</td><td>the record cannot be altered; it can be replayed</td><td><code>ledger_verify_output</code>, <code>seed_audit</code>, <code>judge_calibration</code></td></tr>
+        <tr><td>Docs</td><td>X1&ndash;X2</td><td>someone else can operate it at 3 a.m.</td><td><code>rollback_drill</code>, <code>runbook</code></td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a pre-flight checklist</h4><p>Pre-flight lists are short, physical, and every item has an observable state &mdash; fuel quantity, control surface movement, altimeter reading. Nothing says "flight readiness: good". An agent production checklist should have the same property: every line reads a value, not an opinion.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A pre-flight check is performed once per flight on a deterministic machine. An agent system changes under you &mdash; a model revision, an index rebuild, a prompt edit &mdash; so the checklist must be re-run on a schedule or on every change to a pinned artifact (L94 manifest). A checklist run once at launch is a pre-flight check performed for an aircraft that has since been rebuilt.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d96-s3">3 &middot; The mechanism <a class="hook" href="#d96-s3">#</a></h2>
+
+    <p>The decision rule, stated precisely:</p>
+
+    <div class="formula">
+      GO &nbsp;&lArr;&nbsp; ( &forall; blocking item : evidence present ) &nbsp;&and;&nbsp; &sum;w<sub>present</sub> / &sum;w<sub>total</sub> &ge; &theta;
+      <span class="note">Conjunction over blocking items, <em>then</em> a weighted threshold <code>&theta;</code> (0.80 here). The score is computed over all items including blocking ones, so a system missing one blocking item gets <code>(48&minus;3)/48 = 0.938</code> and still fails &mdash; the score never rescues the absence. Both conditions must hold.</span>
+    </div>
+
+    <p>The full list. Blocking items carry 45 of 48 total weight (94%), which is the intended shape: the advisory items are
+    genuinely optional refinements, not disguised gates.</p>
+
+    <table class="table">
+      <thead><tr><th>ID</th><th>Item</th><th>W</th><th>Blocking</th><th>Evidence kind</th></tr></thead>
+      <tbody>
+        <tr><td>M1</td><td>Golden set exists, versioned, &ge;150 items, stratified</td><td>3</td><td><strong>yes</strong></td><td><code>golden_set_hash</code></td></tr>
+        <tr><td>M2</td><td>Baseline recorded on the same set, with CI</td><td>3</td><td><strong>yes</strong></td><td><code>baseline_report</code></td></tr>
+        <tr><td>M3</td><td>Ship criterion uses the CI <em>lower bound</em></td><td>2</td><td><strong>yes</strong></td><td><code>gate_config</code></td></tr>
+        <tr><td>R1</td><td><code>recall@served_k</code> measured; ceiling known</td><td>2</td><td><strong>yes</strong></td><td><code>rag_report</code></td></tr>
+        <tr><td>R2</td><td>Faithfulness measured separately from recall</td><td>2</td><td><strong>yes</strong></td><td><code>rag_report</code></td></tr>
+        <tr><td>A1</td><td>Every claim has an oracle event (no overclaim)</td><td>3</td><td><strong>yes</strong></td><td><code>rake_report</code></td></tr>
+        <tr><td>A2</td><td>Budget cap enforced; spend attributed per run</td><td>3</td><td><strong>yes</strong></td><td><code>rake_report</code></td></tr>
+        <tr><td>A3</td><td>Four termination predicates present</td><td>2</td><td><strong>yes</strong></td><td><code>code_review</code></td></tr>
+        <tr><td>S1</td><td>Capability inventory per agent; irreversible actions gated</td><td>3</td><td><strong>yes</strong></td><td><code>capability_inventory</code></td></tr>
+        <tr><td>S2</td><td>Taint rule enforced; injection test suite passes</td><td>3</td><td><strong>yes</strong></td><td><code>taint_test_report</code></td></tr>
+        <tr><td>S3</td><td>Blast radius computed and accepted in writing</td><td>2</td><td><strong>yes</strong></td><td><code>blast_radius_doc</code></td></tr>
+        <tr><td>O1</td><td>Trace schema with per-span cost and hashes</td><td>2</td><td><strong>yes</strong></td><td><code>trace_sample</code></td></tr>
+        <tr><td>O2</td><td>p95 latency and cost-per-<em>verified</em>-task measured</td><td>3</td><td><strong>yes</strong></td><td><code>slo_report</code></td></tr>
+        <tr><td>O3</td><td>Retries bounded + jittered; idempotency keys outside the loop</td><td>2</td><td><strong>yes</strong></td><td><code>failure_injection_report</code></td></tr>
+        <tr><td>O4</td><td>Degradation ladder exercised by injection</td><td>3</td><td><strong>yes</strong></td><td><code>failure_injection_report</code></td></tr>
+        <tr><td>P1</td><td>Hash-chained ledger outside the writable scope</td><td>3</td><td><strong>yes</strong></td><td><code>ledger_verify_output</code></td></tr>
+        <tr><td>P2</td><td>Reproducibility class declared</td><td>2</td><td><strong>yes</strong></td><td><code>seed_audit</code></td></tr>
+        <tr><td>P3</td><td>Judge calibrated (TPR/FPR/kappa) if a judge gates</td><td>2</td><td>advisory</td><td><code>judge_calibration</code></td></tr>
+        <tr><td>X1</td><td>Rollback plan tested, with a timing</td><td>2</td><td><strong>yes</strong></td><td><code>rollback_drill</code></td></tr>
+        <tr><td>X2</td><td>On-call runbook names the failure modes</td><td>1</td><td>advisory</td><td><code>runbook</code></td></tr>
+      </tbody>
+    </table>
+
+    <p>The gate, as code you can run in CI.</p>
+
+    <div class="code" data-lang="python">
+<span class="cm"># (id, category, item, weight, evidence_kind, blocking)</span>
+ITEMS = [
+    (<span class="st">"M1"</span>, <span class="st">"measurement"</span>, <span class="st">"Golden set versioned, &gt;=150, stratified"</span>, <span class="nm">3</span>, <span class="st">"golden_set_hash"</span>, <span class="kw">True</span>),
+    (<span class="st">"M2"</span>, <span class="st">"measurement"</span>, <span class="st">"Baseline with CI on same set"</span>, <span class="nm">3</span>, <span class="st">"baseline_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"M3"</span>, <span class="st">"measurement"</span>, <span class="st">"Ship criterion uses CI lower bound"</span>, <span class="nm">2</span>, <span class="st">"gate_config"</span>, <span class="kw">True</span>),
+    (<span class="st">"R1"</span>, <span class="st">"rag"</span>, <span class="st">"recall@served_k measured"</span>, <span class="nm">2</span>, <span class="st">"rag_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"R2"</span>, <span class="st">"rag"</span>, <span class="st">"Faithfulness separate from recall"</span>, <span class="nm">2</span>, <span class="st">"rag_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"A1"</span>, <span class="st">"agents"</span>, <span class="st">"Every claim has an oracle event"</span>, <span class="nm">3</span>, <span class="st">"rake_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"A2"</span>, <span class="st">"agents"</span>, <span class="st">"Budget cap + spend attribution"</span>, <span class="nm">3</span>, <span class="st">"rake_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"A3"</span>, <span class="st">"agents"</span>, <span class="st">"Four termination predicates"</span>, <span class="nm">2</span>, <span class="st">"code_review"</span>, <span class="kw">True</span>),
+    (<span class="st">"S1"</span>, <span class="st">"safety"</span>, <span class="st">"Capability inventory; irreversible gated"</span>, <span class="nm">3</span>, <span class="st">"capability_inventory"</span>, <span class="kw">True</span>),
+    (<span class="st">"S2"</span>, <span class="st">"safety"</span>, <span class="st">"Taint rule + injection tests"</span>, <span class="nm">3</span>, <span class="st">"taint_test_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"S3"</span>, <span class="st">"safety"</span>, <span class="st">"Blast radius computed + accepted"</span>, <span class="nm">2</span>, <span class="st">"blast_radius_doc"</span>, <span class="kw">True</span>),
+    (<span class="st">"O1"</span>, <span class="st">"ops"</span>, <span class="st">"Trace schema with cost + hashes"</span>, <span class="nm">2</span>, <span class="st">"trace_sample"</span>, <span class="kw">True</span>),
+    (<span class="st">"O2"</span>, <span class="st">"ops"</span>, <span class="st">"p95 + cost per verified task"</span>, <span class="nm">3</span>, <span class="st">"slo_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"O3"</span>, <span class="st">"ops"</span>, <span class="st">"Bounded jittered retries + idem keys"</span>, <span class="nm">2</span>, <span class="st">"failure_injection_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"O4"</span>, <span class="st">"ops"</span>, <span class="st">"Degradation ladder exercised"</span>, <span class="nm">3</span>, <span class="st">"failure_injection_report"</span>, <span class="kw">True</span>),
+    (<span class="st">"P1"</span>, <span class="st">"integrity"</span>, <span class="st">"Chained ledger outside workspace"</span>, <span class="nm">3</span>, <span class="st">"ledger_verify_output"</span>, <span class="kw">True</span>),
+    (<span class="st">"P2"</span>, <span class="st">"integrity"</span>, <span class="st">"Reproducibility class declared"</span>, <span class="nm">2</span>, <span class="st">"seed_audit"</span>, <span class="kw">True</span>),
+    (<span class="st">"P3"</span>, <span class="st">"integrity"</span>, <span class="st">"Judge calibrated"</span>, <span class="nm">2</span>, <span class="st">"judge_calibration"</span>, <span class="kw">False</span>),
+    (<span class="st">"X1"</span>, <span class="st">"docs"</span>, <span class="st">"Rollback drilled"</span>, <span class="nm">2</span>, <span class="st">"rollback_drill"</span>, <span class="kw">True</span>),
+    (<span class="st">"X2"</span>, <span class="st">"docs"</span>, <span class="st">"Runbook names failure modes"</span>, <span class="nm">1</span>, <span class="st">"runbook"</span>, <span class="kw">False</span>),
+]
+
+<span class="kw">def</span> <span class="fn">evaluate</span>(evidence, items=ITEMS, theta=<span class="nm">0.80</span>):
+    total = <span class="fn">sum</span>(i[<span class="nm">3</span>] <span class="kw">for</span> i <span class="kw">in</span> items)
+    earned = <span class="fn">sum</span>(i[<span class="nm">3</span>] <span class="kw">for</span> i <span class="kw">in</span> items <span class="kw">if</span> i[<span class="nm">4</span>] <span class="kw">in</span> evidence)
+    missing = [i[<span class="nm">0</span>] <span class="kw">for</span> i <span class="kw">in</span> items <span class="kw">if</span> i[<span class="nm">5</span>] <span class="kw">and</span> i[<span class="nm">4</span>] <span class="kw">not in</span> evidence]
+    score = earned / total
+    <span class="kw">return</span> {<span class="st">"go"</span>: (<span class="kw">not</span> missing) <span class="kw">and</span> score &gt;= theta,
+            <span class="st">"score"</span>: <span class="fn">round</span>(score, <span class="nm">3</span>),
+            <span class="st">"missing_blocking"</span>: missing}
+    </div>
+
+    <p>Three properties of that code matter. <strong>(1) Evidence is a set membership test, not a prose review</strong> &mdash; the gate
+    cannot be satisfied by a persuasive description. <strong>(2) The score and the blocking set are computed from the same
+    table</strong>, so there is no separate tally to drift. <strong>(3) <code>theta = 0.80</code> is a parameter, not a constant</strong>, so a
+    higher-risk system can raise it without editing the list.</p>
+
+    <table class="table">
+      <thead><tr><th>Scrutiny level</th><th>&theta;</th><th>Use for</th><th>What it additionally requires</th></tr></thead>
+      <tbody>
+        <tr><td>internal tool</td><td>0.80</td><td>own workflow, reversible actions</td><td>all blocking items</td></tr>
+        <tr><td>customer-facing</td><td>0.92</td><td>users see the output</td><td>+ judge calibration, runbook</td></tr>
+        <tr><td>unattended / irreversible</td><td>1.00</td><td>no human in the loop, mutations</td><td>+ everything, no exceptions, quarterly re-run</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>The audit test for the checklist itself: <strong>delete one blocking evidence artifact and confirm the gate flips to NO-GO.</strong>
+      If the decision does not change, that item was not a gate &mdash; it was decoration, and the checklist has a hole where a reviewer
+      believes there is a wall. Run this mutation test on the checklist in CI, not on the system.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d96-s4">4 &middot; Your hands <a class="hook" href="#d96-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; The gate refuses at 93.8%</h4>
+      <p>Four scenarios against the 20-item table. Watch the score-vs-blocking separation.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">evaluate</span>(evidence, items=ITEMS, theta=<span class="nm">0.80</span>):
+    total = <span class="fn">sum</span>(i[<span class="nm">3</span>] <span class="kw">for</span> i <span class="kw">in</span> items)
+    earned = <span class="fn">sum</span>(i[<span class="nm">3</span>] <span class="kw">for</span> i <span class="kw">in</span> items <span class="kw">if</span> i[<span class="nm">4</span>] <span class="kw">in</span> evidence)
+    missing = [i[<span class="nm">0</span>] <span class="kw">for</span> i <span class="kw">in</span> items <span class="kw">if</span> i[<span class="nm">5</span>] <span class="kw">and</span> i[<span class="nm">4</span>] <span class="kw">not in</span> evidence]
+    <span class="kw">return</span> {<span class="st">"go"</span>: (<span class="kw">not</span> missing) <span class="kw">and</span> earned/total &gt;= theta,
+            <span class="st">"score"</span>: <span class="fn">round</span>(earned/total, <span class="nm">3</span>), <span class="st">"missing"</span>: missing}
+
+ALL = {i[<span class="nm">4</span>] <span class="kw">for</span> i <span class="kw">in</span> ITEMS}
+scenarios = {
+    <span class="st">"everything"</span>: ALL,
+    <span class="st">"all but judge calibration"</span>: ALL - {<span class="st">"judge_calibration"</span>},
+    <span class="st">"all but failure injection"</span>: ALL - {<span class="st">"failure_injection_report"</span>},
+    <span class="st">"all but ledger verify"</span>: ALL - {<span class="st">"ledger_verify_output"</span>},
+    <span class="st">"all but measurement"</span>: ALL - {<span class="st">"golden_set_hash"</span>, <span class="st">"baseline_report"</span>, <span class="st">"gate_config"</span>},
+}
+<span class="kw">for</span> name, ev <span class="kw">in</span> scenarios.<span class="fn">items</span>():
+    r = <span class="fn">evaluate</span>(ev)
+    print(<span class="st">f"{name:28s} go={str(r['go']):5s} score={r['score']:.3f} missing={r['missing']}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>everything                    go=True  score=1.000 missing=[]</code> &middot;
+      <code>all but judge calibration     go=True  score=0.958 missing=[]</code> &middot;
+      <code>all but failure injection     go=False score=0.896 missing=['O3','O4']</code> &middot;
+      <code>all but ledger verify         go=False score=0.938 missing=['P1']</code> &middot;
+      <code>all but measurement           go=False score=0.896 missing=['M1','M2','M3']</code>.
+      Two readings. First, the advisory item is the only one whose absence does not block &mdash; that is what "advisory" should mean,
+      and it is worth 2 of 48 points. Second, the <strong>93.8% row is the point of the page</strong>: a system that would score
+      "A" on any weighted rubric is refused because the one missing artifact is the ledger verification. A weighted score
+      without blocking flags would have shipped it.
+      <strong>Falsifier:</strong> if deleting an artifact never changes the verdict, that artifact is not gating anything &mdash;
+      audit the list, not just the system.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Mutate the checklist, not the system</h4>
+      <p>The meta-test: for each blocking item, remove only its evidence and confirm the gate flips. Any item whose removal
+      leaves the verdict unchanged is decoration.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">mutation_audit</span>(items=ITEMS, theta=<span class="nm">0.80</span>):
+    ALL = {i[<span class="nm">4</span>] <span class="kw">for</span> i <span class="kw">in</span> items}
+    decorations, live = [], []
+    <span class="kw">for</span> iid, cat, item, w, ev, blk <span class="kw">in</span> items:
+        <span class="kw">if</span> <span class="kw">not</span> blk:
+            <span class="kw">continue</span>
+        r = <span class="fn">evaluate</span>(ALL - {ev}, items=items, theta=theta)
+        (live <span class="kw">if</span> <span class="kw">not</span> r[<span class="st">"go"</span>] <span class="kw">else</span> decorations).<span class="fn">append</span>(iid)
+    <span class="kw">return</span> {<span class="st">"live_gates"</span>: <span class="fn">len</span>(live), <span class="st">"decorations"</span>: decorations}
+
+print(<span class="fn">mutation_audit</span>())
+print(<span class="fn">mutation_audit</span>(theta=<span class="nm">0.60</span>))   <span class="cm"># low threshold: blocking flags still hold</span>
+      </div>
+      <p class="expect">With <code>theta=0.80</code>, all 18 blocking items are live gates &mdash; every one of them, removed, flips the
+      verdict. With <code>theta=0.60</code> the blocking conjunction still holds, so <em>all 18 remain live</em>: the blocking flags
+      are not a function of the threshold, which is exactly the intended independence. If any item shows up in
+      <code>decorations</code>, either its evidence kind is duplicated with another item (so removing it removes nothing unique)
+      or it was mistakenly marked non-blocking.
+      <strong>Falsifier:</strong> duplicated evidence kinds are a real defect &mdash; <code>O3</code> and <code>O4</code> share
+      <code>failure_injection_report</code>, so removing that artifact flags <em>two</em> items. If you want independent gates, give
+      each item its own artifact; sharing an artifact means one missing document fails two gates, which is fine but should be
+      deliberate.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Report the gate as an artifact (browser console)</h4>
+      <p>The output a CI job should produce: not "pass", but which evidence was present and which items it satisfied.</p>
+      <div class="code" data-lang="javascript">
+<span class="kw">const</span> evidence = [
+  <span class="st">"golden_set_hash"</span>, <span class="st">"baseline_report"</span>, <span class="st">"gate_config"</span>,
+  <span class="st">"rag_report"</span>, <span class="st">"rake_report"</span>, <span class="st">"capability_inventory"</span>,
+  <span class="st">"taint_test_report"</span>, <span class="st">"blast_radius_doc"</span>, <span class="st">"trace_sample"</span>,
+  <span class="st">"slo_report"</span>, <span class="st">"failure_injection_report"</span>, <span class="st">"seed_audit"</span>,
+  <span class="st">"rollback_drill"</span>, <span class="st">"runbook"</span>,
+];
+<span class="cm">// NOTE: "code_review", "ledger_verify_output", "judge_calibration" deliberately absent.</span>
+<span class="kw">const</span> ITEMS = [
+  [<span class="st">"M1"</span>,<span class="nm">3</span>,<span class="st">"golden_set_hash"</span>,<span class="kw">true</span>], [<span class="st">"M2"</span>,<span class="nm">3</span>,<span class="st">"baseline_report"</span>,<span class="kw">true</span>],
+  [<span class="st">"M3"</span>,<span class="nm">2</span>,<span class="st">"gate_config"</span>,<span class="kw">true</span>],       [<span class="st">"R1"</span>,<span class="nm">2</span>,<span class="st">"rag_report"</span>,<span class="kw">true</span>],
+  [<span class="st">"R2"</span>,<span class="nm">2</span>,<span class="st">"rag_report"</span>,<span class="kw">true</span>],       [<span class="st">"A1"</span>,<span class="nm">3</span>,<span class="st">"rake_report"</span>,<span class="kw">true</span>],
+  [<span class="st">"A2"</span>,<span class="nm">3</span>,<span class="st">"rake_report"</span>,<span class="kw">true</span>],     [<span class="st">"A3"</span>,<span class="nm">2</span>,<span class="st">"code_review"</span>,<span class="kw">true</span>],
+  [<span class="st">"S1"</span>,<span class="nm">3</span>,<span class="st">"capability_inventory"</span>,<span class="kw">true</span>], [<span class="st">"S2"</span>,<span class="nm">3</span>,<span class="st">"taint_test_report"</span>,<span class="kw">true</span>],
+  [<span class="st">"S3"</span>,<span class="nm">2</span>,<span class="st">"blast_radius_doc"</span>,<span class="kw">true</span>],   [<span class="st">"O1"</span>,<span class="nm">2</span>,<span class="st">"trace_sample"</span>,<span class="kw">true</span>],
+  [<span class="st">"O2"</span>,<span class="nm">3</span>,<span class="st">"slo_report"</span>,<span class="kw">true</span>],        [<span class="st">"O3"</span>,<span class="nm">2</span>,<span class="st">"failure_injection_report"</span>,<span class="kw">true</span>],
+  [<span class="st">"O4"</span>,<span class="nm">3</span>,<span class="st">"failure_injection_report"</span>,<span class="kw">true</span>], [<span class="st">"P1"</span>,<span class="nm">3</span>,<span class="st">"ledger_verify_output"</span>,<span class="kw">true</span>],
+  [<span class="st">"P2"</span>,<span class="nm">2</span>,<span class="st">"seed_audit"</span>,<span class="kw">true</span>],          [<span class="st">"P3"</span>,<span class="nm">2</span>,<span class="st">"judge_calibration"</span>,<span class="kw">false</span>],
+  [<span class="st">"X1"</span>,<span class="nm">2</span>,<span class="st">"rollback_drill"</span>,<span class="kw">true</span>],      [<span class="st">"X2"</span>,<span class="nm">1</span>,<span class="st">"runbook"</span>,<span class="kw">false</span>],
+];
+<span class="kw">const</span> have = <span class="kw">new</span> Set(evidence);
+<span class="kw">const</span> total = ITEMS.<span class="fn">reduce</span>((a,i) =&gt; a + i[<span class="nm">1</span>], <span class="nm">0</span>);
+<span class="kw">const</span> earned = ITEMS.<span class="fn">filter</span>(i =&gt; have.<span class="fn">has</span>(i[<span class="nm">2</span>])).<span class="fn">reduce</span>((a,i) =&gt; a + i[<span class="nm">1</span>], <span class="nm">0</span>);
+<span class="kw">const</span> missingBlocking = ITEMS.<span class="fn">filter</span>(i =&gt; i[<span class="nm">3</span>] &amp;&amp; !have.<span class="fn">has</span>(i[<span class="nm">2</span>])).<span class="fn">map</span>(i =&gt; i[<span class="nm">0</span>]);
+console.<span class="fn">log</span>({ score: +(earned/total).<span class="fn">toFixed</span>(<span class="nm">3</span>), go: missingBlocking.length===<span class="nm">0</span> &amp;&amp; earned/total&gt;=<span class="nm">0.8</span>,
+             missingBlocking, advisoryMissing: ITEMS.<span class="fn">filter</span>(i =&gt; !i[<span class="nm">3</span>] &amp;&amp; !have.<span class="fn">has</span>(i[<span class="nm">2</span>])).<span class="fn">map</span>(i =&gt; i[<span class="nm">0</span>]) });
+      </div>
+      <p class="expect">Expect <code>{score: 0.854, go: false, missingBlocking: ['A3','P1'], advisoryMissing: ['P3']}</code>
+      (41/48 earned).
+      The report separates <em>blocking</em> from <em>advisory</em> gaps so the reader knows what must be fixed versus what could be
+      fixed, and it names item ids rather than describing the system as "not ready". That is what makes the gate actionable in a
+      three-line CI log.
+      <strong>Falsifier:</strong> if the score is above 0.8 and the team asks to ship anyway, the missing-blocking list is the
+      answer &mdash; and if nobody accepts that answer, the checklist is not the mechanism, the culture is, and you should say so
+      explicitly rather than weakening the gate.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d96-s5">5 &middot; Failure modes <a class="hook" href="#d96-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Evidence-free items.</strong> "Error handling: yes." Symptom: every checklist passes; the gate provides no discrimination between systems.</li>
+        <li><strong>Weighted score used as the gate.</strong> Symptom: launches with 87% score and an unverified ledger; the specific missing artifact is never named.</li>
+        <li><strong>Advisory items that are actually essential.</strong> Judge calibration marked advisory while a judge gates the release. Symptom: an uncalibrated judge decides promotions.</li>
+        <li><strong>Run once at launch.</strong> Symptom: the checklist is green from six months ago while the model revision, index, and prompts all changed (L94).</li>
+        <li><strong>Self-attested evidence.</strong> The artifact is a document the team wrote saying it is done. Symptom: the ledger verification artifact is a paragraph, not a verifier output.</li>
+        <li><strong>Checklist doesn't match the architecture.</strong> Items about components that do not exist; no items about the ones that do. Symptom: the gate is green and an entire subsystem (e.g. reranking) is unmeasured.</li>
+        <li><strong>Threshold as a knob.</strong> <code>&theta;</code> lowered when it blocks a launch. Symptom: the threshold history shows a step change per release; the gate is a negotiation.</li>
+        <li><strong>No owner per item.</strong> Symptom: at review time nobody knows who can produce a given artifact; the review stalls and then ships without it.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d96-s6">6 &middot; Connects to <a class="hook" href="#d96-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE bundle</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="99-capstone.html">L99 &middot; Capstone acceptance criteria</a>,
+    <a class="tag-d" href="100-annual-plan.html">L100 &middot; The plan</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a> &mdash; supplies the artifacts for A1, A2, P1, and P2.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; M1&ndash;M3, including the CI lower-bound ship criterion.</li>
+      <li><a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG eval</a> &mdash; R1&ndash;R2.</li>
+      <li><a class="tag-d" href="84-safety-sandboxing.html">L84 &middot; Sandboxing</a> and <a class="tag-d" href="93-safety-alignment.html">L93 &middot; Containment</a> &mdash; S1&ndash;S3.</li>
+      <li><a class="tag-d" href="92-reliability.html">L92 &middot; Reliability</a> &mdash; O3&ndash;O4, the injection evidence.</li>
+      <li><a class="tag-d" href="94-determinism.html">L94 &middot; Determinism</a> &mdash; P2, the declared reproducibility class.</li>
+      <li><a class="tag-c" href="../track-c/74-eval-contamination.html">L74 &middot; Contamination</a> &mdash; the reason M2's baseline must be re-measured on a held-out slice.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d96-s7">7 &middot; Self-check <a class="hook" href="#d96-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is a weighted score alone not a sufficient gate?</p>
+        <details><summary>Reveal answer</summary><p>Because weights are additive and auditable properties are often conjunctive. A system missing its ledger verification scores <code>(48&minus;3)/48 = 0.938</code> &mdash; an "A" &mdash; and ships. But the ledger gate is not a quality contribution, it is a <em>precondition</em> for trusting every other gate's evidence: if the record can be altered, then the artifacts proving M1, M2, and A1 are themselves unverified. Blocking flags encode "without this, nothing else counts"; weights encode "how much design this represents". They answer different questions and both are needed.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> You have 44 of 48 points and no <code>failure_injection_report</code>. Give the verdict and the two specific items that fail.</p>
+        <details><summary>Reveal answer</summary><p>Score <code>44/48 = 0.917</code>, above the 0.80 threshold, but the verdict is <strong>NO-GO</strong> because two blocking items share that evidence kind: <code>O3</code> (retries bounded, jittered, idempotency keys) and <code>O4</code> (degradation ladder exercised). Both are blocking, so the missing artifact fails two gates. The reviewer's action is concrete: produce the injection report, which is a test suite run &mdash; force each failure class (timeout, 500, circuit open, quota exhausted) and record the served behaviour per degradation level.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Which items would you add for a system that mutates production data unattended, and why are they not already covered?</p>
+        <details><summary>Reveal answer</summary><p>Add: (a) <strong>irreversible-action inventory with a named approver per action</strong> &mdash; S1 says irreversible actions are gated, but not that the gate has an owner and a timeout; (b) <strong>restore drill from backup with measured RTO</strong> &mdash; X1 covers rollback of code, not restoration of mutated data; (c) <strong>kill switch tested</strong> &mdash; the ability to halt the agent mid-run within a stated time, verified by injection; (d) <strong>quarterly re-certification</strong> &mdash; the checklist expires. These are not covered because the base list assumes reversible mutations, which is the wrong assumption for unattended production writes; that mismatch between checklist and architecture is itself one of the listed failure modes.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: the gate passes at launch and has passed every quarter since, but incidents keep occurring. What are the two most likely explanations?</p>
+        <details><summary>Reveal answer</summary><p>(1) <strong>Self-attested or stale evidence</strong> &mdash; the artifacts are documents written once, not outputs regenerated on each run, so the checklist is green about a system that no longer exists (model revision, index version, prompts changed). (2) <strong>The checklist does not match the architecture</strong> &mdash; the incidents occur in subsystems with no corresponding item (e.g. reranking, memory writes, subagent merge). The fix for both is the same: make the gate regenerate every artifact from the current RAKE bundle on every run, and run the mutation audit (Experiment 2) &mdash; any incident class that maps to no failing item identifies a missing item, and that mapping should be a required part of the post-incident review.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What does it mean that 18 of 20 items are blocking, and is that the right ratio?</p>
+        <details><summary>Reveal answer</summary><p>It means the gate is dominated by conjunctive requirements &mdash; 45 of 48 weight points sit behind "must have evidence". That is deliberate for an autonomous agent system where a missing artifact is usually a missing control rather than a missing nicety, and where the consequence of a false GO is an incident you cannot reconstruct. The right ratio depends on the scrutiny level: an internal tool could move several items to advisory (e.g. X1 rollback, X2 runbook) and still be safe because a human is watching. A ratio where <em>everything</em> is blocking is as broken as one where nothing is &mdash; it makes the gate unpassable and therefore ignored, which is how checklists die.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="95-rake-reporting-harness.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L95 &middot; The RAKE reporting harness</span></a>
+    <a class="next" href="97-rag-in-production.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L97 &middot; RAG in production</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

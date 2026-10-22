@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="tools/scaling-lab">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scaling-law explorer â€” AILearn</title>
+<meta name="description" content="Plot loss against compute, find the Chinchilla-optimal parameter/token allocation, then flip to inference-aware economics and watch the optimum move.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .head { padding: 34px 0 4px; max-width: 880px; }
+  .head h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); letter-spacing: -1.2px; }
+  .grid { display: grid; grid-template-columns: 320px minmax(0,1fr); gap: 20px; align-items: start; margin-top: 24px; }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 20px; }
+  .panel h3 { margin: 0 0 14px !important; font-size: .7rem; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--txt-3); font-family: var(--mono); }
+  .field { margin-bottom: 14px; }
+  .field label { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .73rem;
+    color: var(--txt-2); margin-bottom: 5px; }
+  .field label b { color: var(--cyan); }
+  .field input[type=range] { width: 100%; accent-color: var(--violet); }
+  .field .note { font-size: .69rem; color: var(--txt-3); margin-top: 3px; line-height: 1.4; }
+  canvas { width: 100%; height: 320px; display: block; background: #060910; border-radius: 10px; border: 1px solid var(--line); }
+  canvas.small { height: 190px; margin-top: 14px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-family: var(--mono); font-size: .68rem; color: var(--txt-3); margin-top: 8px; }
+  .legend i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .out { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 10px; margin-bottom: 16px; }
+  .obox { background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; }
+  .obox .v { font-family: var(--mono); font-size: 1.12rem; font-weight: 700; color: var(--txt); }
+  .obox .l { font-size: .62rem; color: var(--txt-3); text-transform: uppercase; letter-spacing: .7px; margin-top: 2px; }
+  .obox.hi { border-color: rgba(16,185,129,.4); background: rgba(16,185,129,.06); }
+  .obox.hi .v { color: #6ee7b7; }
+  .toggle { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; margin-bottom: 14px; }
+  .toggle button { flex: 1; padding: 8px; border: 0; background: transparent; color: var(--txt-3);
+    font-family: var(--mono); font-size: .7rem; cursor: pointer; transition: .15s; }
+  .toggle button.on { background: rgba(99,102,241,.18); color: var(--txt); }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="index.html">Tools</a>
+      <a href="../agi/index.html">AGI Lab</a>
+    </div>
+    <div class="nav-tools">
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="head">
+  <div class="track-tag">TOOL Â· SCALING LAWS</div>
+  <h1>Compute in, loss out â€” and where the optimum moves.</h1>
+  <p class="lede">
+    A parametric form of the scaling law, driven live. Slide the compute budget and watch the
+    compute-optimal parameter count move along the frontier. Then switch the objective from
+    "training loss" to "cost per served query" and watch the optimum walk away from Chinchilla â€”
+    which is the entire explanation for the small-but-long-trained generation of models.
+  </p>
+</header>
+
+<div class="grid">
+  <div>
+    <div class="panel">
+      <h3>Objective</h3>
+      <div class="toggle">
+        <button class="on" data-obj="loss">minimise loss</button>
+        <button data-obj="tco">minimise cost</button>
+      </div>
+
+      <div class="field">
+        <label>compute budget C (FLOPs) <b id="v-c">â€”</b></label>
+        <input type="range" id="p-c" min="18" max="27" step="0.25" value="24">
+        <div class="note">10^18 â‰ˆ tiny; 10^24 â‰ˆ a large frontier pretraining run; 10^27 is beyond anything public.</div>
+      </div>
+
+      <div class="field">
+        <label>tokens per parameter <b id="v-tpp">â€”</b></label>
+        <input type="range" id="p-tpp" min="1" max="200" step="1" value="20">
+        <div class="note">Chinchilla-optimal is â‰ˆ20. Modern inference-heavy training goes far above it.</div>
+      </div>
+
+      <div class="field">
+        <label>queries per trained model <b id="v-q">â€”</b></label>
+        <input type="range" id="p-q" min="3" max="10" step="1" value="7">
+        <div class="note">Only used in cost mode. 10^7 queries â‰ˆ a serious internal service.</div>
+      </div>
+
+      <div class="field">
+        <label>irreducible floor E <b id="v-e">â€”</b></label>
+        <input type="range" id="p-e" min="1.0" max="2.5" step="0.05" value="1.69">
+        <div class="note">The loss no amount of scale removes (entropy of natural text).</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Model</h3>
+      <p style="font-size:.76rem;color:var(--txt-3);line-height:1.65;margin:0;">
+        Loss follows the Chinchilla functional form
+        <code style="font-family:var(--mono);color:#c7d2fe;">L(N,D) = E + AÂ·N<sup>âˆ’Î±</sup> + BÂ·D<sup>âˆ’Î²</sup></code>
+        with published exponents Î±â‰ˆ0.34, Î²â‰ˆ0.28. Training cost is <code style="font-family:var(--mono);color:#c7d2fe;">C = 6ND</code>.
+        The numbers here are an illustrative fit, so the exact loss values should be read as shapes, not
+        predictions â€” but the position of the optimum is a structural consequence, not a curve-fitting artifact.
+      </p>
+    </div>
+  </div>
+
+  <div>
+    <div class="out">
+      <div class="obox"><div class="v" id="o-train">â€”</div><div class="l">train FLOPs</div></div>
+      <div class="obox"><div class="v" id="o-params">â€”</div><div class="l">your N</div></div>
+      <div class="obox"><div class="v" id="o-tokens">â€”</div><div class="l">your D</div></div>
+      <div class="obox"><div class="v" id="o-loss">â€”</div><div class="l">your loss</div></div>
+      <div class="obox hi"><div class="v" id="o-opt">â€”</div><div class="l">optimal N</div></div>
+      <div class="obox hi"><div class="v" id="o-optloss">â€”</div><div class="l">optimal loss</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>Loss along the compute-optimal frontier</h3>
+      <canvas id="chart" width="900" height="320"></canvas>
+      <div class="legend">
+        <span><i style="background:#38bdf8"></i>frontier: best loss at each C</span>
+        <span><i style="background:#f59e0b"></i>your current configuration</span>
+        <span><i style="background:#ef4444"></i>irreducible floor</span>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Loss vs parameters (at your budget)</h3>
+      <canvas id="chart2" class="small" width="900" height="190"></canvas>
+      <div class="legend">
+        <span><i style="background:#8b5cf6"></i>loss as N moves with C fixed</span>
+        <span><i style="background:#10b981"></i>minimum</span>
+      </div>
+    </div>
+
+    <div class="callout boss" style="margin-top:16px;">
+      <p id="insight">Drag the sliders.</p>
+    </div>
+  </div>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="kv-calc.html"><span class="dir">â† PREVIOUS</span><span class="ttl">KV-cache calculator</span></a>
+  <a class="next" href="agi-sim.html"><span class="dir">NEXT â†’</span><span class="ttl">SKILLA simulator</span></a>
+</nav>
+</main>
+
+<footer>AILearn Â· Tools Â· illustrative fit, structural conclusions</footer>
+<script src="../_shell.js"></script>
+<script>
+(function () {
+  'use strict';
+  var A = 406.4, Bc = 410.7, ALPHA = 0.34, BETA = 0.28;
+  var obj = 'loss';
+
+  var el = function (id) { return document.getElementById(id); };
+
+  function loss(N, D, E) { return E + A / Math.pow(N, ALPHA) + Bc / Math.pow(D, BETA); }
+
+  /* given C, find N minimising loss where D = C/(6N) */
+  function optimum(C, E) {
+    var lo = 1e6, hi = 1e14;
+    for (var i = 0; i < 200; i++) {
+      var a = lo + (hi - lo) / 3, b = hi - (hi - lo) / 3;
+      var la = loss(a, C / (6 * a), E), lb = loss(b, C / (6 * b), E);
+      if (la < lb) hi = b; else lo = a;
+    }
+    var N = (lo + hi) / 2;
+    return { N: N, D: C / (6 * N), L: loss(N, C / (6 * N), E) };
+  }
+
+  function fmt(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e11 ? 0 : 1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return n.toFixed(0);
+  }
+  function fmtExp(x) { return '1e' + Math.round(x); }
+
+  function render() {
+    var cExp = parseFloat(el('p-c').value);
+    var C = Math.pow(10, cExp);
+    var tpp = parseFloat(el('p-tpp').value);
+    var qExp = parseFloat(el('p-q').value);
+    var E = parseFloat(el('p-e').value);
+
+    el('v-c').textContent = fmtExp(cExp);
+    el('v-tpp').textContent = tpp;
+    el('v-q').textContent = fmtExp(qExp);
+    el('v-e').textContent = E.toFixed(2);
+
+    /* user config: D = tpp * N, C = 6ND => N = sqrt(C/(6*tpp)) */
+    var N = Math.sqrt(C / (6 * tpp));
+    var D = tpp * N;
+    var Lu = loss(N, D, E);
+
+    var o = optimum(C, E);
+
+    el('o-train').textContent = fmtExp(cExp);
+    el('o-params').textContent = fmt(N);
+    el('o-tokens').textContent = fmt(D);
+    el('o-loss').textContent = Lu.toFixed(3);
+    el('o-opt').textContent = fmt(o.N);
+    el('o-optloss').textContent = o.L.toFixed(3);
+
+    /* chart 1: frontier over C */
+    var cv = el('chart'), ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height, pad = 34;
+    ctx.clearRect(0, 0, W, H);
+    var Cs = [];
+    for (var e = 18; e <= 27; e += 0.25) Cs.push(Math.pow(10, e));
+    var Ls = Cs.map(function (c) { return optimum(c, E).L; });
+    var Lmin = Math.min.apply(null, Ls), Lmax = Math.max.apply(null, Ls);
+    var LmaxPad = Lmax + (Lmax - Lmin) * 0.15;
+
+    function X(i) { return pad + (i / (Cs.length - 1)) * (W - pad * 2); }
+    function Y(L) { return H - pad - ((LmaxPad - L) / (LmaxPad - Lmin)) * (H - pad * 2); }
+
+    /* axes */
+    ctx.strokeStyle = 'rgba(255,255,255,.1)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad, 10); ctx.lineTo(pad, H - pad); ctx.lineTo(W - 10, H - pad); ctx.stroke();
+    ctx.fillStyle = '#64748b'; ctx.font = '11px JetBrains Mono, monospace';
+    ctx.fillText('loss', 6, 20);
+    ctx.fillText('compute (FLOPs)', W - 130, H - 8);
+    ctx.fillText(Lmin.toFixed(2), 6, Y(Lmin) + 4);
+    ctx.fillText(Lmax.toFixed(2), 6, Y(Lmax) + 4);
+    for (var k = 18; k <= 27; k += 3) {
+      var idx = (k - 18) / 0.25;
+      ctx.fillText('1e' + k, X(idx) - 10, H - pad + 16);
+    }
+
+    /* floor */
+    if (E > Lmin) {
+      ctx.strokeStyle = 'rgba(239,68,68,.45)'; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(pad, Y(E)); ctx.lineTo(W - 10, Y(E)); ctx.stroke(); ctx.setLineDash([]);
+    }
+
+    /* frontier */
+    ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2.4; ctx.beginPath();
+    Ls.forEach(function (L, i) { i ? ctx.lineTo(X(i), Y(L)) : ctx.moveTo(X(i), Y(L)); });
+    ctx.stroke();
+
+    /* user point */
+    var uidx = (cExp - 18) / 0.25;
+    if (uidx >= 0 && uidx <= Cs.length - 1) {
+      ctx.fillStyle = '#f59e0b';
+      ctx.beginPath(); ctx.arc(X(uidx), Y(Math.min(Lu, LmaxPad)), 5, 0, Math.PI * 2); ctx.fill();
+    }
+
+    /* chart 2: loss vs N at this budget */
+    var cv2 = el('chart2'), c2 = cv2.getContext('2d');
+    var W2 = cv2.width, H2 = cv2.height, pad2 = 30;
+    c2.clearRect(0, 0, W2, H2);
+    var Ns = [], L2 = [];
+    for (var i2 = 0; i2 <= 120; i2++) {
+      var ne = 18 + (i2 / 120) * 5; /* 1e18 .. 1e23 params is plenty */
+      var Nn = Math.pow(10, ne);
+      var Dn = C / (6 * Nn);
+      if (Dn < 1) break;
+      Ns.push(Nn); L2.push(loss(Nn, Dn, E));
+    }
+    if (L2.length > 1) {
+      var mn = Math.min.apply(null, L2), mx = Math.max.apply(null, L2);
+      var mnIdx = L2.indexOf(mn);
+      function X2(i) { return pad2 + (i / (Ns.length - 1)) * (W2 - pad2 * 2); }
+      function Y2(L) { return H2 - pad2 - ((mx - L) / (mx - mn + 1e-9)) * (H2 - pad2 * 1.6); }
+      c2.strokeStyle = 'rgba(255,255,255,.08)';
+      c2.beginPath(); c2.moveTo(pad2, 10); c2.lineTo(pad2, H2 - pad2); c2.lineTo(W2 - 10, H2 - pad2); c2.stroke();
+      c2.strokeStyle = '#8b5cf6'; c2.lineWidth = 2; c2.beginPath();
+      L2.forEach(function (L, i) { i ? c2.lineTo(X2(i), Y2(L)) : c2.moveTo(X2(i), Y2(L)); });
+      c2.stroke();
+      c2.fillStyle = '#10b981';
+      c2.beginPath(); c2.arc(X2(mnIdx), Y2(mn), 5, 0, Math.PI * 2); c2.fill();
+      c2.fillStyle = '#64748b'; c2.font = '10px JetBrains Mono, monospace';
+      c2.fillText('N â†’', W2 - 40, H2 - 8);
+      c2.fillText(fmt(Ns[mnIdx]) + ' @ loss ' + mn.toFixed(3), Math.min(X2(mnIdx) + 10, W2 - 170), Y2(mn) - 8);
+    }
+
+    /* insight */
+    var gap = Lu - o.L;
+    var tppOpt = o.D / o.N;
+    var ins;
+    if (obj === 'loss') {
+      ins = 'At <b>' + fmtExp(cExp) + ' FLOPs</b> the loss-minimising allocation is about <b>' + fmt(o.N) +
+        ' parameters</b> with <b>' + Math.round(tppOpt) + ' tokens per parameter</b>. You are at ' + tpp +
+        ' tpp, which costs you <b>' + gap.toFixed(3) + ' nats</b> relative to the optimum. ' +
+        (tpp > tppOpt * 1.5 ? 'You are <em>over-training</em>: more tokens than the loss curve wants at this budget â€” but see the cost objective.' :
+         tpp < tppOpt * 0.6 ? 'You are <em>under-training</em> your parameters: the classic pre-Chinchilla mistake.' :
+         'You are near the loss-optimal point for this budget.');
+    } else {
+      /* COST MODE
+         Minimising raw spend always picks the tiniest model, which is useless.
+         The real objective is cost per unit of ACHIEVED quality: sweep N, train
+         each to convergence at the fixed budget C (D = C/6N), read the loss it
+         reaches, charge training + inference, and divide by the quality actually
+         delivered. Best quality-per-dollar is the honest optimum. */
+      var q = Math.pow(10, qExp);
+      var bestN = null, bestScore = Infinity, bestLoss = 0;
+      for (var ne2 = 6; ne2 < 15; ne2 += 0.02) {
+        var n2 = Math.pow(10, ne2);
+        var d2 = C / (6 * n2);
+        if (d2 < n2 * 0.5) continue;          /* under 0.5 tokens/param is not a real model */
+        var L2 = loss(n2, d2, E);
+        if (L2 >= LmaxPad) continue;          /* model never learned */
+        var trainUnits = C / 1e15;
+        var inferUnits = q * 2 * n2 / 1e15;
+        var costOf = 1 / ((LmaxPad - L2) / (trainUnits + inferUnits));
+        if (costOf > 0 && costOf < bestScore) { bestScore = costOf; bestN = n2; bestLoss = L2; }
+      }
+      if (bestN === null) { bestN = o.N; bestLoss = o.L; }
+      var tppCost = (C / (6 * bestN)) / bestN;
+      ins = 'Cost mode at <b>' + fmtExp(qExp) + ' queries per model</b>: best <em>quality per dollar</em> is a <b>' +
+        fmt(bestN) + ' parameter</b> model trained on about <b>' + Math.round(tppCost) +
+        ' tokens per parameter</b> (loss ' + bestLoss.toFixed(3) + '), versus ' + Math.round(tppOpt) +
+        ' tpp for the pure loss objective. ' +
+        (tppCost > tppOpt * 1.5
+          ? 'More queries push you to smaller models trained far past the loss optimum: inference volume, not training loss, sets the real optimum. That is the structural reason the industry moved to long-trained small models.'
+          : 'With few queries the two objectives agree: training cost dominates and Chinchilla is close to right.');
+    }
+    el('insight').innerHTML = ins;
+  }
+
+  ['p-c', 'p-tpp', 'p-q', 'p-e'].forEach(function (id) {
+    el(id).addEventListener('input', render);
+  });
+  [].slice.call(document.querySelectorAll('.toggle button')).forEach(function (b) {
+    b.addEventListener('click', function () {
+      obj = b.getAttribute('data-obj');
+      [].slice.call(document.querySelectorAll('.toggle button')).forEach(function (x) {
+        x.classList.toggle('on', x === b);
+      });
+      render();
+    });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

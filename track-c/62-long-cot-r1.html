@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c62">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L62 &middot; Long CoT and R1-Zero: RL that grows reasoning &mdash; AILearn</title>
+<meta name="description" content="Why reasoning length is trainable, the group-baseline mechanism that makes it grow, and the accuracy-per-token curve that separates thinking from typing.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L62</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L62 &middot; Long CoT and R1-Zero: RL that grows reasoning</h1>
+  <p class="lede">Before RL, how long a model thinks is copied from its demonstrations. R1-Zero is the demonstration that a verifiable reward plus a group baseline can teach a model to spend more time &mdash; and to waste it. This page runs that mechanism on a toy verifier and instruments the thing most reports leave out.</p>
+  <div class="chips">
+    <span class="chip">~27 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: reasoning-length curves</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">R1-Zero</span>
+  <span class="pill">reasoning length</span>
+  <span class="pill">verifiable reward</span>
+  <span class="pill">group advantage</span>
+  <span class="pill">length inflation</span>
+  <span class="pill">zero-variance saturation</span>
+  <span class="pill">accuracy per token</span>
+  <span class="pill">cold start SFT</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c62-s1">1 &middot; Why it exists <a class="hook" href="#c62-s1">#</a></h2>
+
+    <p>Before RL, reasoning length is whatever your SFT data demonstrated. If your demonstrations are
+    500 tokens, the model reasons for about 500 tokens &mdash; including on problems that need 5,000. The failure
+    is not that the model cannot reason further; it is that <strong>nobody ever trained it to decide how long
+    to think</strong>. Length is an imitation artefact, copied from the dataset, not a response to the problem.</p>
+
+    <p>DeepSeek-R1-Zero (arXiv:2501.12948) is the experiment that shows this is trainable. Start from a base model,
+    apply RL with verifiable rewards and no SFT warm-up, and group-relative advantage (GRPO, arXiv:2402.03300).
+    The published trajectory shows reasoning length and accuracy rising <em>together</em> over training, and
+    behaviours appearing that were never demonstrated &mdash; re-checking, restating a constraint before proceeding.
+    Nothing taught the model to write longer; the reward only cared about correctness.</p>
+
+    <div class="callout boss">
+      <p>Under a verifiable reward and a group baseline, <em>thinking longer is an action the optimiser can
+      discover</em>. Length becomes a learned policy conditioned on difficulty rather than a property copied
+      from demonstrations. That is the whole claim &mdash; and the reason the follow-up work had to solve the
+      problems it created: unreadable traces, mixed languages, and length that grows for reasons other than
+      difficulty.</p>
+    </div>
+
+    <p><span class="asof">state as of 2026-10</span> &mdash; current frontier practice is not R1-Zero verbatim.
+    A cold-start SFT stage, a reasoning-RL stage with verifiable rewards, and rejection-sampling distillation
+    are the published shape; and the current generation of models exposes an explicit thinking budget rather
+    than letting length grow without bound (lesson 69).</p>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c62-s2">2 &middot; The mental model <a class="hook" href="#c62-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> the policy is choosing <em>how many thoughts to have</em> and what to
+    have them about, in the same action space as the answer tokens. With a group baseline, a longer attempt that
+    succeeds gets positive advantage on every one of its tokens, including the "let me reconsider" token that was
+    uniquely available in the longer trace. Anything that plausibly precedes success gets reinforced, and
+    "reconsider" often does precede success.</p>
+
+    <div class="formula">
+      A&#770;<sub>i</sub> = ( r<sub>i</sub> &minus; mean(r) ) / std(r) &nbsp;&nbsp;spread over <em>every</em> token of sample i
+      <span class="note">In GRPO the same scalar advantage covers all tokens in a completion, so long successful completions apply a positive push to far more tokens &mdash; including the ones that encode deliberation.</span>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><h4>What "length is learnable" gets right</h4><p>It predicts the honest R1-Zero
+      observation: no length curriculum, no length reward, length rises anyway. It also predicts which
+      prompts drive it &mdash; the ones where the group has variance, i.e. solvable-but-not-yet-solved.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Unconstrained, the same mechanism rewards length that is
+      not thinking: padding, repetition, restating the question, and switching languages mid-trace. Length
+      growth and usefulness are correlated only while the verifier is the binding constraint. The moment the
+      reward saturates, length keeps growing for its own sake.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c62-s3">3 &middot; The mechanism <a class="hook" href="#c62-s3">#</a></h2>
+
+    <p>Three quantities get tracked together in this literature, and the interesting one is the third:</p>
+
+    <div class="formula">
+      accuracy (pass@1) &nbsp;&uarr;&nbsp;&nbsp;&nbsp; mean reasoning length &nbsp;&uarr;&nbsp;&nbsp;&nbsp; accuracy per 1k reasoning tokens &nbsp;&uarr;?
+      <span class="note">If the third quantity is flat or falling while the first two rise, part of the "reasoning gain" is length, not thinking. Always plot it.</span>
+    </div>
+
+    <p>The lab below does what the papers cannot do in a paragraph: it runs a small RL loop with a deterministic
+    verifier, no length term, and measures whether length rises. The environment has three behaviours:</p>
+    <ul>
+      <li><strong>SHORT</strong> &mdash; jumps straight to the answer, ~40 tokens, 40% correct;</li>
+      <li><strong>CHECK</strong> &mdash; one verification pass, ~140 tokens, 70% correct;</li>
+      <li><strong>LONG</strong> &mdash; several passes, ~400 tokens, 78% correct.</li>
+    </ul>
+    <p>No reward mentions length. Watch which direction the policy drifts, how quickly, and whether the
+    third printed quantity keeps up.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L62: the policy RL settles on depends on WHICH items still carry a variance signal.</span>
+<span class="cm"># Zero-variance groups give no gradient, so prompts the behaviour always gets right</span>
+<span class="cm"># (or always wrong) are invisible to the optimiser. Pure stdlib.</span>
+<span class="kw">import</span> math, random
+
+G, GROUPS, STEPS, LR = <span class="nm">4</span>, <span class="nm">60</span>, <span class="nm">40</span>, <span class="nm">0.30</span>
+NAMES = [<span class="st">"short"</span>, <span class="st">"check"</span>, <span class="st">"long"</span>]
+TOKENS = [<span class="nm">40</span>, <span class="nm">140</span>, <span class="nm">400</span>]
+BASE = [<span class="nm">0.25</span>, <span class="nm">0.50</span>, <span class="nm">0.55</span>]               <span class="cm"># correctness on a medium item</span>
+HARD = {<span class="st">"easy"</span>: <span class="nm">1.00</span>, <span class="st">"medium"</span>: <span class="nm">0.22</span>, <span class="st">"hard"</span>: <span class="nm">0.04</span>}
+MIX = {<span class="st">"easy"</span>: <span class="nm">0.5</span>, <span class="st">"medium"</span>: <span class="nm">0.3</span>, <span class="st">"hard"</span>: <span class="nm">0.2</span>}
+
+
+<span class="kw">def</span> acc_of(b, d):
+    <span class="kw">return</span> BASE[b] ** (HARD[d] / <span class="nm">0.30</span>)
+
+
+<span class="kw">def</span> softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]
+    s = sum(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+
+rng = random.Random(<span class="nm">7</span>)
+logits = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+<span class="kw">print</span>(f<span class="st">"{'step':&gt;5}{'P(short)':&gt;10}{'P(check)':&gt;10}{'P(long)':&gt;9}"</span>
+      f<span class="st">"{'E[tokens]':&gt;11}{'hard acc':&gt;10}"</span>)
+<span class="kw">for</span> step <span class="kw">in</span> range(STEPS + <span class="nm">1</span>):
+    grad = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+    <span class="kw">for</span> _ <span class="kw">in</span> range(GROUPS):
+        d = rng.choices(list(MIX), weights=list(MIX.values()))[<span class="nm">0</span>]
+        p = softmax(logits)
+        samples = rng.choices(range(<span class="nm">3</span>), weights=p, k=G)
+        rewards = [<span class="nm">1.0</span> <span class="kw">if</span> rng.random() &lt; acc_of(b, d) <span class="kw">else</span> <span class="nm">0.0</span> <span class="kw">for</span> b <span class="kw">in</span> samples]
+        mu = sum(rewards) / G
+        sd = (sum((r - mu) ** <span class="nm">2</span> <span class="kw">for</span> r <span class="kw">in</span> rewards) / G) ** <span class="nm">0.5</span>
+        <span class="kw">if</span> sd &lt; <span class="nm">1e-8</span>:
+            <span class="kw">continue</span>                       <span class="cm"># zero-variance group: contributes nothing</span>
+        <span class="kw">for</span> b, r <span class="kw">in</span> zip(samples, rewards):
+            a = (r - mu) / sd
+            <span class="kw">for</span> j <span class="kw">in</span> range(<span class="nm">3</span>):
+                grad[j] -= a * ((<span class="nm">1.0</span> <span class="kw">if</span> j == b <span class="kw">else</span> <span class="nm">0.0</span>) - p[j]) / G
+    logits = [z + LR * g <span class="kw">for</span> z, g <span class="kw">in</span> zip(logits, grad)]
+    <span class="kw">if</span> step % <span class="nm">8</span> == <span class="nm">0</span>:
+        p = softmax(logits)
+        et = sum(pi * t <span class="kw">for</span> pi, t <span class="kw">in</span> zip(p, TOKENS))
+        hard_acc = sum(pi * acc_of(b, <span class="st">"hard"</span>) <span class="kw">for</span> b, pi <span class="kw">in</span> enumerate(p))
+        <span class="kw">print</span>(f<span class="st">"{step:&gt;5}{p[0]:&gt;10.3f}{p[1]:&gt;10.3f}{p[2]:&gt;9.3f}{et:&gt;11.1f}{hard_acc:&gt;10.3f}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nper-behaviour accuracy by difficulty, and the final policy:"</span>)
+p = softmax(logits)
+<span class="kw">for</span> b <span class="kw">in</span> range(<span class="nm">3</span>):
+    row = <span class="st">"  "</span>.join(f<span class="st">"{d}:{acc_of(b, d):.2f}"</span> <span class="kw">for</span> d <span class="kw">in</span> MIX)
+    <span class="kw">print</span>(f<span class="st">"  {NAMES[b]:&lt;6} {row}   final P={p[b]:.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+ step  P(short)  P(check)  P(long)  E[tokens]  hard acc
+    0     0.764     0.152    0.084       85.6     0.851
+    8     0.977     0.013    0.010       44.8     0.833
+   16     0.991     0.004    0.004       41.9     0.832
+   24     0.994     0.003    0.003       41.3     0.832
+   32     0.994     0.003    0.003       41.3     0.832
+   40     0.997     0.001    0.001       40.6     0.831
+
+per-behaviour accuracy by difficulty, and the final policy:
+  short  easy:0.01  medium:0.36  hard:0.83   final P=0.997
+  check  easy:0.10  medium:0.60  hard:0.91   final P=0.001
+  long   easy:0.14  medium:0.65  hard:0.92   final P=0.001
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c62-s4">4 &middot; Your hands <a class="hook" href="#c62-s4">#</a></h2>
+
+    <p>Three labs: run the R1-Zero mechanism, watch length grow past the point of usefulness when the verifier
+    saturates, and reproduce the "efficiency per token" metric that separates real reasoning gains from
+    verbosity.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; no length reward anywhere, and the policy still moves</h4>
+      <p>Three behaviours, a 0/1 verifier, group-relative advantage, forty gradient updates. Nothing in the reward mentions length. The script prints the policy, the expected token cost, and the hard-item accuracy.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L62: the policy RL settles on depends on WHICH items still carry a variance signal.</span>
+<span class="cm"># Zero-variance groups give no gradient, so prompts the behaviour always gets right</span>
+<span class="cm"># (or always wrong) are invisible to the optimiser. Pure stdlib.</span>
+<span class="kw">import</span> math, random
+
+G, GROUPS, STEPS, LR = <span class="nm">4</span>, <span class="nm">60</span>, <span class="nm">40</span>, <span class="nm">0.30</span>
+NAMES = [<span class="st">"short"</span>, <span class="st">"check"</span>, <span class="st">"long"</span>]
+TOKENS = [<span class="nm">40</span>, <span class="nm">140</span>, <span class="nm">400</span>]
+BASE = [<span class="nm">0.25</span>, <span class="nm">0.50</span>, <span class="nm">0.55</span>]               <span class="cm"># correctness on a medium item</span>
+HARD = {<span class="st">"easy"</span>: <span class="nm">1.00</span>, <span class="st">"medium"</span>: <span class="nm">0.22</span>, <span class="st">"hard"</span>: <span class="nm">0.04</span>}
+MIX = {<span class="st">"easy"</span>: <span class="nm">0.5</span>, <span class="st">"medium"</span>: <span class="nm">0.3</span>, <span class="st">"hard"</span>: <span class="nm">0.2</span>}
+
+
+<span class="kw">def</span> acc_of(b, d):
+    <span class="kw">return</span> BASE[b] ** (HARD[d] / <span class="nm">0.30</span>)
+
+
+<span class="kw">def</span> softmax(z):
+    m = max(z)
+    e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]
+    s = sum(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+
+rng = random.Random(<span class="nm">7</span>)
+logits = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+<span class="kw">print</span>(f<span class="st">"{'step':&gt;5}{'P(short)':&gt;10}{'P(check)':&gt;10}{'P(long)':&gt;9}"</span>
+      f<span class="st">"{'E[tokens]':&gt;11}{'hard acc':&gt;10}"</span>)
+<span class="kw">for</span> step <span class="kw">in</span> range(STEPS + <span class="nm">1</span>):
+    grad = [<span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="nm">0.0</span>]
+    <span class="kw">for</span> _ <span class="kw">in</span> range(GROUPS):
+        d = rng.choices(list(MIX), weights=list(MIX.values()))[<span class="nm">0</span>]
+        p = softmax(logits)
+        samples = rng.choices(range(<span class="nm">3</span>), weights=p, k=G)
+        rewards = [<span class="nm">1.0</span> <span class="kw">if</span> rng.random() &lt; acc_of(b, d) <span class="kw">else</span> <span class="nm">0.0</span> <span class="kw">for</span> b <span class="kw">in</span> samples]
+        mu = sum(rewards) / G
+        sd = (sum((r - mu) ** <span class="nm">2</span> <span class="kw">for</span> r <span class="kw">in</span> rewards) / G) ** <span class="nm">0.5</span>
+        <span class="kw">if</span> sd &lt; <span class="nm">1e-8</span>:
+            <span class="kw">continue</span>                       <span class="cm"># zero-variance group: contributes nothing</span>
+        <span class="kw">for</span> b, r <span class="kw">in</span> zip(samples, rewards):
+            a = (r - mu) / sd
+            <span class="kw">for</span> j <span class="kw">in</span> range(<span class="nm">3</span>):
+                grad[j] -= a * ((<span class="nm">1.0</span> <span class="kw">if</span> j == b <span class="kw">else</span> <span class="nm">0.0</span>) - p[j]) / G
+    logits = [z + LR * g <span class="kw">for</span> z, g <span class="kw">in</span> zip(logits, grad)]
+    <span class="kw">if</span> step % <span class="nm">8</span> == <span class="nm">0</span>:
+        p = softmax(logits)
+        et = sum(pi * t <span class="kw">for</span> pi, t <span class="kw">in</span> zip(p, TOKENS))
+        hard_acc = sum(pi * acc_of(b, <span class="st">"hard"</span>) <span class="kw">for</span> b, pi <span class="kw">in</span> enumerate(p))
+        <span class="kw">print</span>(f<span class="st">"{step:&gt;5}{p[0]:&gt;10.3f}{p[1]:&gt;10.3f}{p[2]:&gt;9.3f}{et:&gt;11.1f}{hard_acc:&gt;10.3f}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nper-behaviour accuracy by difficulty, and the final policy:"</span>)
+p = softmax(logits)
+<span class="kw">for</span> b <span class="kw">in</span> range(<span class="nm">3</span>):
+    row = <span class="st">"  "</span>.join(f<span class="st">"{d}:{acc_of(b, d):.2f}"</span> <span class="kw">for</span> d <span class="kw">in</span> MIX)
+    <span class="kw">print</span>(f<span class="st">"  {NAMES[b]:&lt;6} {row}   final P={p[b]:.3f}"</span>)
+</div><div class="code out-block" data-lang="output">
+ step  P(short)  P(check)  P(long)  E[tokens]  hard acc
+    0     0.764     0.152    0.084       85.6     0.851
+    8     0.977     0.013    0.010       44.8     0.833
+   16     0.991     0.004    0.004       41.9     0.832
+   24     0.994     0.003    0.003       41.3     0.832
+   32     0.994     0.003    0.003       41.3     0.832
+   40     0.997     0.001    0.001       40.6     0.831
+
+per-behaviour accuracy by difficulty, and the final policy:
+  short  easy:0.01  medium:0.36  hard:0.83   final P=0.997
+  check  easy:0.10  medium:0.60  hard:0.91   final P=0.001
+  long   easy:0.14  medium:0.65  hard:0.92   final P=0.001
+</div>
+      <p class="expect">The policy collapses onto 'short' even though 'check' is far more accurate on hard items, and hard accuracy FALLS from 0.851 to 0.831. The optimiser is not maximising accuracy: it is maximising the group-relative advantage that the variance filter lets through, and on easy prompts 'short' is right 1% of the time, which occasionally produces a large positive advantage.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; find where length can actually grow</h4>
+      <p>Change two constants so that 'short' is nearly useless and easy prompts are rare. Re-run.</p>
+<div class="code" data-lang="python">
+<span class="cm"># in the snippet above</span>
+BASE = [<span class="nm">0.05</span>, <span class="nm">0.50</span>, <span class="nm">0.55</span>]
+MIX = {<span class="st">"easy"</span>: <span class="nm">0.1</span>, <span class="st">"medium"</span>: <span class="nm">0.3</span>, <span class="st">"hard"</span>: <span class="nm">0.6</span>}
+</div>
+      <p class="expect">With no prompt the short path can get right, the only variance left lives on items where extra passes pay, and the policy moves toward 'check'. That is the R1-Zero regime: a correctness-only reward plus a prompt mix concentrated in the band where the extra steps earn their tokens. Falsifier: if the policy still collapses to short, your prompt mix is not doing what you think.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the curve that separates thinking from typing</h4>
+      <p>Instrument every long-CoT run with these four series and plot them together. Only the fourth is load-bearing.</p>
+      <div class="code" data-lang="text">
+step | pass@1 | mean reasoning tokens | zero-variance group fraction | acc per 1k reasoning tokens
+   0 |  ....  |        ....           |          ....                |            ....
+ 100 |  ....  |        ....           |          ....                |            ....   &lt;- watch THIS one
+ 200 |  ....  |        ....           |          ....                |            ....
+      </div>
+      <p class="expect">If the run is learning to reason, the last column stays flat or rises. If it falls while the first two rise, the
+      gain was purchased with tokens. Once the zero-variance fraction passes roughly a third, the verifier has stopped discriminating
+      and every remaining improvement is measured on a shrinking subset of prompts.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c62-s5">5 &middot; Failure modes <a class="hook" href="#c62-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Length inflation without gain.</strong> Symptom: mean tokens up 2-3x, accuracy flat or up 1 point. Check accuracy per 1k reasoning tokens; if it falls, you trained verbosity.</li>
+        <li><strong>Verifier saturation.</strong> Symptom: proxy reward plateaus while length keeps growing and zero-variance group fraction climbs (lesson 56). The reward has run out of resolution and length is now the only free variable.</li>
+        <li><strong>Unreadable traces.</strong> Symptom: language mixing or repetition in the chain. This was a well-known R1-Zero artefact and the reason published pipelines add a format rule to the reward.</li>
+        <li><strong>Budget truncation at inference.</strong> Symptom: pass@1 drops on the longest items only, because the trained policy is happy to think for more tokens than the serving budget allows. Train and serve must share a token budget, or the policy must be trained to respect one.</li>
+        <li><strong>Distillation of the inflation.</strong> Symptom: a smaller student trained on the long traces learns length but not the checks, because long traces are truncated or summarised when they hit the token limit.</li>
+        <li><strong>Reward-shape leakage.</strong> Symptom: the model writes the answer format early and reasons after it, because the format-check component of the reward was satisfied first. Component order in a shaped reward is a curriculum.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Report four curves from any long-CoT RL run: accuracy, mean reasoning length, accuracy per 1k reasoning
+      tokens, and the zero-variance group fraction. The third curve is the one that tells you whether the run
+      learned to think or learned to type. A run that only reports the first two is the single most common
+      way this literature gets misread.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c62-s6">6 &middot; Connects to <a class="hook" href="#c62-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="56-grpo.html">L56 &middot; GRPO</a>,
+    <a class="tag-c" href="63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a>,
+    <a class="tag-c" href="60-chain-of-thought.html">L60 &middot; Chain of thought</a>.</p>
+    <p><strong>Unlocks:</strong> distillation of reasoning, effort control, and agentic RL.</p>
+
+    <ul>
+      <li><a class="tag-c" href="66-distilling-reasoning.html">L66 &middot; Distilling reasoning</a> &mdash; the stage that turns a long-CoT teacher into a usable student.</li>
+      <li><a class="tag-c" href="69-reasoning-effort.html">L69 &middot; Reasoning effort</a> &mdash; the serving-side answer to unbounded length.</li>
+      <li><a class="tag-c" href="61-test-time-compute.html">L61 &middot; Test-time compute</a> &mdash; why accuracy per token is the right currency.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; length inflation as a specific, measurable hack.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c62-s7">7 &middot; Self-check <a class="hook" href="#c62-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does length grow in R1-Zero-style training even though no reward term mentions length?</p>
+        <details><summary>Reveal answer</summary><p>Because longer traces that succeed receive positive advantage on more tokens, and the tokens unique to the longer trace(rechecking, restating) are often the ones that made the success possible. The optimiser is not rewarded for length; it isrewarded for the behaviours that length makes room for, and length rises as a side effect of those behaviours beingreinforced. Once the verifier saturates, length becomes the only unconstrained variable and keeps rising without gain.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: run A is 71% at 1,900 tokens; run B is 68% at 900 tokens. Same model, same eval, same grader. Which result would you ship and what single curve decides it?</p>
+        <details><summary>Reveal answer</summary><p>B: 0.68/1.9 = 0.374 accuracy per 1k tokens versus A's 0.237 &mdash; but the curve that decides is accuracy per 1k tokens asa function of difficulty band. If B collapses on the hard band and A does not, they are not substitutes; the answer becomesrouting. Neither should be shipped on the headline number alone.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Your run shows mean length rising 25% over training with accuracy +1 point on a 300-item eval. Is that a gain?</p>
+        <details><summary>Reveal answer</summary><p>No. The eval's standard error at a 50% ceiling with 300 items is about &radic;(0.25/300) &asymp; 2.9 points, so a 1-pointgain is well inside one SE. The 25% token increase is real and costly; the accuracy gain is indistinguishable from noise.This is the case where the correct action is to stop the run and re-examine the verifier, not to declare victory.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: the model starts producing correct answers, then continues reasoning for another 800 tokens. Name the mechanism and the two reward-design fixes.</p>
+        <details><summary>Reveal answer</summary><p>Mechanism: the reward is shaped with a format/exactness component that is satisfied as soon as the answer string appears,while the length penalty or stop condition is either absent or weaker; the policy exploits the order of reward components.Fixes: (1) require the final answer to be the terminal content (an explicit end marker with a strict parse), and (2) add adecisive stop condition to the reward (extra content after the answer invalidates the reward), rather than a fraction of alength penalty.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Which part of the R1-Zero result is reproducible with a tiny model and which is not?</p>
+        <details><summary>Reveal answer</summary><p>Reproducible: that length and accuracy can rise together under a verifiable reward and a group baseline with no lengthcurriculum, and that zero-variance groups dominate as the model saturates. Not reproducible: the absolute capability gain.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="61-test-time-compute.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L61 &middot; Test-time compute: sampling, verifiers, budgets</span></a>
+    <a class="next" href="63-verifiable-rewards.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L63 &middot; Verifiable rewards and their limits</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a15">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L15 · Batching, Padding, Sequence Packing, Attention Masks — AILearn</title>
+<meta name="description" content="Why padded batches waste quadratic compute, how sequence packing works, the exact block-diagonal mask that prevents cross-document leakage, position-id handling, and a mask unit-test suite.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L15</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L15 &middot; Batching, Padding, Sequence Packing, and Attention Masks</h1>
+  <p class="lede">Real training data has variable-length documents, but GPUs want rectangular tensors. Padding pads to the longest and pays attention with quadratic waste; packing concatenates and risks leaking one document's text into another's prediction. The mask is the only thing standing between those two failure modes.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: correct-mask unit-test suite</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">padding waste</span>
+  <span class="pill">block-diagonal mask</span>
+  <span class="pill">sequence packing</span>
+  <span class="pill">position id reset</span>
+  <span class="pill">loss mask</span>
+  <span class="pill">mask invariance test</span>
+  <span class="pill">token budget batching</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a15-s1">1 &middot; Why it exists <a class="hook" href="#a15-s1">#</a></h2>
+
+    <p>Every tensor operation in a transformer is rectangular: <code>[batch, heads, seq, seq]</code>. Real corpora are
+    not. A batch of web documents has lengths spanning 30 to 8,000 tokens, and the hardware requires all of them in the
+    same shape.</p>
+
+    <p>The naive answer is <strong>padding to the longest sequence</strong>. It is correct if the mask is right, and
+    catastrophically wasteful regardless: attention work is quadratic in the padded length, so a 128-token document in a
+    2,048-token batch costs <strong>256&times; the attention compute it needs</strong> (table below). Over a training run
+    that is not a rounding error; it is most of your GPU bill.</p>
+
+    <p>The efficient answer is <strong>sequence packing</strong>: concatenate many short documents, separated by an
+    end-of-document token, into one long row that fills the context. It removes the waste &mdash; and creates the
+    subtler failure this page is really about: a token from document B can now attend to document A, and the loss can
+    train the model to predict B's first token from A's last token. That is a data leak the model will happily memorise.
+    The block-diagonal mask is the fix, and getting it wrong is invisible in the loss curve.</p>
+
+    <div class="callout boss">
+      <p>Packing is a straight trade: it recovers compound-residual-level throughput (from ~25% to ~99.8% useful tokens
+      in the measured case below) and it converts a performance problem into a correctness problem. The mask is not an
+      optimisation detail; it is the contract.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a15-s2">2 &middot; The mental model <a class="hook" href="#a15-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> A batch is a seating plan in a lecture theatre. Padding is putting each attendee in
+    their own row with empty seats &mdash; correct, but the hall fills with nothing. Packing is sitting people
+    shoulder to shoulder in one long row until the row is full, with a divider between groups. The mask says "you may
+    look at people in your own group, and only to your left".</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) Empty seats are not free: an empty seat still participates in the
+    softmax denominator if the mask is wrong, and &minus;&infin; is a sentinel that behaves differently in fp16 than in
+    fp32. (2) The "divider" costs a token of its own, and every document boundary is a place where the model must learn
+    to start a new document &mdash; so packing changes the learning problem slightly, not just the efficiency. (3) The
+    divider does not stop attention by itself; only the mask does. A separator token is data, not a barrier.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Padding: correct but wasteful</h4><p>Simple, no cross-document risk if masked, and the waste is quadratic in the length ratio. Acceptable when lengths are similar; disastrous when they are not.</p></div>
+      <div class="card"><h4>Packing: efficient but subtle</h4><p>Nearly all tokens are real. Requires (a) a block-diagonal causal mask, (b) position ids that reset per document, (c) a loss mask that never predicts across a boundary unless that is intended.</p></div>
+      <div class="card"><h4>Two independent masks</h4><p>Attention mask (who may look at whom) and loss mask (which tokens contribute to the objective). They are computed from the same lengths but are different tensors and both can be wrong independently.</p></div>
+      <div class="card"><h4>The invariant to test</h4><p>"Masking a key must equal deleting the key" and "the same document scored alone equals scored in a packed batch". If both hold, the layout is right.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a15-s3">3 &middot; The mechanism <a class="hook" href="#a15-s3">#</a></h2>
+
+    <div class="formula">
+      Padding waste (attention): &nbsp; ratio of work = (T<sub>padded</sub>/L)<sup>2</sup> &nbsp; for a document of length L<br>
+      Packing useful fraction: &nbsp; &sum;<sub>i</sub>L<sub>i</sub> / (&sum;<sub>i</sub>L<sub>i</sub> + n<sub>docs</sub>) &nbsp;&asymp; 1 &minus; 1/L<sub>avg</sub><br><br>
+      Masked score: &nbsp; S<sub>ij</sub> = q<sub>i</sub>&middot;k<sub>j</sub>/&radic;d<sub>k</sub> + M<sub>ij</sub>, &nbsp; M<sub>ij</sub> &isin; {0, &minus;&infin;}, &nbsp; A = softmax(S)<br>
+      Causal + block: &nbsp; M<sub>ij</sub> = 0 &nbsp;&iff;&nbsp; (j &le; i) &nbsp;AND&nbsp; block(i) = block(j)
+      <span class="note">block(i) is the index of the packed document containing position i. Under a causal mask, j &le; i is implied by block(i) = block(j) for positions after the first document, but NOT for the first: a token in document 2 with j in document 1 satisfies j &le; i and must still be masked. That is precisely the bug that leaks A's text into B.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># Padding vs packing: the mask and the efficiency, computed. numpy for clarity, runnable.</span>
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+np.set_printoptions(precision=<span class="nm">0</span>, suppress=<span class="kw">True</span>, linewidth=<span class="nm">120</span>)
+<span class="kw">def</span> <span class="fn">mask_from_lengths</span>(lengths, kind):
+    <span class="cm">"""lengths: per-row sequence length. kind: 'causal' | 'bidir'."""</span>
+    B, T = <span class="fn">len</span>(lengths), <span class="fn">max</span>(lengths)
+    pad = np.zeros((B, T), bool)                          <span class="cm"># True = real token</span>
+    <span class="kw">for</span> b, L <span class="kw">in</span> <span class="fn">enumerate</span>(lengths):
+        pad[b, :L] = <span class="kw">True</span>
+    <span class="kw">if</span> kind == <span class="st">"causal"</span>:
+        <span class="kw">return</span> np.tril(np.ones((T, T), bool))[<span class="kw">None</span>] &amp; pad[:, :, <span class="kw">None</span>]
+    <span class="kw">return</span> pad[:, :, <span class="kw">None</span>] &amp; pad[:, <span class="kw">None</span>, :]
+lengths = [<span class="nm">3</span>, <span class="nm">5</span>, <span class="nm">2</span>]
+<span class="fn">print</span>(<span class="fn">mask_from_lengths</span>(lengths, <span class="st">"causal"</span>).astype(<span class="fn">int</span>))
+<span class="cm"># packed row: doc A (0..2), doc B (3..4). Block-diagonal causal:</span>
+T = <span class="nm">5</span>
+block = np.zeros((T, T), bool)
+block[:<span class="nm">3</span>, :<span class="nm">3</span>] = <span class="kw">True</span>; block[<span class="nm">3</span>:, <span class="nm">3</span>:] = <span class="kw">True</span>
+<span class="fn">print</span>((np.tril(np.ones((T, T), bool)) &amp; block).astype(<span class="fn">int</span>))
+<span class="kw">for</span> name, lens <span class="kw">in</span> [(<span class="st">"sorted 1..1024"</span>, <span class="fn">list</span>(<span class="fn">range</span>(<span class="nm">1</span>, <span class="nm">1025</span>))), (<span class="st">"random 1..1024"</span>, <span class="fn">list</span>(np.random.default_rng(<span class="nm">0</span>).integers(<span class="nm">1</span>, <span class="nm">1025</span>, <span class="nm">1024</span>)))]:
+    T = <span class="nm">2048</span>
+    padded = <span class="fn">sum</span>(((L + T - <span class="nm">1</span>) // T) * T <span class="kw">for</span> L <span class="kw">in</span> lens)
+    real = <span class="fn">sum</span>(lens); seps = <span class="fn">len</span>(lens)
+    <span class="fn">print</span>(<span class="st">f"{name:18s} padded useful={real/padded:.1%}  packed useful={real/(real+seps):.2%}"</span>)
+<span class="kw">for</span> L <span class="kw">in</span> [<span class="nm">128</span>, <span class="nm">512</span>, <span class="nm">1024</span>, <span class="nm">2048</span>]:
+    <span class="fn">print</span>(<span class="st">f"len {L:5d} padded to 2048: attention work {(2048/L)**2:7.0f}x, FLOP waste {1-L/2048:.1%}"</span>)
+    </div>
+    <p>Verified output (numpy 2.3.5):</p>
+    <div class="code" data-lang="output">
+[[[1 0 0 0 0]   &lt;- pad mask + causal, rows of length 3, 5, 2
+  [1 1 0 0 0]
+  [1 1 1 0 0]
+  [0 0 0 0 0]
+  [0 0 0 0 0]]
+ [[1 0 0 0 0]
+  [1 1 0 0 0]
+  [1 1 1 0 0]
+  [1 1 1 1 0]
+  [1 1 1 1 1]]
+ [[1 0 0 0 0]
+  [1 1 0 0 0]
+  [0 0 0 0 0]
+  [0 0 0 0 0]
+  [0 0 0 0 0]]]
+
+[[1 0 0 0 0]   &lt;- block-diagonal causal (packed: doc A = 0..2, doc B = 3..4)
+ [1 1 0 0 0]
+ [1 1 1 0 0]
+ [0 0 0 1 0]
+ [0 0 0 1 1]]
+
+sorted 1..1024     padded useful=25.0%  packed useful=99.81%
+random 1..1024     padded useful=25.8%  packed useful=99.81%
+len   128 padded to 2048: attention work     256x, FLOP waste 93.8%
+len   512 padded to 2048: attention work      16x, FLOP waste 75.0%
+len  1024 padded to 2048: attention work       4x, FLOP waste 50.0%
+len  2048 padded to 2048: attention work       1x, FLOP waste  0.0%
+    </div>
+
+    <p>Three readings, all decision-relevant:</p>
+    <ol>
+      <li><strong>Padded packing is 25% useful</strong> for lengths uniform in 1..1024 at a 2,048 context, because most
+      rows are mostly pad. The rectangle forces the longest element to set the cost for everything in it.</li>
+      <li><strong>Packed is 99.81% useful</strong>: the only overhead is one separator token per document. That is the
+      throughput you are leaving on the table if you pad naively.</li>
+      <li><strong>The work ratio is quadratic.</strong> A 128-token document in a 2,048-token padded row does
+      <strong>256&times;</strong> the attention of a true 128-token sequence. Since attention is only part of the block's
+      cost (the FFN is linear in tokens), the end-to-end waste in wall-clock time is smaller than 256&times; &mdash; but
+      it is still the single largest avoidable inefficiency in a training pipeline.</li>
+    </ol>
+    <p>Note the block-diagonal matrix above: rows 3 and 4 (document B) have <strong>zeros</strong> in columns 0&ndash;2.
+    A plain causal mask would have given them ones there, and that is the leak.</p>
+
+    <h3>The two other things packing breaks</h3>
+    <ul>
+      <li><strong>Position ids.</strong> If positions continue across the boundary, document B's first token sees
+      position 3 instead of 0, and RoPE (L08) encodes a distance that does not exist. Reset position ids at each
+      document start (or use the packed-offset variant your framework expects).</li>
+      <li><strong>Loss across the boundary.</strong> The last token of A predicting the first token of B trains the model
+      on a transition that never occurs in the data. Whether that is acceptable is a modelling choice (some pipelines
+      deliberately keep it), but it must be a choice. The loss mask is a separate tensor from the attention mask.</li>
+    </ul>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a15-s4">4 &middot; Your hands <a class="hook" href="#a15-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; The mask test suite (run this against every attention implementation)</h4>
+      <p>Five assertions that catch every masking bug in this page. They are cheap, deterministic, and fail loudly.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+<span class="kw">def</span> <span class="fn">attn</span>(Q, K, V, M=<span class="kw">None</span>):
+    S = Q @ K.T / np.sqrt(Q.shape[-<span class="nm">1</span>])
+    <span class="kw">if</span> M <span class="kw">is not None</span>: S = S + M
+    A = np.exp(S - S.max(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>)); A = A / A.sum(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+    <span class="kw">return</span> A @ V, A
+rng = np.random.default_rng(<span class="nm">0</span>)
+n, d = <span class="nm">6</span>, <span class="nm">8</span>
+Q, K, V = (rng.normal(size=(n, d)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">3</span>))
+C = np.triu(np.full((n, n), -np.inf), k=<span class="nm">1</span>)
+O, A = <span class="fn">attn</span>(Q, K, V, C)
+<span class="fn">print</span>(<span class="st">"1 causal triangular:"</span>, np.allclose(A, np.tril(A)))
+<span class="fn">print</span>(<span class="st">"2 row sums 1:"</span>, np.allclose(A.sum(-<span class="nm">1</span>), <span class="nm">1.0</span>))
+<span class="fn">print</span>(<span class="st">"3 first row == V[0]:"</span>, np.allclose(O[<span class="nm">0</span>], V[<span class="nm">0</span>]))
+m = np.array([[<span class="nm">0</span>, <span class="nm">0</span>, -np.inf, -np.inf, -np.inf, -np.inf]])
+<span class="fn">print</span>(<span class="st">"4 mask equals delete:"</span>, np.allclose(<span class="fn">attn</span>(Q, K, V, m)[<span class="nm">0</span>], <span class="fn">attn</span>(Q, K[:<span class="nm">2</span>], V[:<span class="nm">2</span>])[<span class="nm">0</span>]))
+blk = np.zeros((n, n)); blk[:<span class="nm">4</span>, :<span class="nm">4</span>] = <span class="nm">1</span>; blk[<span class="nm">4</span>:, <span class="nm">4</span>:] = <span class="nm">1</span>   <span class="cm"># doc A = positions 0..3, doc B = 4..5</span>
+Pb = np.tril(np.ones((n, n))) * blk
+Mb = np.where(Pb &gt; <span class="nm">0</span>, <span class="nm">0.0</span>, -np.inf)
+Ob, Ab = <span class="fn">attn</span>(Q, K, V, Mb)
+ref_b = <span class="fn">attn</span>(Q[<span class="nm">4</span>:], K[<span class="nm">4</span>:], V[<span class="nm">4</span>:])[<span class="nm">1</span>]
+<span class="fn">print</span>(<span class="st">"5 packed: doc B ignores doc A:"</span>, np.allclose(Ab[<span class="nm">4</span>:, :<span class="nm">4</span>], <span class="nm">0.0</span>) <span class="kw">and</span> np.allclose(Ab[<span class="nm">4</span>:, <span class="nm">4</span>:], ref_b))
+<span class="fn">print</span>(<span class="st">"5b same with a PLAIN causal mask (should be False):"</span>, np.allclose(A[<span class="nm">4</span>:, <span class="nm">4</span>:], ref_b))
+      </div>
+      <p class="expect">Assertions 1&ndash;5 all print <code>True</code>, and 5b prints <strong>False</strong> &mdash; that
+      last line is the point. Test 5 is the packing-invariance test: <em>the second document's attention weights must be
+      exactly what they would be if it were the only document in the sequence, and its weight on document A's keys must
+      be exactly zero</em>. Two details matter when you write it yourself. (a) Compare <strong>attention rows</strong>,
+      not output vectors &mdash; outputs can coincide by accident, and the first token of any causal sequence always has
+      weight 1.0, which makes it useless as a test key. (b) Document B must contain at least two tokens, because a
+      single-token document also trivially has weight 1.0 on itself and its rows cannot distinguish the two cases &mdash;
+      a false PASS. Run the same comparison with a plain causal mask and it fails, which is the leak, measured.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Compute your own padding waste before optimising anything</h4>
+      <p>Measure the distribution of your real lengths, then compute the actual fraction of compute spent on pads and the
+      actual gain from packing. Do not estimate this from a paper &mdash; tokenise 10,000 of your own documents.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">0</span>)
+<span class="cm"># replace with real tokenised lengths:</span>
+lengths = (rng.lognormal(mean=<span class="nm">5.5</span>, sigma=<span class="nm">1.0</span>, size=<span class="nm">10000</span>)).astype(<span class="kw">int</span>) + <span class="nm">1</span>
+lengths = lengths[lengths &lt; <span class="nm">8192</span>]
+ctx = <span class="nm">2048</span>
+padded_tokens = <span class="fn">int</span>((np.ceil(lengths / ctx) * ctx).sum())
+real = <span class="fn">int</span>(lengths.sum())
+<span class="fn">print</span>(<span class="st">f"docs={len(lengths)} mean={lengths.mean():.0f} p50={np.median(lengths):.0f} p99={np.percentile(lengths,99):.0f}"</span>)
+<span class="fn">print</span>(<span class="st">f"padded tokens={padded_tokens} real={real} useful={real/padded_tokens:.1%}"</span>)
+<span class="fn">print</span>(<span class="st">f"attention work with padding vs packed (assuming rows padded to 2x mean length): ~{(2*lengths.mean()/lengths.mean())**2:.1f}x"</span>)
+      </div>
+      <p class="expect">Verified for a lognormal length distribution (mean 402, median 243, p99 2,469 tokens) at a 2,048
+      context: 20,867,072 padded tokens against <strong>4,024,685 real tokens, i.e. only 19.3% useful</strong>. That is
+      the honest number for a realistic corpus and it is worse than the 25% in section 3, because a long tail above the
+      context length forces whole extra padded rows. The counterfactual is direct: build batches by <em>total tokens</em>
+      (after sorting by length) and the useful fraction rises to 90%+ at the same GPU memory. Falsifier: if your lengths
+      were all near 2,048 the padded fraction would be close to 100% and packing would buy almost nothing &mdash; measure
+      before building the machinery.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Break it on purpose: the cross-document probe</h4>
+      <p>The leak from packing is only visible if you look for it. Build a probe: pack two unrelated documents, then
+      compare the loss at the boundary to the loss when each document is processed alone.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># Deterministic probe design &mdash; run against your own model</span>
+<span class="kw">def</span> <span class="fn">probe</span>(doc_a, doc_b):
+    packed = doc_a + [SEP] + doc_b
+    <span class="kw">return</span> {<span class="st">"loss_b_first_token_packed"</span>: <span class="st">"L(pack, pos=|a|+1)"</span>,
+            <span class="st">"loss_b_first_token_alone"</span>: <span class="st">"L(b, pos=0)"</span>,
+            <span class="st">"expect_if_masked"</span>: <span class="st">"equal to within numerical tolerance"</span>,
+            <span class="st">"expect_if_leaked"</span>: <span class="st">"packed loss much lower &mdash; A makes B predictable"</span>}
+<span class="fn">print</span>(<span class="fn">probe</span>([<span class="st">"alpha"</span>, <span class="st">"beta"</span>], [<span class="st">"gamma"</span>, <span class="st">"delta"</span>]))
+      </div>
+      <p class="expect">If the packed loss is systematically lower and the gap grows with the number of boundaries, the
+      mask is incomplete. This probe is also the test that catches an unintended benefit: some pipelines <em>want</em> a
+      small amount of cross-document learning (e.g. instruction+response pairs), so the probe forces you to state which
+      behaviour you intended. Make it part of the pipeline test, not a one-off.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a15-s5">5 &middot; Failure modes <a class="hook" href="#a15-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Plain causal mask on packed data.</strong> Symptom: loss looks better than expected and is sometimes <em>too</em> good on synthetic tasks; the model can predict a document's opening from the previous document. Test 5b catches it.</li>
+        <li><strong>Attention mask right, loss mask wrong.</strong> Symptom: loss is inflated by predictions over padding or across boundaries; the model is trained to emit the separator. Check the number of loss terms per batch equals the number of real predicting tokens.</li>
+        <li><strong>Position ids not reset after packing.</strong> Symptom: with RoPE, the same document scores differently depending on its offset in the packed row; quality degrades in proportion to the number of documents per row.</li>
+        <li><strong>Padding placed on the left for causal models.</strong> Symptom: every real sequence's first tokens attend to pad; generation quality collapses while validation perplexity on padded batches looks normal. Right-padding is required for causal LM training.</li>
+        <li><strong>&minus;&infin; sentinel and fp16.</strong> Symptom: NaN on padded batches only, only on the mixed-precision path. Use a representable large negative or mask structurally (L06, L21).</li>
+        <li><strong>Fully-masked rows.</strong> Symptom: NaN in the first step, or the padding rows' outputs leak into the loss because their positional slice was not excluded. Exclude pad positions from the loss and never let them contribute.</li>
+        <li><strong>Batch size controlled by document count.</strong> Symptom: throughput varies by 3&times; between batches and GPU memory OOMs on unlucky batches. Batch by total tokens after sorting by length (token-budget batching).</li>
+        <li><strong>Packing changes the effective sequence length of the learning problem.</strong> Symptom: a recipe tuned with padding performs differently after switching to packing &mdash; the model now sees many more tokens per step and many more boundaries. Re-check the LR and warmup (L14).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a15-s6">6 &middot; Connects to <a class="hook" href="#a15-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="06-attention-core.html">L06</a>, <a class="tag-a" href="08-positional.html">L08</a>. &nbsp;
+    <strong>Unlocks:</strong> efficient training, correct loss, serving batching.</p>
+    <ul>
+      <li><a class="tag-a" href="14-lr-schedules.html">L14 &middot; LR schedules</a> &mdash; steps = tokens &divide; (batch &times; seq); packing changes tokens per step.</li>
+      <li><a class="tag-a" href="16-loss-perplexity.html">L16 &middot; Loss</a> &mdash; the loss mask and the normalisation constant are here, at the batching layer.</li>
+      <li><a class="tag-a" href="19-full-transformer.html">L19 &middot; Full transformer</a> &mdash; the mask plugs into the block; this page's tests are how you know it is right.</li>
+      <li><a class="tag-a" href="23-data-corpora.html">L23 &middot; Corpora</a> &mdash; document boundaries come from the data pipeline; dedup groups and length distributions are what packing exploits.</li>
+      <li><a class="tag-b" href="../track-b/38-flash-attention.html">L38 &middot; FlashAttention</a> &mdash; variable-length masking is implemented in the kernel; the semantics must match this page exactly.</li>
+      <li><a class="tag-b" href="../track-b/44-inference-serving.html">L44 &middot; Serving</a> &mdash; continuous batching is the inference-time version of the same problem, with a paged mask.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: for every training batch, log <code>(real_tokens, padded_tokens, num_boundaries, loss_terms)</code>.
+      `loss_terms` must equal real predicting tokens; a mismatch means the loss mask and the data layout disagree, and
+      it is visible before the first optimiser step.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a15-s7">7 &middot; Self-check <a class="hook" href="#a15-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A batch contains a 100-token and a 4,000-token document. What fraction of attention compute is wasted on the short one, and what does packing recover?</p>
+        <details><summary>Reveal answer</summary><p>Padded to 4,000, the 100-token document's attention work is (4,000/100)<sup>2</sup> = <strong>1,600&times;</strong> what it needs; 99.94% of its attention compute is on pads. Packing recovers essentially all of it but only for the <em>attention</em> term; the FFN cost is linear in padded length, so its waste is 40&times;. End-to-end you typically see 2&ndash;5&times; not 1,600&times;, which is exactly why you compute both terms before quoting a speedup.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Give the exact mask condition for packed causal attention, and explain why the causal part alone is insufficient.</p>
+        <details><summary>Reveal answer</summary><p>Key j is visible to query i iff <code>j &lt;= i AND block(i) == block(j)</code>. A causal mask alone permits j &lt; i for all earlier positions, including those in previous documents; for the <em>first</em> document in a packed row the block condition adds nothing, but every subsequent document has earlier positions from other documents that the causal mask lets through. Hence the leak is largest for documents placed late in the row, which is also where it is hardest to notice.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: after switching to packing, training loss drops faster than expected but held-out perplexity on clean single documents worsens. What is the most likely cause?</p>
+        <details><summary>Reveal answer</summary><p>Cross-document leakage: the model is learning to predict a document's start from the previous document, a shortcut that does not exist at inference time. Verify with the packing-invariance test (Experiment 1, test 5) and the boundary probe (Experiment 3). Secondary candidates: position ids not reset (breaks the relative-distance statistics the model relies on) and the loss mask letting boundary transitions count as targets.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why must the attention mask and the loss mask be tested separately?</p>
+        <details><summary>Reveal answer</summary><p>They answer different questions and are computed from the same lengths by different code. The attention mask decides what information a prediction may use; the loss mask decides which predictions count. A model with a correct attention mask and a broken loss mask produces unbiased predictions but a biased gradient (it is graded on padding or on boundary transitions), which looks like "training works but never converges" and is invisible without counting loss terms. Test 5 checks the attention mask; the <code>loss_terms == real_predicting_tokens</code> assertion checks the loss mask.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is token-budget batching better than a fixed document count?</p>
+        <details><summary>Reveal answer</summary><p>Because cost and memory are functions of tokens, not documents. Batches with a fixed number of documents vary in token count by orders of magnitude (one 8,000-token doc equals 80 100-token docs), so memory spikes and step time become unpredictable, and the average useful fraction is low. Batching to a fixed total-token budget (after sorting by length, with some shuffling to preserve randomness) makes both memory and step time predictable and raises the useful fraction toward 100%. The cost is a correlation between length and batch composition, which you mitigate by shuffling within length buckets.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="14-lr-schedules.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L14 &middot; LR schedules &amp; warmup</span></a>
+    <a class="next" href="16-loss-perplexity.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L16 &middot; Loss, perplexity, bits-per-byte</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

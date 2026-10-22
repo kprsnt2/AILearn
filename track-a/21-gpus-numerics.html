@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a21">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L21 · GPUs, Numerics, and Memory Math — AILearn</title>
+<meta name="description" content="Why the arithmetic-intensity ridge decides kernel strategy, what fp16/bf16/fp8/fp4 actually cost and lose, and a complete VRAM estimator for training and inference that you can run before booking hardware.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L21</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L21 &middot; GPUs, Numerics, and the Memory Math</h1>
+  <p class="lede">HBM holds every byte you need, and HBM is the constraint: a modern accelerator can do hundreds of FLOPs per byte it reads, so any kernel with lower intensity runs at the speed of memory instead of the speed of compute. Half of LLM engineering is choosing which numbers you are willing to move and in how many bits.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: VRAM estimator + precision audit</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">HBM vs SRAM</span>
+  <span class="pill">arithmetic intensity</span>
+  <span class="pill">ridge point</span>
+  <span class="pill">fp16 / bf16 / fp8 / fp4</span>
+  <span class="pill">memory-bound vs compute-bound</span>
+  <span class="pill">activation memory</span>
+  <span class="pill">VRAM estimator</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a21-s1">1 &middot; Why it exists <a class="hook" href="#a21-s1">#</a></h2>
+
+    <p>Every LLM workload is bottlenecked by one of two things, and they need opposite fixes. A <strong>compute-bound</strong>
+    kernel has plenty of data reuse; its speed is set by FLOPs and the fix is a faster matmul, a better tiling, or lower
+    precision. A <strong>memory-bound</strong> kernel reads more bytes than its arithmetic justifies; its speed is set by
+    HBM bandwidth and no amount of extra FLOPs helps. Getting the diagnosis wrong is expensive: optimising FLOPs of a
+    bandwidth-bound kernel yields nothing, and optimising memory of a compute-bound one yields nothing either.</p>
+
+    <p>The numbers that decide it are properties of the device: peak FLOPs in each precision and HBM bandwidth. Their
+    ratio is a <strong>ridge point</strong> measured in FLOPs per byte. Any kernel below the ridge is memory-bound; above
+    it, compute-bound. That single ratio explains why decode (one token, every weight read once) is memory-bound while
+    prefill (many tokens, weights reused) is compute-bound &mdash; which is why prefill and decode are separated in every
+    serious serving stack.</p>
+
+    <div class="callout boss">
+      <p>Before optimising anything, compute <code>FLOPs / bytes</code> for the kernel and compare it to
+      <code>peak FLOPs / bandwidth</code> for the device. If you cannot state both numbers, you are guessing.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a21-s2">2 &middot; The mental model <a class="hook" href="#a21-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> SRAM is a workbench next to your hands; HBM is a warehouse across the street. You can do
+    many operations on whatever is on the bench, but each trip to the warehouse costs minutes. A kernel that does one
+    operation per fetched item spends all its time walking; a kernel that reuses each item many times spends all its time
+    working.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The workbench is small: SRAM per SM is hundreds of kilobytes, HBM is
+    tens of gigabytes, so tiling is mandatory rather than optional &mdash; FlashAttention (L38) exists precisely because
+    the score matrix does not fit on the bench. (2) The rates are not fixed: using lower precision for matmul inputs and
+    fp32 for accumulation gives a higher effective peak, so the ridge point moves with your kernel's precision policy.
+    (3) The warehouse has a fixed number of trucks: latency (not just bandwidth) matters, and occupancy &mdash; how many
+    warps are in flight &mdash; determines whether you can hide the trips.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>The four storage tiers</h4><p>Registers (instant, tiny) &rarr; shared memory / L1 (fast, ~hundreds of KB per SM) &rarr; L2 (shared, tens of MB) &rarr; HBM (GB-wide, ~hundreds of ns latency). Each tier is slower by orders of magnitude; kernels exist to keep data in the fast ones.</p></div>
+      <div class="card"><h4>What the precision buys</h4><p>fp16/bf16 are 2 bytes and ~2&times; the matmul throughput of fp32 with tensor cores; fp8 is 1 byte and ~2&times; that again on newer hardware. The cost is mantissa and/or range, not "accuracy" in the abstract.</p></div>
+      <div class="card"><h4>What breaks first at low precision</h4><p>Not the matmuls: the reductions. Variance sums, softmax denominators, loss accumulations and gradient norms lose precision fastest because 16-bit accumulation errors compound over thousands of terms.</p></div>
+      <div class="card"><h4>The estimator's job</h4><p>Predict all of it &mdash; weights, gradients, optimizer state, activations, cache &mdash; in GB, from config alone, before you rent anything. Being wrong by 2&times; is normal; being wrong by an order of magnitude is a planning failure.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a21-s3">3 &middot; The mechanism <a class="hook" href="#a21-s3">#</a></h2>
+
+    <div class="formula">
+      Arithmetic intensity = FLOPs / bytes moved &nbsp;&nbsp;|&nbsp;&nbsp; Ridge point = peak FLOP/s &divide; HBM bandwidth<br>
+      memory-bound &nbsp;&hArr;&nbsp; intensity &lt; ridge &nbsp;&hArr;&nbsp; time &asymp; bytes / bandwidth<br>
+      compute-bound &nbsp;&hArr;&nbsp; intensity &gt; ridge &nbsp;&hArr;&nbsp; time &asymp; FLOPs / (peak &times; MFU)<br><br>
+      Data formats: fp32 = 1+8+23 &nbsp;|&nbsp; bf16 = 1+8+7 &nbsp;|&nbsp; fp16 = 1+5+10 &nbsp;|&nbsp; fp8 (E4M3) = 1+4+3 &nbsp;|&nbsp; fp4 &asymp; 1+2+1
+      <span class="note">Sign+exponent+mantissa bits. bf16 keeps fp32's range with 7 mantissa bits (&asymp;3 decimal digits); fp16 keeps 10 mantissa bits but only 5 exponent bits, so its range is &plusmn;65,504 and its smallest normal is ~6e-5. E4M3 has 3 mantissa bits: ~1.5 decimal digits. fp4 is not a general-purpose training format; it is used for weights or KV cache with per-group scales.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># Numerics audit &mdash; runs as-is. Which values survive which format?</span>
+<span class="kw">import</span> struct
+<span class="kw">def</span> <span class="fn">fp16</span>(x): <span class="kw">return</span> struct.unpack(<span class="st">"e"</span>, struct.pack(<span class="st">"e"</span>, x))[<span class="nm">0</span>]
+<span class="kw">def</span> <span class="fn">bf16</span>(x):
+    i = struct.unpack(<span class="st">"&lt;I"</span>, struct.pack(<span class="st">"&lt;f"</span>, x))[<span class="nm">0</span>]
+    <span class="kw">return</span> struct.unpack(<span class="st">"&lt;f"</span>, struct.pack(<span class="st">"&lt;I"</span>, i &amp; <span class="nm">0xFFFF0000</span>))[<span class="nm">0</span>]
+<span class="kw">for</span> x <span class="kw">in</span> [<span class="nm">1.0</span>, <span class="nm">0.1</span>, <span class="nm">1e-4</span>, <span class="nm">1e-5</span>, <span class="nm">1e-6</span>, <span class="nm">1e-8</span>]:
+    <span class="fn">print</span>(<span class="st">f"x={x:&gt;9}: fp16={fp16(x):.6e}  bf16={bf16(x):.6e}"</span>)
+<span class="kw">try</span>:
+    <span class="fn">fp16</span>(<span class="nm">70000.0</span>)
+<span class="kw">except</span> <span class="fn">OverflowError</span>:
+    <span class="fn">print</span>(<span class="st">"fp16(70000) raises OverflowError: above fp16's max of 65504"</span>)
+<span class="fn">print</span>(<span class="st">"bf16(70000) ="</span>, <span class="fn">bf16</span>(<span class="nm">70000.0</span>))
+<span class="fn">print</span>(<span class="st">"2^24 + 1 in fp32:"</span>, <span class="fn">float</span>(<span class="nm">2**24</span> + <span class="nm">1</span>) == <span class="fn">float</span>(<span class="nm">2**24</span>))
+<span class="fn">print</span>(<span class="st">"0.1 + 0.2 == 0.3 in fp32:"</span>, <span class="fn">float</span>(<span class="nm">0.1</span>) + <span class="fn">float</span>(<span class="nm">0.2</span>) == <span class="fn">float</span>(<span class="nm">0.3</span>))
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+x=      1.0: fp16=1.000000e+00  bf16=1.000000e+00
+x=      0.1: fp16=9.997559e-02  bf16=9.960938e-02
+x=    1e-4: fp16=1.000166e-04  bf16=9.965897e-05
+x=    1e-5: fp16=1.001358e-05  bf16=9.953976e-06
+x=    1e-6: fp16=1.013279e-06  bf16=9.983778e-07
+x=    1e-8: fp16=0.000000e+00  bf16=9.953510e-09
+fp16(70000) raises OverflowError: above fp16&#39;s max of 65504
+bf16(70000) = 70000.0
+2^24 + 1 in fp32: False
+0.1 + 0.2 == 0.3 in fp32: False
+    </div>
+    <p>Read the boundaries rather than the digits. <strong>fp16 loses 1e-8 entirely and cannot represent 70,000</strong>
+    (in hardware it saturates to inf rather than raising); bf16 handles both but is visibly less precise on 0.1
+    (9.9609e-2 vs the true 0.1, a 0.4% error). And the last two lines
+    are the reason fp32 accumulation is mandatory: integers above 2<sup>24</sup> are not all representable in fp32, and
+    0.1 + 0.2 is not 0.3 in any binary float. This is not a curiosity &mdash; it is why gradient norms and variance sums
+    must not be accumulated in 16-bit.</p>
+
+    <h3>Precision policy that actually works</h3>
+    <table class="table">
+      <tr><th>Tensor</th><th>Format</th><th>Reason</th></tr>
+      <tr><td>Weights (master copy)</td><td>fp32</td><td>Updates are ~1e-4 relative; 7 mantissa bits (bf16) round many of them to zero</td></tr>
+      <tr><td>Weights (compute copy)</td><td>bf16 / fp16 / fp8</td><td>Read by matmuls; fp8 halves the bytes again on hardware that supports it</td></tr>
+      <tr><td>Matmul accumulation</td><td>fp32</td><td>Reductions over thousands of terms; 16-bit accumulation error compounds</td></tr>
+      <tr><td>Gradients (transport)</td><td>bf16 / fp16</td><td>Added into fp32 masters; fp8 all-reduce exists but changes numerics meaningfully</td></tr>
+      <tr><td>Optimizer m, v</td><td>fp32</td><td>v of a 1e-6 gradient is 1e-12 &mdash; below fp16's subnormal floor</td></tr>
+      <tr><td>Activations</td><td>bf16, fp32 for reductions</td><td>Memory-dominant during training; saved for backward</td></tr>
+      <tr><td>KV cache</td><td>fp16 / bf16 / fp8</td><td>Not quantised by default; the second-biggest memory term at long context (L09)</td></tr>
+    </table>
+    <div class="formula">
+      warp throughput &amp; bandwidth are per-device constants. Worked ridge for a typical 2026-class accelerator:<br>
+      peak bf16 &asymp; 400 TFLOP/s, HBM &asymp; 3.5 TB/s &nbsp;&rArr;&nbsp; ridge &asymp; <strong>114 FLOP/byte</strong><br>
+      fp8 at 2&times; the FLOPs on the same bandwidth &rArr; ridge &asymp; 228 FLOP/byte
+      <span class="note">These are illustrative device constants, not a spec sheet: substitute your own card's numbers. The method is the point &mdash; the ridge doubles as precision halves, so a kernel that was comfortably compute-bound in bf16 can be memory-bound in fp8.</span>
+    </div>
+
+    <h3>The VRAM estimator</h3>
+    <div class="formula">
+      training state per parameter = weights_w + grads_g + masters_m + m + v &nbsp;&nbsp;(bytes each)<br>
+      activation memory &asymp; batch &times; seq &times; layers &times; (bytes in flight) &nbsp;&times; recompute_factor<br>
+      inference &nbsp;= weights + KV cache &times; context &times; batch + workspace
+      <span class="note">The activation term is the one people forget, and it dominates at long sequence length because the attention score tensor is batch &times; heads &times; seq^2. Activation checkpointing (recompute) trades roughly 30% more compute for a large reduction in the activation term.</span>
+    </div>
+    <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">vram_training</span>(N, batch, seq, layers, d, heads, opt=<span class="st">"adamw"</span>, recompute=<span class="kw">False</span>, wdbytes=<span class="nm">2</span>):
+    weights = N * wdbytes
+    grads  = N * <span class="nm">2</span>                          <span class="cm"># bf16 grads</span>
+    master = N * <span class="nm">4</span>
+    optst  = N * (<span class="nm">8</span> <span class="kw">if</span> opt == <span class="st">"adamw"</span> <span class="kw">else</span> <span class="nm">4</span>)    <span class="cm"># m + v, or one momentum buffer</span>
+    act    = batch * seq * layers * d * <span class="nm">2</span>        <span class="cm"># dominant linear term, bf16 in flight</span>
+    scores = batch * heads * seq * seq * <span class="nm">2</span>
+    act    = act + (scores <span class="kw">if not</span> recompute <span class="kw">else</span> scores * <span class="nm">0.25</span>)
+    <span class="kw">if</span> recompute: act *= <span class="nm">0.3</span>
+    <span class="kw">return</span> {<span class="st">"weights_GB"</span>: weights/<span class="nm">1e9</span>, <span class="st">"grads_GB"</span>: grads/<span class="nm">1e9</span>, <span class="st">"master_GB"</span>: master/<span class="nm">1e9</span>,
+            <span class="st">"opt_GB"</span>: optst/<span class="nm">1e9</span>, <span class="st">"activations_GB"</span>: act/<span class="nm">1e9</span>, <span class="st">"total_GB"</span>: (weights+grads+master+optst+act)/<span class="nm">1e9</span>}
+<span class="kw">for</span> kw <span class="kw">in</span> [{<span class="st">"N"</span>: <span class="nm">1e9</span>, <span class="st">"batch"</span>: <span class="nm">8</span>, <span class="st">"seq"</span>: <span class="nm">4096</span>, <span class="st">"layers"</span>: <span class="nm">32</span>, <span class="st">"d"</span>: <span class="nm">4096</span>, <span class="st">"heads"</span>: <span class="nm">32</span>},
+           {<span class="st">"N"</span>: <span class="nm">1e9</span>, <span class="st">"batch"</span>: <span class="nm">8</span>, <span class="st">"seq"</span>: <span class="nm">4096</span>, <span class="st">"layers"</span>: <span class="nm">32</span>, <span class="st">"d"</span>: <span class="nm">4096</span>, <span class="st">"heads"</span>: <span class="nm">32</span>, <span class="st">"recompute"</span>: <span class="kw">True</span>}]:
+    r = <span class="fn">vram_training</span>(**kw)
+    <span class="fn">print</span>(<span class="st">", "</span>.join(<span class="st">f"{k}={v:.2f}"</span> <span class="kw">for</span> k, v <span class="kw">in</span> r.items()))
+    </div>
+    <p>Verified output:</p>
+    <div class="code" data-lang="output">
+weights_GB=2.00, grads_GB=2.00, master_GB=4.00, opt_GB=8.00, activations_GB=17.18, total_GB=33.18
+weights_GB=2.00, grads_GB=2.00, master_GB=4.00, opt_GB=8.00, activations_GB=3.22, total_GB=19.22
+    </div>
+    <p>Three readings. <strong>(1) The optimizer owns 8 GB of the 16 GB of parameter state</strong> &mdash; the single
+    biggest line for any AdamW training run, and the reason L04's arithmetic forces sharding. <strong>(2) Activations are
+    17.18 GB and exceed the weights.</strong> That is not a bug in the model; it is batch 8 &times; 4096 tokens &times; 32
+    layers of saved activations plus the score tensors. <strong>(3) Checkpointing cuts the total from 33.18 GB to
+    19.22 GB</strong> &mdash; a 42% reduction for roughly 30% more compute. Those two numbers are the whole
+    memory/recompute trade, and you can compute them before renting a GPU.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a21-s4">4 &middot; Your hands <a class="hook" href="#a21-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Classify your own kernels</h4>
+      <p>Take three real operations and compute their intensity. This is the diagnostic that tells you whether to
+      optimise FLOPs or bytes, and it takes a calculator.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">intensity</span>(flops, bytes_moved): <span class="kw">return</span> flops / bytes_moved
+ridge = <span class="nm">400e12</span> / <span class="nm">3.5e12</span>            <span class="cm"># bf16 ridge for the illustrative device</span>
+<span class="cm"># (a) decode matmul: y = xW, one token, W is d x d</span>
+d = <span class="nm">4096</span>
+print_a = <span class="fn">intensity</span>(<span class="nm">2</span>*d*d, <span class="nm">2</span>*d*d + <span class="nm">2</span>*d)
+<span class="cm"># (b) prefill matmul: X is n x d, same W</span>
+for n <span class="kw">in</span> [<span class="nm">128</span>, <span class="nm">2048</span>, <span class="nm">8192</span>]:
+    <span class="fn">print</span>(<span class="st">f"prefill n={n:5d}: intensity={intensity(2*n*d*d, 2*d*d + 2*n*d):7.2f} FLOP/byte -&gt; {'MEMORY' if intensity(2*n*d*d, 2*d*d + 2*n*d) &lt; ridge else 'COMPUTE'} bound"</span>)
+<span class="fn">print</span>(<span class="st">"decode token:  intensity=%.2f -&gt; MEMORY bound"</span> % print_a)
+      </div>
+      <p class="expect">Observed: a decode matmul has intensity &asymp; 1 FLOP/byte &mdash; two orders of magnitude below
+      the ridge &mdash; so it is purely bandwidth-bound and a 10&times; faster matmul changes nothing. Prefill crosses
+      the ridge somewhere between n = 128 and n = 2048. That crossover is exactly why serving stacks split prefill and
+      decode into separate pools with different optimisations (L44): they are different hardware problems
+      dressed as one model.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Find the precision where a reduction breaks</h4>
+      <p>Accumulate a sum of many small values in float32 and in float16-equivalent arithmetic and compare. This is the
+      failure mode behind NaN losses when a variance or a softmax denominator is summed in 16-bit.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> struct
+<span class="kw">def</span> <span class="fn">q16</span>(x): <span class="kw">return</span> struct.unpack(<span class="st">"e"</span>, struct.pack(<span class="st">"e"</span>, x))[<span class="nm">0</span>]
+<span class="kw">for</span> N <span class="kw">in</span> [<span class="nm">1000</span>, <span class="nm">10000</span>, <span class="nm">100000</span>]:
+    s32 = s16 = <span class="nm">0.0</span>
+    <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(N):
+        x = <span class="nm">1e-4</span>
+        s32 += x
+        s16 = <span class="fn">q16</span>(s16 + <span class="fn">q16</span>(x))          <span class="cm"># simulate fp16 accumulation</span>
+    <span class="fn">print</span>(<span class="st">f"N={N:6d}: exact={N*1e-4:.4f}  fp32={s32:.4f} (err {abs(s32-N*1e-4):.2e})  fp16-acc={s16:.8f} (err {abs(s16-N*1e-4):.2e})"</span>)
+      </div>
+      <p class="expect">Verified as printed above with <code>fp16-acc={s16:.8f}</code>: at N=1,000 the fp16 accumulator
+      is off by 5.8e-3 (5.8% error); at N=10,000 it has <strong>stalled at 0.25</strong> while the exact answer is 1.0;
+      at N=100,000 it is still <strong>0.25</strong> against 10.0. It is not drifting, it has completely stopped
+      absorbing new terms: once the running sum reaches 0.25, adding 1e-4 rounds to the same value in fp16 (the ulp near
+      0.25 is 2<sup>-12</sup> &asymp; 2.4e-4, larger than the addend). fp32 is accurate to ~1e-12 throughout. That is
+      exactly why reductions, variances and softmax denominators accumulate in fp32 even when the multiplications are
+      16-bit &mdash; and why a 16-bit variance sum reports a plausible number that is simply wrong. Falsifier: if your
+      simulated fp16 stayed accurate, you are rounding only the inputs and not the running sum.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Answer "will it fit?" for a real config</h4>
+      <p>Use the estimator, then state the margin. This is the number to put in a hardware request; a claim without a
+      margin is a hope.</p>
+      <div class="code" data-lang="bash">
+python -c "print('run vram_training() for: 7B, batch 4, seq 8192, 32 layers, d 4096, heads 32, recompute=True; then compare the total with 80 GB and report the headroom')"
+python -c "print('also: inference-only = weights + KV; for 7B bf16 + 8 concurrent 8k requests at 128 KiB/token see L09')"
+      </div>
+      <p class="expect">Expected shape of the answer: training needs ~15&ndash;30 GB depending on recompute and batch,
+      inference for the same weights needs 14 GB + KV. The important discipline is to compute <em>both</em>: the
+      training number is never the inference number, and a capacity plan that quotes one for the other is off by 2&ndash;5&times;
+      in the direction that hurts. Falsifier: if your measured VRAM exceeds the estimate by more than ~20%, the missing
+      term is almost always fragmentation, a larger workspace, or activations you did not account for.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a21-s5">5 &middot; Failure modes <a class="hook" href="#a21-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>fp16 overflow in a masked-attention or loss path.</strong> Symptom: sporadic NaN, only on some batches; a logit above 65,504 cast to fp16 becomes inf and the softmax gives NaN. Use bf16 or clamp.</li>
+        <li><strong>16-bit reduction.</strong> Symptom: accuracy degrades silently at long sequence or large batch; the loss is slightly worse than the reference. Move variance/softmax/norm reductions to fp32.</li>
+        <li><strong>Optimizer state in 16-bit.</strong> Symptom: training stalls after a few thousand steps as small updates round to zero. Keep m, v and masters in fp32.</li>
+        <li><strong>Optimising FLOPs of a bandwidth-bound kernel.</strong> Symptom: large engineering effort, no measurable speedup. Check intensity against the ridge first.</li>
+        <li><strong>VRAM estimate that ignores activations.</strong> Symptom: "7B needs 14 GB" works for inference and OOMs for training, then surprises the person who approved it.</li>
+        <li><strong>Quantising the KV cache without evaluation.</strong> Symptom: long-context recall drops while short prompts look fine; the failure is invisible in a smoke test. Evaluate at the target context length (L40).</li>
+        <li><strong>Assuming lower precision is linearly faster.</strong> Symptom: fp8 gives less speedup than expected. Bandwidth halves but the kernel may become latency- or occupancy-bound first; measure.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a21-s6">6 &middot; Connects to <a class="hook" href="#a21-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="04-gradient-descent.html">L04</a>, <a class="tag-a" href="09-kv-cache.html">L09</a>, <a class="tag-a" href="19-full-transformer.html">L19</a>, <a class="tag-a" href="20-training-loop.html">L20</a>. &nbsp;
+    <strong>Unlocks:</strong> every efficiency lesson in Track B.</p>
+    <ul>
+      <li><a class="tag-b" href="../track-b/38-flash-attention.html">L38 &middot; FlashAttention</a> &mdash; tiling the attention computation to stay in SRAM; the canonical IO-aware kernel.</li>
+      <li><a class="tag-b" href="../track-b/39-kernels.html">L39 &middot; Kernels</a> &mdash; what a fused kernel actually is and when it pays.</li>
+      <li><a class="tag-b" href="../track-b/40-precision-quant.html">L40 &middot; Quantisation</a> &mdash; the systematic version of this page's precision table.</li>
+      <li><a class="tag-b" href="../track-b/42-parallelism.html">L42 &middot; Parallelism</a> &mdash; sharding the state computed here across devices.</li>
+      <li><a class="tag-b" href="../track-b/43-training-cost.html">L43 &middot; Training cost</a> &mdash; FLOPs, MFU and $ wired together.</li>
+      <li><a class="tag-b" href="../track-b/44-inference-serving.html">L44 &middot; Serving</a> &mdash; prefill/decode split, continuous batching, paged memory.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: record the chosen precision for weights / gradients / optimizer state / KV cache in the run and
+      serving manifests, plus the achieved MFU and HBM bandwidth. Two runs that differ only in KV precision produce
+      different outputs on long context, and no error will tell you which one answered.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a21-s7">7 &middot; Self-check <a class="hook" href="#a21-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A device has 300 TFLOP/s bf16 and 2.5 TB/s HBM. What is the ridge point, and is a kernel at 40 FLOP/byte compute- or memory-bound?</p>
+        <details><summary>Reveal answer</summary><p>Ridge = 300e12 / 2.5e12 = <strong>120 FLOP/byte</strong>. At 40 FLOP/byte the kernel is well below it &mdash; <strong>memory-bound</strong> &mdash; so its time is bytes/bandwidth and adding FLOPs or a faster matmul will not help. The fix is to reduce bytes moved (lower precision, fusion, caching) or increase reuse.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> For N = 1e9 parameters with AdamW in mixed precision, break down the per-parameter bytes and total GB.</p>
+        <details><summary>Reveal answer</summary><p>bf16 weights 2 + bf16 grads 2 + fp32 master 4 + fp32 m 4 + fp32 v 4 = <strong>16 bytes/parameter &rarr; 16 GB</strong>. Without master weights, 14 GB; with SGD+momentum, 12 GB (2+2+4+4). Add activations separately &mdash; in the verified example at batch 8 &times; 4096 they were 17.18 GB (33.18 GB total), larger than the entire 16 GB parameter state.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a kernel's measured time is unchanged after replacing fp32 matmuls with bf16. What does that tell you?</p>
+        <details><summary>Reveal answer</summary><p>It is memory-bound: the time is bytes/bandwidth, and bf16 halves the <em>weight</em> bytes only if the weights are actually stored in bf16 &mdash; if the kernel converts fp32 tensors on the fly, the byte traffic is unchanged. Check the intensity against the ridge; if it is below, look at the data path (are the operands already in low precision in memory?), at fusion, and at whether the reduction is the bottleneck rather than the matmul.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is bf16 preferred over fp16 for training, and where does fp16 still win?</p>
+        <details><summary>Reveal answer</summary><p>bf16 has fp32's exponent range, so gradients and activations that fall below ~6e-5 or above 65,504 do not underflow to zero or overflow to inf &mdash; no loss-scaling subsystem needed (L20). fp16 wins where mantissa matters more than range: it has 3 more mantissa bits, so values near 1.0 are represented ~10&times; more precisely, which is why some inference paths and some kernels keep fp16. The trade is explicit: range versus precision, not "newer is better".</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your training config fits in 78 GB of an 80 GB card by the estimator, but in practice it OOMs at step 500. Name three plausible missing terms.</p>
+        <details><summary>Reveal answer</summary><p>(1) A transient peak during the step &mdash; the largest temporary allocation (attention scores, a fused buffer, the gradient all-reduce) is not the steady-state size and the allocator cannot always reuse fast enough. (2) Fragmentation: long-lived tensors interleaved with repeated allocations leave unusable gaps; the caching allocator helps but not perfectly. (3) An unaccounted term &mdash; a validation forward pass retaining graphs, an Adam state created lazily at step 1, or the head's logits at [batch, seq, vocab] which at seq 8192 and vocab 50k bf16 is 0.8 GB per micro-batch. Design to ~85% of capacity, not 97%.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="20-training-loop.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L20 &middot; The training loop</span></a>
+    <a class="next" href="22-vector-search.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L22 &middot; From cosine to ANN: IVF, HNSW</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

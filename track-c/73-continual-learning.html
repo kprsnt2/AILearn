@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c73">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L73 &middot; Continual learning and forgetting during post-training &mdash; AILearn</title>
+<meta name="description" content="Forgetting as a measurable regression: the capability probe suite, replay economics, and the per-capability gate that catches what averages hide.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L73</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L73 &middot; Continual learning and forgetting during post-training</h1>
+  <p class="lede">Every stage that improves its own metric can silently overwrite a capability from two stages ago. This page measures forgetting per capability, prices replay, and builds the gate that refuses the checkpoint instead of documenting the loss later.</p>
+  <div class="chips">
+    <span class="chip">~25 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: measure forgetting</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">catastrophic forgetting</span>
+  <span class="pill">capability probes</span>
+  <span class="pill">replay</span>
+  <span class="pill">adapters</span>
+  <span class="pill">capability floor</span>
+  <span class="pill">probe contamination</span>
+  <span class="pill">stage order</span>
+  <span class="pill">regression gate</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c73-s1">1 &middot; Why it exists <a class="hook" href="#c73-s1">#</a></h2>
+
+    <p>You fine-tune a model to be excellent at client-specific reporting. Two weeks later it cannot
+    summarise a transcript it used to summarise well. Nothing was deleted, no data was corrupted &mdash; the
+    gradient simply overwrote the weights that supported the old behaviour, because that is what gradient
+    descent does when the new data is narrow. The failure is <strong>catastrophic forgetting</strong> in
+    post-training, and in a multi-stage pipeline it is nearly invisible: every stage's gate measured its own
+    target behaviour, and nobody measured the behaviour from two stages ago.</p>
+
+    <p>It gets worse in the multi-stage case. Stage 3's SFT can degrade stage 1's capability; stage 4's RL
+    can degrade stage 3's format; and if the final model is compared only to the base, all the intermediate
+    regressions average out into a number that looks acceptable.</p>
+
+    <div class="callout boss">
+      <p>Forgetting is measurable and therefore manageable. The instrument is a frozen probe set per
+      capability, evaluated after every stage against the <em>previous</em> checkpoint and against the base.
+      A pipeline that cannot name what it forgot is not a pipeline; it is a sequence of unrelated fine-tunes.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c73-s2">2 &middot; The mental model <a class="hook" href="#c73-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> the weights are a shared resource. Training on distribution B moves the
+    parameters toward better behaviour on B, and the movement is not constrained to the subspace that B
+    needs. Where B's gradient is large, A's capability &mdash; which occupies the same parameters &mdash; degrades.</p>
+
+    <div class="formula">
+      forgetting<sub>A</sub> = acc<sub>A</sub>( &theta;<sub>before</sub> ) &minus; acc<sub>A</sub>( &theta;<sub>after</sub> ), &nbsp;&nbsp; for each capability A
+      <span class="note">Measure per capability on a frozen probe set. Positive values are forgetting; a capability whose accuracy falls 5 points is a regression, whatever the new task gained.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Mitigation</th><th>Mechanism</th><th>Cost</th><th>When it actually works</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Replay</strong></td><td>Mix a fraction of stage-1 data into stage-2 training</td><td>Data storage and a mix ratio to tune</td><td>Always, if the old data is available and the ratio is high enough</td></tr>
+        <tr><td><strong>Lower learning rate / fewer epochs</strong></td><td>Smaller parameter moves</td><td>Slower target-task learning</td><td>Small domain shifts; not for domain changes</td></tr>
+        <tr><td><strong>Adapters (LoRA et al.)</strong></td><td>Train a small added matrix; base weights frozen</td><td>Memory and a merge decision at serving</td><td>Tasks that are roughly additive; conflicts when adapters overlap</td></tr>
+        <tr><td><strong>Weight regularisation to the old model</strong></td><td>Penalise movement of important weights</td><td>Extra hyper-parameter; slows adaptation</td><td>Measured per-parameter importance is available</td></tr>
+        <tr><td><strong>Capability-floor gate</strong></td><td>Refuse the checkpoint if any probe drops beyond tolerance</td><td>A probe suite to maintain</td><td>Detection rather than prevention &mdash; always use it, alongside one of the above</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "shared resource" gets right</h4><p>It predicts the main empirical pattern:
+      forgetting scales with how far you train and how narrow the data is, not with model size. It also
+      explains why replay works so well &mdash; it restores the competing gradient.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Some apparent forgetting is not forgetting: the prompt
+      distribution or the chat template changed, and the capability is intact but unreachable. Before you
+      attribute a drop to training, re-run the probe through the exact serving path.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c73-s3">3 &middot; The mechanism <a class="hook" href="#c73-s3">#</a></h2>
+
+    <p>The gate arithmetic, per capability, with a tolerance that must be written before the run:</p>
+
+    <div class="formula">
+      pass &nbsp;&#8660;&nbsp; &forall; A &isin; capabilities: &nbsp; acc<sub>A</sub>(after) &ge; acc<sub>A</sub>(base) &minus; &tau;<sub>A</sub> &nbsp;&nbsp;and&nbsp;&nbsp; &Delta;acc<sub>A</sub> &ge; &minus;2&middot;SE<sub>A</sub>
+      <span class="note">&tau; is your tolerance per capability (0 for safety-critical probes). The second term keeps you from chasing noise: a drop within two standard errors is not evidence.</span>
+    </div>
+
+    <p>Two rules for the probe set:</p>
+    <ul>
+      <li><strong>One probe per capability, small and frozen.</strong> Thirty items per capability is enough to
+          catch a 10-point regression and cheap enough to run after every checkpoint.</li>
+      <li><strong>Probes are protected from every training stage.</strong> If a probe item appears in any stage's
+          data, it is not a probe. Hash the probe set and diff it against every data file (lesson 74).</li>
+    </ul>
+<div class="code" data-lang="python">
+<span class="cm"># L73: measure forgetting across sequential stages, and price replay. Pure stdlib.</span>
+CAPABILITIES = [<span class="st">"summarise"</span>, <span class="st">"json_format"</span>, <span class="st">"arithmetic"</span>, <span class="st">"refuse_unsafe"</span>, <span class="st">"cite_sources"</span>]
+BASE = {<span class="st">"summarise"</span>: <span class="nm">0.82</span>, <span class="st">"json_format"</span>: <span class="nm">0.91</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.74</span>,
+        <span class="st">"refuse_unsafe"</span>: <span class="nm">0.86</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.69</span>}
+<span class="cm"># After each stage: the capability accuracy, and which capability that stage's data emphasises</span>
+STAGES = [
+    (<span class="st">"sft-client-reporting"</span>, {<span class="st">"summarise"</span>: <span class="nm">0.84</span>, <span class="st">"json_format"</span>: <span class="nm">0.93</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.68</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.85</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.72</span>}),
+    (<span class="st">"pref-tone"</span>,            {<span class="st">"summarise"</span>: <span class="nm">0.85</span>, <span class="st">"json_format"</span>: <span class="nm">0.92</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.64</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.80</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.74</span>}),
+    (<span class="st">"rlvr-arithmetic"</span>,      {<span class="st">"summarise"</span>: <span class="nm">0.79</span>, <span class="st">"json_format"</span>: <span class="nm">0.88</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.83</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.76</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.71</span>}),
+]
+TOLERANCE = {<span class="st">"summarise"</span>: <span class="nm">0.02</span>, <span class="st">"json_format"</span>: <span class="nm">0.02</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.01</span>,
+             <span class="st">"refuse_unsafe"</span>: <span class="nm">0.005</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.02</span>}   <span class="cm"># safety-critical probe: 0.5 pts</span>
+
+hdr = f<span class="st">"{'stage':&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{c[:9]:&gt;11}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES) + f<span class="st">"{'verdict':&gt;9}"</span>
+<span class="kw">print</span>(hdr)
+<span class="kw">print</span>(f<span class="st">"{'base':&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{BASE[c]:&gt;11.2f}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES))
+worst = []
+<span class="kw">for</span> name, acc <span class="kw">in</span> STAGES:
+    deltas = {c: acc[c] - BASE[c] <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES}
+    fails = [c <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES <span class="kw">if</span> deltas[c] &lt; -TOLERANCE[c]]
+    <span class="kw">print</span>(f<span class="st">"{name:&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{acc[c]:&gt;7.2f}{'':&gt;4}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES)
+          + f<span class="st">"{'BLOCK' if fails else 'pass':&gt;9}"</span>)
+    <span class="kw">for</span> c <span class="kw">in</span> fails:
+        <span class="kw">print</span>(f<span class="st">"    {'':&lt;20}{c}: {deltas[c]:+.3f} vs tolerance -{TOLERANCE[c]:.3f}  &lt;- forgotten"</span>)
+    worst.extend(fails)
+
+<span class="kw">print</span>(<span class="st">"\ncapabilities forgotten at least once:"</span>,
+      sorted(set(worst)))
+<span class="kw">print</span>(<span class="st">"note: every stage's OWN target improved. summarise +0.03 at stage 1, then"</span>)
+<span class="kw">print</span>(<span class="st">"arithmetic collapsed at stages 1 and 2 before the arithmetic stage fixed it."</span>)
+
+<span class="cm"># replay pricing: what share of the batch must be old data to hold a capability?</span>
+<span class="kw">def</span> forgetting_with_replay(gap, replay_share):
+    <span class="st">""</span>"Simple model: forgetting <span class="kw">is</span> proportional to the new-data gradient pressure, which
+    scales <span class="kw">with</span> (<span class="nm">1</span> - replay_share). A capability survives <span class="kw">if</span> the pressure <span class="kw">is</span> small.<span class="st">""</span>"
+    pressure = (<span class="nm">1.0</span> - replay_share) * gap
+    <span class="kw">return</span> max(<span class="nm">0.0</span>, pressure)
+
+<span class="kw">print</span>(<span class="st">"\nreplay share needed to keep each capability's drop under its tolerance:"</span>)
+<span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES:
+    <span class="cm"># worst observed gap for that capability</span>
+    gap = max(<span class="nm">0.0</span>, BASE[c] - min(acc[c] <span class="kw">for</span> _, acc <span class="kw">in</span> STAGES))
+    need = <span class="nm">1.0</span> - TOLERANCE[c] / gap <span class="kw">if</span> gap &gt; TOLERANCE[c] <span class="kw">else</span> <span class="nm">0.0</span>
+    <span class="kw">print</span>(f<span class="st">"  {c:&lt;15} worst drop {gap:.3f}  -&gt; replay share &gt;= {need:.2f}"</span>)
+<span class="kw">print</span>(<span class="st">"\nread it as a floor, not a recipe: replay reduces the competing gradient, so the"</span>)
+<span class="kw">print</span>(<span class="st">"share must be high enough that the old capability is not outnumbered in every batch."</span>)
+</div><div class="code out-block" data-lang="output">
+stage                   summarise  json_form  arithmeti  refuse_un  cite_sour  verdict
+base                         0.82       0.91       0.74       0.86       0.69
+sft-client-reporting     0.84       0.93       0.68       0.85       0.72        BLOCK
+                        arithmetic: -0.060 vs tolerance -0.010  &lt;- forgotten
+                        refuse_unsafe: -0.010 vs tolerance -0.005  &lt;- forgotten
+pref-tone                0.85       0.92       0.64       0.80       0.74        BLOCK
+                        arithmetic: -0.100 vs tolerance -0.010  &lt;- forgotten
+                        refuse_unsafe: -0.060 vs tolerance -0.005  &lt;- forgotten
+rlvr-arithmetic          0.79       0.88       0.83       0.76       0.71        BLOCK
+                        summarise: -0.030 vs tolerance -0.020  &lt;- forgotten
+                        json_format: -0.030 vs tolerance -0.020  &lt;- forgotten
+                        refuse_unsafe: -0.100 vs tolerance -0.005  &lt;- forgotten
+
+capabilities forgotten at least once: ['arithmetic', 'json_format', 'refuse_unsafe', 'summarise']
+note: every stage's OWN target improved. summarise +0.03 at stage 1, then
+arithmetic collapsed at stages 1 and 2 before the arithmetic stage fixed it.
+
+replay share needed to keep each capability's drop under its tolerance:
+  summarise       worst drop 0.030  -&gt; replay share &gt;= 0.33
+  json_format     worst drop 0.030  -&gt; replay share &gt;= 0.33
+  arithmetic      worst drop 0.100  -&gt; replay share &gt;= 0.90
+  refuse_unsafe   worst drop 0.100  -&gt; replay share &gt;= 0.95
+  cite_sources    worst drop 0.000  -&gt; replay share &gt;= 0.00
+
+read it as a floor, not a recipe: replay reduces the competing gradient, so the
+share must be high enough that the old capability is not outnumbered in every batch.
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c73-s4">4 &middot; Your hands <a class="hook" href="#c73-s4">#</a></h2>
+
+    <p>Three labs: measure forgetting across three sequential stages, find the replay ratio that keeps it
+    inside tolerance, and run the probe-integrity check that stops a probe from being trained on.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the forgetting table for a three-stage pipeline</h4>
+      <p>Five frozen capability probes, a base reading, and three stages whose own targets all improve. Tolerances are per capability and the safety probe tolerates half a point.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L73: measure forgetting across sequential stages, and price replay. Pure stdlib.</span>
+CAPABILITIES = [<span class="st">"summarise"</span>, <span class="st">"json_format"</span>, <span class="st">"arithmetic"</span>, <span class="st">"refuse_unsafe"</span>, <span class="st">"cite_sources"</span>]
+BASE = {<span class="st">"summarise"</span>: <span class="nm">0.82</span>, <span class="st">"json_format"</span>: <span class="nm">0.91</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.74</span>,
+        <span class="st">"refuse_unsafe"</span>: <span class="nm">0.86</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.69</span>}
+<span class="cm"># After each stage: the capability accuracy, and which capability that stage's data emphasises</span>
+STAGES = [
+    (<span class="st">"sft-client-reporting"</span>, {<span class="st">"summarise"</span>: <span class="nm">0.84</span>, <span class="st">"json_format"</span>: <span class="nm">0.93</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.68</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.85</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.72</span>}),
+    (<span class="st">"pref-tone"</span>,            {<span class="st">"summarise"</span>: <span class="nm">0.85</span>, <span class="st">"json_format"</span>: <span class="nm">0.92</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.64</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.80</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.74</span>}),
+    (<span class="st">"rlvr-arithmetic"</span>,      {<span class="st">"summarise"</span>: <span class="nm">0.79</span>, <span class="st">"json_format"</span>: <span class="nm">0.88</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.83</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.76</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.71</span>}),
+]
+TOLERANCE = {<span class="st">"summarise"</span>: <span class="nm">0.02</span>, <span class="st">"json_format"</span>: <span class="nm">0.02</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.01</span>,
+             <span class="st">"refuse_unsafe"</span>: <span class="nm">0.005</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.02</span>}   <span class="cm"># safety-critical probe: 0.5 pts</span>
+
+hdr = f<span class="st">"{'stage':&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{c[:9]:&gt;11}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES) + f<span class="st">"{'verdict':&gt;9}"</span>
+<span class="kw">print</span>(hdr)
+<span class="kw">print</span>(f<span class="st">"{'base':&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{BASE[c]:&gt;11.2f}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES))
+worst = []
+<span class="kw">for</span> name, acc <span class="kw">in</span> STAGES:
+    deltas = {c: acc[c] - BASE[c] <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES}
+    fails = [c <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES <span class="kw">if</span> deltas[c] &lt; -TOLERANCE[c]]
+    <span class="kw">print</span>(f<span class="st">"{name:&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{acc[c]:&gt;7.2f}{'':&gt;4}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES)
+          + f<span class="st">"{'BLOCK' if fails else 'pass':&gt;9}"</span>)
+    <span class="kw">for</span> c <span class="kw">in</span> fails:
+        <span class="kw">print</span>(f<span class="st">"    {'':&lt;20}{c}: {deltas[c]:+.3f} vs tolerance -{TOLERANCE[c]:.3f}  &lt;- forgotten"</span>)
+    worst.extend(fails)
+
+<span class="kw">print</span>(<span class="st">"\ncapabilities forgotten at least once:"</span>,
+      sorted(set(worst)))
+<span class="kw">print</span>(<span class="st">"note: every stage's OWN target improved. summarise +0.03 at stage 1, then"</span>)
+<span class="kw">print</span>(<span class="st">"arithmetic collapsed at stages 1 and 2 before the arithmetic stage fixed it."</span>)
+
+<span class="cm"># replay pricing: what share of the batch must be old data to hold a capability?</span>
+<span class="kw">def</span> forgetting_with_replay(gap, replay_share):
+    <span class="st">""</span>"Simple model: forgetting <span class="kw">is</span> proportional to the new-data gradient pressure, which
+    scales <span class="kw">with</span> (<span class="nm">1</span> - replay_share). A capability survives <span class="kw">if</span> the pressure <span class="kw">is</span> small.<span class="st">""</span>"
+    pressure = (<span class="nm">1.0</span> - replay_share) * gap
+    <span class="kw">return</span> max(<span class="nm">0.0</span>, pressure)
+
+<span class="kw">print</span>(<span class="st">"\nreplay share needed to keep each capability's drop under its tolerance:"</span>)
+<span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES:
+    <span class="cm"># worst observed gap for that capability</span>
+    gap = max(<span class="nm">0.0</span>, BASE[c] - min(acc[c] <span class="kw">for</span> _, acc <span class="kw">in</span> STAGES))
+    need = <span class="nm">1.0</span> - TOLERANCE[c] / gap <span class="kw">if</span> gap &gt; TOLERANCE[c] <span class="kw">else</span> <span class="nm">0.0</span>
+    <span class="kw">print</span>(f<span class="st">"  {c:&lt;15} worst drop {gap:.3f}  -&gt; replay share &gt;= {need:.2f}"</span>)
+<span class="kw">print</span>(<span class="st">"\nread it as a floor, not a recipe: replay reduces the competing gradient, so the"</span>)
+<span class="kw">print</span>(<span class="st">"share must be high enough that the old capability is not outnumbered in every batch."</span>)
+</div><div class="code out-block" data-lang="output">
+stage                   summarise  json_form  arithmeti  refuse_un  cite_sour  verdict
+base                         0.82       0.91       0.74       0.86       0.69
+sft-client-reporting     0.84       0.93       0.68       0.85       0.72        BLOCK
+                        arithmetic: -0.060 vs tolerance -0.010  &lt;- forgotten
+                        refuse_unsafe: -0.010 vs tolerance -0.005  &lt;- forgotten
+pref-tone                0.85       0.92       0.64       0.80       0.74        BLOCK
+                        arithmetic: -0.100 vs tolerance -0.010  &lt;- forgotten
+                        refuse_unsafe: -0.060 vs tolerance -0.005  &lt;- forgotten
+rlvr-arithmetic          0.79       0.88       0.83       0.76       0.71        BLOCK
+                        summarise: -0.030 vs tolerance -0.020  &lt;- forgotten
+                        json_format: -0.030 vs tolerance -0.020  &lt;- forgotten
+                        refuse_unsafe: -0.100 vs tolerance -0.005  &lt;- forgotten
+
+capabilities forgotten at least once: ['arithmetic', 'json_format', 'refuse_unsafe', 'summarise']
+note: every stage's OWN target improved. summarise +0.03 at stage 1, then
+arithmetic collapsed at stages 1 and 2 before the arithmetic stage fixed it.
+
+replay share needed to keep each capability's drop under its tolerance:
+  summarise       worst drop 0.030  -&gt; replay share &gt;= 0.33
+  json_format     worst drop 0.030  -&gt; replay share &gt;= 0.33
+  arithmetic      worst drop 0.100  -&gt; replay share &gt;= 0.90
+  refuse_unsafe   worst drop 0.100  -&gt; replay share &gt;= 0.95
+  cite_sources    worst drop 0.000  -&gt; replay share &gt;= 0.00
+
+read it as a floor, not a recipe: replay reduces the competing gradient, so the
+share must be high enough that the old capability is not outnumbered in every batch.
+</div>
+      <p class="expect">Every stage is BLOCKED, and none of them for failing to improve its own target. Stage 2's tone work costs 6 points of arithmetic and 6 points of refusal behaviour; stage 3 recovers arithmetic and drops summarise and json_format. A final-versus-base comparison would have shown arithmetic +9 and hidden the other three.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; price replay</h4>
+      <p>The last block computes the replay share needed to hold each capability inside its tolerance, given its worst observed drop.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L73: measure forgetting across sequential stages, and price replay. Pure stdlib.</span>
+CAPABILITIES = [<span class="st">"summarise"</span>, <span class="st">"json_format"</span>, <span class="st">"arithmetic"</span>, <span class="st">"refuse_unsafe"</span>, <span class="st">"cite_sources"</span>]
+BASE = {<span class="st">"summarise"</span>: <span class="nm">0.82</span>, <span class="st">"json_format"</span>: <span class="nm">0.91</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.74</span>,
+        <span class="st">"refuse_unsafe"</span>: <span class="nm">0.86</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.69</span>}
+<span class="cm"># After each stage: the capability accuracy, and which capability that stage's data emphasises</span>
+STAGES = [
+    (<span class="st">"sft-client-reporting"</span>, {<span class="st">"summarise"</span>: <span class="nm">0.84</span>, <span class="st">"json_format"</span>: <span class="nm">0.93</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.68</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.85</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.72</span>}),
+    (<span class="st">"pref-tone"</span>,            {<span class="st">"summarise"</span>: <span class="nm">0.85</span>, <span class="st">"json_format"</span>: <span class="nm">0.92</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.64</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.80</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.74</span>}),
+    (<span class="st">"rlvr-arithmetic"</span>,      {<span class="st">"summarise"</span>: <span class="nm">0.79</span>, <span class="st">"json_format"</span>: <span class="nm">0.88</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.83</span>,
+                              <span class="st">"refuse_unsafe"</span>: <span class="nm">0.76</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.71</span>}),
+]
+TOLERANCE = {<span class="st">"summarise"</span>: <span class="nm">0.02</span>, <span class="st">"json_format"</span>: <span class="nm">0.02</span>, <span class="st">"arithmetic"</span>: <span class="nm">0.01</span>,
+             <span class="st">"refuse_unsafe"</span>: <span class="nm">0.005</span>, <span class="st">"cite_sources"</span>: <span class="nm">0.02</span>}   <span class="cm"># safety-critical probe: 0.5 pts</span>
+
+hdr = f<span class="st">"{'stage':&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{c[:9]:&gt;11}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES) + f<span class="st">"{'verdict':&gt;9}"</span>
+<span class="kw">print</span>(hdr)
+<span class="kw">print</span>(f<span class="st">"{'base':&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{BASE[c]:&gt;11.2f}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES))
+worst = []
+<span class="kw">for</span> name, acc <span class="kw">in</span> STAGES:
+    deltas = {c: acc[c] - BASE[c] <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES}
+    fails = [c <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES <span class="kw">if</span> deltas[c] &lt; -TOLERANCE[c]]
+    <span class="kw">print</span>(f<span class="st">"{name:&lt;22}"</span> + <span class="st">""</span>.join(f<span class="st">"{acc[c]:&gt;7.2f}{'':&gt;4}"</span> <span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES)
+          + f<span class="st">"{'BLOCK' if fails else 'pass':&gt;9}"</span>)
+    <span class="kw">for</span> c <span class="kw">in</span> fails:
+        <span class="kw">print</span>(f<span class="st">"    {'':&lt;20}{c}: {deltas[c]:+.3f} vs tolerance -{TOLERANCE[c]:.3f}  &lt;- forgotten"</span>)
+    worst.extend(fails)
+
+<span class="kw">print</span>(<span class="st">"\ncapabilities forgotten at least once:"</span>,
+      sorted(set(worst)))
+<span class="kw">print</span>(<span class="st">"note: every stage's OWN target improved. summarise +0.03 at stage 1, then"</span>)
+<span class="kw">print</span>(<span class="st">"arithmetic collapsed at stages 1 and 2 before the arithmetic stage fixed it."</span>)
+
+<span class="cm"># replay pricing: what share of the batch must be old data to hold a capability?</span>
+<span class="kw">def</span> forgetting_with_replay(gap, replay_share):
+    <span class="st">""</span>"Simple model: forgetting <span class="kw">is</span> proportional to the new-data gradient pressure, which
+    scales <span class="kw">with</span> (<span class="nm">1</span> - replay_share). A capability survives <span class="kw">if</span> the pressure <span class="kw">is</span> small.<span class="st">""</span>"
+    pressure = (<span class="nm">1.0</span> - replay_share) * gap
+    <span class="kw">return</span> max(<span class="nm">0.0</span>, pressure)
+
+<span class="kw">print</span>(<span class="st">"\nreplay share needed to keep each capability's drop under its tolerance:"</span>)
+<span class="kw">for</span> c <span class="kw">in</span> CAPABILITIES:
+    <span class="cm"># worst observed gap for that capability</span>
+    gap = max(<span class="nm">0.0</span>, BASE[c] - min(acc[c] <span class="kw">for</span> _, acc <span class="kw">in</span> STAGES))
+    need = <span class="nm">1.0</span> - TOLERANCE[c] / gap <span class="kw">if</span> gap &gt; TOLERANCE[c] <span class="kw">else</span> <span class="nm">0.0</span>
+    <span class="kw">print</span>(f<span class="st">"  {c:&lt;15} worst drop {gap:.3f}  -&gt; replay share &gt;= {need:.2f}"</span>)
+<span class="kw">print</span>(<span class="st">"\nread it as a floor, not a recipe: replay reduces the competing gradient, so the"</span>)
+<span class="kw">print</span>(<span class="st">"share must be high enough that the old capability is not outnumbered in every batch."</span>)
+</div><div class="code out-block" data-lang="output">
+stage                   summarise  json_form  arithmeti  refuse_un  cite_sour  verdict
+base                         0.82       0.91       0.74       0.86       0.69
+sft-client-reporting     0.84       0.93       0.68       0.85       0.72        BLOCK
+                        arithmetic: -0.060 vs tolerance -0.010  &lt;- forgotten
+                        refuse_unsafe: -0.010 vs tolerance -0.005  &lt;- forgotten
+pref-tone                0.85       0.92       0.64       0.80       0.74        BLOCK
+                        arithmetic: -0.100 vs tolerance -0.010  &lt;- forgotten
+                        refuse_unsafe: -0.060 vs tolerance -0.005  &lt;- forgotten
+rlvr-arithmetic          0.79       0.88       0.83       0.76       0.71        BLOCK
+                        summarise: -0.030 vs tolerance -0.020  &lt;- forgotten
+                        json_format: -0.030 vs tolerance -0.020  &lt;- forgotten
+                        refuse_unsafe: -0.100 vs tolerance -0.005  &lt;- forgotten
+
+capabilities forgotten at least once: ['arithmetic', 'json_format', 'refuse_unsafe', 'summarise']
+note: every stage's OWN target improved. summarise +0.03 at stage 1, then
+arithmetic collapsed at stages 1 and 2 before the arithmetic stage fixed it.
+
+replay share needed to keep each capability's drop under its tolerance:
+  summarise       worst drop 0.030  -&gt; replay share &gt;= 0.33
+  json_format     worst drop 0.030  -&gt; replay share &gt;= 0.33
+  arithmetic      worst drop 0.100  -&gt; replay share &gt;= 0.90
+  refuse_unsafe   worst drop 0.100  -&gt; replay share &gt;= 0.95
+  cite_sources    worst drop 0.000  -&gt; replay share &gt;= 0.00
+
+read it as a floor, not a recipe: replay reduces the competing gradient, so the
+share must be high enough that the old capability is not outnumbered in every batch.
+</div>
+      <p class="expect">Cheap probes need about a third of the batch replayed; the safety probe needs 95% because its tolerance is half a point. That is an argument in arithmetic for either protecting safety behaviour with a hard gate or declaring that this stage may not trade it away &mdash; not for a hand-waved note in a report.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; probe integrity check</h4>
+      <p>A probe that appears in training data stops being a probe. Hash it and diff it against every stage file.</p>
+      <div class="code" data-lang="python">
+import hashlib, json
+
+def h(p):
+    return hashlib.sha256(open(p, "rb").read()).hexdigest()
+
+probe_hashes = {h("probes/arithmetic.jsonl")}          # one hash per capability probe
+for stage_file in ["data/sft.jsonl", "data/prefs.jsonl", "data/rl_prompts.jsonl"]:
+    for line in open(stage_file):
+        item = json.loads(line)
+        if hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest() in probe_hashes:
+            raise SystemExit("PROBE LEAK into " + stage_file)
+print("probe integrity ok")
+      </div>
+      <p class="expect">Run this in data CI so it fails the build, not in the training script. The failure it prevents looks like success:"
+      " probe accuracy rising across stages, read as capability improvement and actually memorisation.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c73-s5">5 &middot; Failure modes <a class="hook" href="#c73-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Silent capability regression.</strong> Symptom: a stage's own metric improves while an unrelated probe drops 5+ points; only a per-capability table shows it.</li>
+        <li><strong>Probe contamination.</strong> Symptom: probe accuracy climbs when it should be flat &mdash; the probe leaked into training data.</li>
+        <li><strong>Template-induced "forgetting".</strong> Symptom: the probe fails in serving but passes in the training harness; diff the token stream first.</li>
+        <li><strong>Replay ratio too low.</strong> Symptom: forgetting shrinks but does not stop; the old data is outnumbered by an order of magnitude.</li>
+        <li><strong>Adapter merge conflicts.</strong> Symptom: after merging two adapters, both capabilities are worse than either alone; test merged behaviour, not each adapter.</li>
+        <li><strong>Stage-order erosion.</strong> Symptom: final model refuses to answer in the format stage 1 taught, because stage 3's data used a different format. Format is a capability; probe it.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>The forgetting table (capability &times; stage, with base as the reference) belongs in the release
+      record next to the accuracy gains. It is the artefact that makes "we improved the model" a claim about
+      a tradeoff rather than a claim about one number.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c73-s6">6 &middot; Connects to <a class="hook" href="#c73-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="53-standard-pipeline.html">L53 &middot; The standard pipeline</a>,
+    <a class="tag-c" href="52-sft.html">L52 &middot; SFT</a>,
+    <a class="tag-a" href="../track-a/13-regularization.html">L13 &middot; Overfitting</a>.</p>
+    <p><strong>Unlocks:</strong> multi-tenant fine-tuning and the continual pipeline you actually run.</p>
+
+    <ul>
+      <li><a class="tag-c" href="74-eval-contamination.html">L74 &middot; Contamination</a> &mdash; the probe-integrity check in full.</li>
+      <li><a class="tag-b" href="../track-b/41-distillation.html">L41 &middot; Distillation</a> &mdash; continued training on trace data is a classic forgetting source.</li>
+      <li><a class="tag-d" href="../track-d/98-finetune-vs-rag.html">L98 &middot; Fine-tune vs RAG</a> &mdash; when the fine-tune (and its forgetting) is even warranted.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c73-s7">7 &middot; Self-check <a class="hook" href="#c73-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Three capabilities, base accuracies 0.82/0.74/0.91, after stage 2 they are 0.81/0.63/0.90. One tolerance is 0.02 and one probe is safety-critical. What does the gate say?</p>
+        <details><summary>Reveal answer</summary><p>Deltas are &minus;0.01, &minus;0.11, &minus;0.01. Capability 2 is 11 points down, far beyond a 2-point tolerance, so the gate blocksregardless of stage 2's own improvement. The other two are within tolerance. This is why the gate must be per-capability: anaverage would have shown a 4-point drop and might have been rationalised.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why is replay usually more effective than lowering the learning rate for preventing forgetting?</p>
+        <details><summary>Reveal answer</summary><p>A lower learning rate slows all movement, including the movement you want, and buys only a proportional reduction inforgetting. Replay changes the gradient itself: the batch contains examples of the old capability, so the update improves thenew task while keeping the old one's loss low. It is a different optimisation problem, not the same one run more gently.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Quantitative: stage 2 data is 20,000 examples, replay needs to be roughly 20% of each batch. How many stage-1 examples are in a 32-example batch, and what if the old data is unavailable?</p>
+        <details><summary>Reveal answer</summary><p>About 6.4 (round to 6 or 7) stage-1 examples per batch. If old data is unavailable, options are generating pseudo-replay fromthe previous checkpoint (sample outputs from it and train on those), or freezing parts of the model (adapters), or accepting andmeasuring the loss. Each is a different tradeoff; none is free.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: probe accuracy falls in serving but not in the training harness. Give the three checks in order.</p>
+        <details><summary>Reveal answer</summary><p>(1) Chat template / token stream diff between harness and serving. (2) Sampler settings (temperature, stop sequences) differ, sothe probe's output format changes and the parser fails. (3) The serving model is a different artefact &mdash; quantised, merged, or astale checkpoint. All three are configuration; none requires retraining, which is why they are checked first.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why must a probe set be hashed and diffed against training data?</p>
+        <details><summary>Reveal answer</summary><p>Because a probe that appears in training becomes a memorisation test, and its accuracy rises instead of reflecting thecapability. The hash lets you prove, per run, that the probe was not trained on; the diff is the mechanism. Without both, agreen probe table is not evidence of anything.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="72-constitutional.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L72 &middot; Constitutional AI and rubric-based judging</span></a>
+    <a class="next" href="74-eval-contamination.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L74 &middot; Contamination: honestly-measured gains</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a17">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L17 · Samplers: Greedy, Temperature, Top-k, Top-p, Min-p — AILearn</title>
+<meta name="description" content="The exact operations applied to logits before sampling, why truncation and temperature are not the same knob, the frequency/penalty family, and how to characterise a sampler by its support set and entropy.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L17</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L17 &middot; Sampling: Greedy, Temperature, Top-k, Top-p, Min-p, Penalties</h1>
+  <p class="lede">A model outputs a probability over every token in the vocabulary. Choosing which one to emit is a separate decision made in a few lines of code, and those few lines change repetition, creativity, determinism and failure recovery more than most model upgrades do.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: sampler playground with support and entropy</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">greedy / argmax</span>
+  <span class="pill">temperature</span>
+  <span class="pill">top-k</span>
+  <span class="pill">top-p / nucleus</span>
+  <span class="pill">min-p</span>
+  <span class="pill">frequency &amp; presence penalty</span>
+  <span class="pill">support and entropy</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a17-s1">1 &middot; Why it exists <a class="hook" href="#a17-s1">#</a></h2>
+
+    <p>A trained model gives a distribution, not an answer. Something has to collapse it to one token id. Two naive
+    policies both fail in ways you have seen in production:</p>
+    <ul>
+      <li><strong>Always pick the most likely token.</strong> Deterministic and often correct, but it gets stuck:
+      repetition becomes an absorbing state because a repeated bigram is locally the highest-probability continuation.
+      Once the model is wrong on one token, greedy decoding has no way to recover &mdash; the wrong token is now
+      context.</li>
+      <li><strong>Sample from the raw distribution.</strong> Unbiased, but the long tail has a real probability mass.
+      A token at p = 1e-5 is almost never right and, once emitted, poisons everything after it. Over a 2,000-token
+      generation you draw 2,000 samples from a distribution with tens of thousands of tiny wrong options.</li>
+    </ul>
+
+    <p>Samplers exist to remove the tail while keeping some diversity: <em>truncate</em> the distribution to a set you
+    are willing to commit to, then sample from what remains. Temperature rescales the whole distribution; top-k and
+    top-p and min-p delete tail entries by different criteria; penalties discourage tokens already used. Each is a
+    different answer to "how much risk per token am I buying".</p>
+
+    <div class="callout boss">
+      <p>Decoding parameters are a reliability contract. If you cannot state the sampler settings and seed for a
+      production path, you cannot reproduce its output, cannot attribute a regression, and cannot claim determinism
+      (L94). The parameters are part of the model definition in practice.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a17-s2">2 &middot; The mental model <a class="hook" href="#a17-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> The logits are a leaderboard of candidates, scored by confidence. <em>Temperature</em>
+    changes how much you weight the top of the leaderboard: low temperature = only the favourites matter, high
+    temperature = the whole field is in play. <em>Truncation</em> removes candidates from the ballot entirely before
+    voting. <em>Penalties</em> adjust the scores of candidates already used.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) Temperature and truncation are <em>not</em> two ways to say
+    "less random". Temperature changes the shape of the distribution over <em>all</em> V candidates &mdash; including
+    making the top one overwhelmingly likely, but never removing the tail. Truncation removes candidates and
+    renormalises. On a peaked distribution the two do similar things; on a flat distribution they behave very
+    differently, and that difference is exactly where most production bugs live. (2) Top-p's cutoff depends on the
+    distribution, so its support size varies per step &mdash; that is its advantage (adaptive) and its disadvantage
+    (unpredictable cost/quality in weird contexts). (3) Min-p's threshold is relative to the top probability, not an
+    absolute mass, which is why it scales with the model's confidence instead of against it.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Support size is the thing you can measure</h4><p>Count how many tokens survive truncation. That single number, per step, predicts repetition (size 1), incoherence (size huge) and determinism (size 1 every step).</p></div>
+      <div class="card"><h4>Entropy is the other thing</h4><p>H = &minus;&sum;p ln p over the kept set. Two samplers with the same support but different entropy behave differently: one spreads, one commits.</p></div>
+      <div class="card"><h4>Temperature 0 is not a value</h4><p>It is a division by zero; implementations special-case it to argmax. That means temperature=0 and greedy differ only in intent, not in mechanism.</p></div>
+      <div class="card"><h4>Sampler and eval are coupled</h4><p>Benchmarks with temperature 0 measure the mode; benchmarks with default temperature measure a distribution. A "same model" claim across two sampler settings is a different product.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a17-s3">3 &middot; The mechanism <a class="hook" href="#a17-s3">#</a></h2>
+
+    <div class="formula">
+      Temperature: &nbsp; p<sub>i</sub>(&tau;) = softmax(z/&tau;)<sub>i</sub> &nbsp;&nbsp;(&tau; &rarr; 0+: peaky, &tau; &gt; 1: flat)<br>
+      Top-k: &nbsp; keep the k indices with largest z, set the rest to &minus;&infin;, renormalise<br>
+      Top-p (nucleus): &nbsp; sort by p descending, keep the smallest prefix whose cumulative mass &ge; p, set the rest to &minus;&infin;<br>
+      Min-p: &nbsp; keep i where p<sub>i</sub> &ge; p<sub>base</sub> &middot; p<sub>max</sub>, where p<sub>base</sub> is a user parameter<br>
+      Frequency penalty: &nbsp; z&prime;<sub>i</sub> = z<sub>i</sub> &minus; &alpha; &middot; count(i)
+      <span class="note">Order matters in supporting implementations, and the canonical pipeline is: penalties (modify logits) &rarr; temperature (divide) &rarr; truncation (mask) &rarr; sample. Applying temperature before the penalties, or truncating before temperature, gives a different distribution and different results than the vendor documents &mdash; and reproducing a vendor's output requires reproducing its order.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># A sampler playground: support size and entropy for each policy. stdlib only, runs as-is.</span>
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">softmax</span>(z):
+    m = <span class="fn">max</span>(z); e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]; s = <span class="fn">sum</span>(e); <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+<span class="kw">def</span> <span class="fn">temp</span>(l, t): <span class="kw">return</span> [v / t <span class="kw">for</span> v <span class="kw">in</span> l]
+<span class="kw">def</span> <span class="fn">top_k</span>(l, k):
+    cut = <span class="fn">sorted</span>(l, reverse=<span class="kw">True</span>)[k - <span class="nm">1</span>]
+    <span class="kw">return</span> [v <span class="kw">if</span> v &gt;= cut <span class="kw">else</span> -math.inf <span class="kw">for</span> v <span class="kw">in</span> l]
+<span class="kw">def</span> <span class="fn">top_p</span>(l, p):
+    idx = <span class="fn">sorted</span>(<span class="fn">range</span>(<span class="fn">len</span>(l)), key=<span class="kw">lambda</span> i: -l[i])
+    probs = <span class="fn">softmax</span>(l); keep, cum = <span class="fn">set</span>(), <span class="nm">0.0</span>
+    <span class="kw">for</span> i <span class="kw">in</span> idx:
+        keep.add(i); cum += probs[i]
+        <span class="kw">if</span> cum &gt;= p: <span class="kw">break</span>
+    <span class="kw">return</span> [v <span class="kw">if</span> i <span class="kw">in</span> keep <span class="kw">else</span> -math.inf <span class="kw">for</span> i, v <span class="kw">in</span> <span class="fn">enumerate</span>(l)]
+<span class="kw">def</span> <span class="fn">min_p</span>(l, p):
+    mx = <span class="fn">max</span>(<span class="fn">softmax</span>(l))
+    <span class="kw">return</span> [v <span class="kw">if</span> pp &gt;= p * mx <span class="kw">else</span> -math.inf <span class="kw">for</span> v, pp <span class="kw">in</span> <span class="fn">zip</span>(l, <span class="fn">softmax</span>(l))]
+<span class="kw">def</span> <span class="fn">show</span>(name, l):
+    p = <span class="fn">softmax</span>(l)
+    nz = [(i, <span class="fn">round</span>(v, <span class="nm">4</span>)) <span class="kw">for</span> i, v <span class="kw">in</span> <span class="fn">enumerate</span>(p) <span class="kw">if</span> v &gt; <span class="nm">0</span>]
+    H = -<span class="fn">sum</span>(v * math.log(v) <span class="kw">for</span> v <span class="kw">in</span> p <span class="kw">if</span> v &gt; <span class="nm">0</span>)
+    <span class="fn">print</span>(<span class="st">f"{name:16s} support={len(nz)} max={max(p):.4f} H={H:.3f}"</span>)
+logits = [<span class="nm">3.0</span>, <span class="nm">2.0</span>, <span class="nm">1.0</span>, <span class="nm">0.5</span>, <span class="nm">0.0</span>, -<span class="nm">1.0</span>]
+<span class="fn">show</span>(<span class="st">"greedy"</span>, <span class="fn">top_k</span>(logits, <span class="nm">1</span>))
+<span class="kw">for</span> t <span class="kw">in</span> [<span class="nm">0.5</span>, <span class="nm">1.0</span>, <span class="nm">2.0</span>]: <span class="fn">show</span>(<span class="st">f"temp {t}"</span>, <span class="fn">temp</span>(logits, t))
+<span class="kw">for</span> k <span class="kw">in</span> [<span class="nm">1</span>, <span class="nm">3</span>]: <span class="fn">show</span>(<span class="st">f"top_k {k}"</span>, <span class="fn">top_k</span>(logits, k))
+<span class="kw">for</span> p <span class="kw">in</span> [<span class="nm">0.5</span>, <span class="nm">0.9</span>, <span class="nm">0.99</span>]: <span class="fn">show</span>(<span class="st">f"top_p {p}"</span>, <span class="fn">top_p</span>(logits, p))
+<span class="kw">for</span> mp <span class="kw">in</span> [<span class="nm">0.0</span>, <span class="nm">0.1</span>, <span class="nm">0.5</span>]: <span class="fn">show</span>(<span class="st">f"min_p {mp}"</span>, <span class="fn">min_p</span>(logits, mp))
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+greedy           support=1 max=1.0000 H=0.000
+temp 0.5         support=6 max=0.8597 H=0.443
+temp 1.0         support=6 max=0.6048 H=1.148
+temp 2.0         support=6 max=0.3818 H=1.627
+top_k 1          support=1 max=1.0000 H=0.000
+top_k 3          support=3 max=0.6652 H=0.933
+top_p 0.5        support=1 max=1.0000 H=0.000
+top_p 0.9        support=3 max=0.6652 H=0.933
+top_p 0.99       support=6 max=0.6048 H=1.148
+min_p 0.0        support=6 max=0.6048 H=1.148
+min_p 0.1        support=3 max=0.6652 H=0.933
+min_p 0.5        support=1 max=1.0000 H=0.000
+    </div>
+
+    <p>Read three separate facts out of that table.</p>
+    <ol>
+      <li><strong>Temperature never changes the support.</strong> All three temperatures keep 6 tokens; only the shape
+      changes (max probability 0.86 &rarr; 0.60 &rarr; 0.38, entropy 0.44 &rarr; 1.15 &rarr; 1.63). So temperature
+      <em>cannot</em> protect you from the tail &mdash; the tiny probabilities get <em>bigger</em> as you raise it.</li>
+      <li><strong>Top-p adapts, top-k does not.</strong> Here top-p 0.9 and top-k 3 happen to agree exactly
+      (max 0.6652, H 0.933), because this distribution's top-3 mass is 0.90. Change the logits and they diverge: on a
+      confident distribution top-p 0.9 keeps one token, on a flat one it keeps a dozen. That is the design intent.</li>
+      <li><strong>min-p is a confidence-relative gate.</strong> min_p 0.1 keeps everything with at least 10% of the
+      top token's probability. On this distribution that is 3 tokens. On a confident distribution it collapses to 1;
+      on a flat one it keeps many. Note the equivalence chain in this example: min_p 0.1 gives exactly the same support
+      and entropy as top_p 0.9 and top_k 3 &mdash; a useful reminder that these knobs are heavily redundant and
+      "which sampler is better" is usually answered by the distribution, not the name.</li>
+    </ol>
+
+    <h3>Determinism, and the seed</h3>
+    <p>Sampling is deterministic given (model, inputs, sampler settings, PRNG state). Every non-determinism you observe
+    in production comes from one of: batching (the same sample drawn at a different batch position), floating-point
+    non-associativity in matmuls, or the PRNG state being derived per-request from something like a timestamp. If you
+    need reproducibility, you must pin all three; temperature alone is not the variable (L94).</p>
+    <div class="formula">
+      A sampling step: &nbsp; r ~ U(0,1) &nbsp;&rarr;&nbsp; token = smallest i with &sum;<sub>j&le;i</sub>p<sub>j</sub> &ge; r (inverse-CDF)<br>
+      Expected identical output &nbsp;&hArr;&nbsp; identical p (same model, dtype, batch composition) AND identical r
+      <span class="note">Inverse-CDF sampling needs the probabilities sorted or at least a fixed order; different implementations order the vocabulary differently, so the same seed gives different tokens across libraries. Pin the library version too.</span>
+    </div>
+
+    <h3>Penalties: why repetition is a search problem, not a memory problem</h3>
+    <p>A frequency penalty subtracts &alpha; per occurrence from the logit. It is a blunt instrument: it also punishes
+    tokens that <em>should</em> repeat (a closing brace, a repeated identifier, the same function name twice). A
+    presence penalty subtracts a fixed amount once; a repetition penalty divides positive logits and multiplies negative
+    ones. All three fight the symptom (looping) rather than the cause (a model that assigned too much mass to the token
+    it just emitted). That is why the better fix is usually a sampler + prompt structure change, not a bigger penalty
+    &mdash; and why a high penalty produces stilted text with bizarre synonyms.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a17-s4">4 &middot; Your hands <a class="hook" href="#a17-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Characterise your sampler, do not guess</h4>
+      <p>For a real model, logits are not toy-scale. Take a few real steps, print support size and entropy for each
+      policy, and confirm the sampler does what you think. The diagnostic goal: support should be 1 at deterministic
+      points and small-but-not-1 during genuine ambiguity.</p>
+      <div class="code" data-lang="bash">
+python -c "print('run section-3 code; then plug in real logits (any 50k-vector) and check: greedy support=1 always; top_p 0.9 support varies; temp changes H but never support')"
+      </div>
+      <p class="expect">The structural prediction to test: raising temperature always increases entropy and never
+      shrinks support; adding truncation always shrinks or preserves support and lowers entropy. If your implementation
+      shows a temperature change altering support, you are applying temperature <em>after</em> truncation and then
+      re-truncating, or truncating on unnormalised values &mdash; both are order bugs.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Penalty vs no penalty on a repeating continuation</h4>
+      <p>Construct a pathological loop by hand &mdash; a distribution that is peaked on the same token it just emitted
+      &mdash; then measure how the penalty changes the next-token distribution.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">softmax</span>(z):
+    m = <span class="fn">max</span>(z); e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]; s = <span class="fn">sum</span>(e); <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+logits = [<span class="nm">3.0</span>, <span class="nm">2.0</span>, <span class="nm">1.0</span>, <span class="nm">0.5</span>, <span class="nm">0.0</span>, -<span class="nm">1.0</span>]
+counts = [<span class="nm">3</span>, <span class="nm">0</span>, <span class="nm">0</span>, <span class="nm">0</span>, <span class="nm">0</span>, <span class="nm">0</span>]          <span class="cm"># token 0 already appeared 3 times</span>
+<span class="kw">for</span> alpha <span class="kw">in</span> [<span class="nm">0.0</span>, <span class="nm">0.25</span>, <span class="nm">0.5</span>, <span class="nm">1.0</span>]:
+    adj = [v - alpha * c <span class="kw">for</span> v, c <span class="kw">in</span> <span class="fn">zip</span>(logits, counts)]
+    p = <span class="fn">softmax</span>(adj)
+    <span class="fn">print</span>(<span class="st">f"alpha={alpha:4}: " + " ".join(f"{v:.3f}" <span class="kw">for</span> v <span class="kw">in</span> p) + f"  argmax={max(range(len(p)), key=lambda i: p[i])}"</span>)
+      </div>
+      <p class="expect">Observed: with &alpha; = 0 token 0 has <strong>0.605</strong>; at 0.25 it has 0.420 (the loop is
+      weakened but survives); at 0.5 it has <strong>0.255</strong> and token 1 takes the lead at 0.420; at 1.0 token 0
+      is down to <strong>0.071</strong> and token 1 dominates at 0.523. So a penalty between 0.25 and 0.5 is what breaks
+      this specific loop &mdash; and note the cost: at &alpha; = 1.0 the escaped token has only 52% of the mass, i.e. the
+      distribution is now spread over a token that may be wrong. That is the exchange, and it is why "penalty 2.0 because
+      it stopped the loop" often produces worse text. Measure the penalty against the <em>desired</em> repetition
+      (structural tokens must repeat), not against one bad trajectory.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Show that temperature 0 and greedy are the same thing, and that temperature is not a determinism knob</h4>
+      <p>Two claims worth verifying before you rely on them in a production config.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+logits = [<span class="nm">3.0</span>, <span class="nm">2.0</span>, <span class="nm">1.0</span>, <span class="nm">0.5</span>, <span class="nm">0.0</span>, -<span class="nm">1.0</span>]
+<span class="kw">for</span> t <span class="kw">in</span> [<span class="nm">1e-3</span>, <span class="nm">1e-6</span>]:
+    z = [v / t <span class="kw">for</span> v <span class="kw">in</span> logits]
+    m = <span class="fn">max</span>(z); e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]; s = <span class="fn">sum</span>(e)
+    <span class="fn">print</span>(<span class="st">f"T={t:g}: max prob={max(e)/s:.10f} (greedy is exactly 1.0)"</span>)
+<span class="fn">print</span>(<span class="st">"in float64, T below ~1e-15 still underflows the tail to 0, so it *approximates* greedy without being greedy"</span>)
+      </div>
+      <p class="expect">Observed: at temperature 1e-3 the max probability prints as <strong>1.0</strong>, and at 1e-6
+      likewise &mdash; the logit gap of 1.0 divided by 1e-3 is 1000, so e<sup>1000</sup> overflows the ratio to inf/inf
+      and the tail underflows to exactly zero in practice. That is the numerical version of greedy. The dangerous
+      regime is between 1e-2 and 1e-4: there the max probability is 0.99&ndash;0.9999 and roughly one in a thousand
+      samples draws a different token, which is the worst of both worlds for reproducibility &mdash; usually
+      deterministic, occasionally not. If you want greedy, set greedy. If you want sampling, use a temperature you can
+      characterise. Do not use "temperature = 0.01" as a shortcut for both.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a17-s5">5 &middot; Failure modes <a class="hook" href="#a17-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Top-p 0.9 on a near-deterministic model.</strong> Symptom: fine, until a step where the top token has p = 0.95 and top-p still keeps a second token at 0.05; over 2,000 tokens you get occasional bizarre word choices. Consider min-p or lower temperature.</li>
+        <li><strong>Temperature raised to "increase creativity" in a structured-output task.</strong> Symptom: JSON or code becomes invalid at a higher rate. Structured tasks need truncation to valid tokens (L18) and low temperature.</li>
+        <li><strong>High frequency penalty on code.</strong> Symptom: variables renamed mid-function; closing punctuation penalised so heavily the model avoids it. The penalty cannot distinguish "repetitive" from "syntactically required".</li>
+        <li><strong>Sampler order differs from the vendor's documented order.</strong> Symptom: your reproduction of a vendor's output differs even with identical logits; on some settings the difference is only visible at high temperature. Pin order: penalties, temperature, truncation, sample.</li>
+        <li><strong>Temperature 0 treated as "deterministic".</strong> Symptom: still non-reproducible across requests because batching and reduction order vary. Greedy fixes the sampler, not the kernel (L94).</li>
+        <li><strong>Sampling from unnormalised logits after masking.</strong> Symptom: probabilities do not sum to 1; the sampler biases toward whatever the filter left. Renormalise after truncation, always.</li>
+        <li><strong>Different samplers across eval and production.</strong> Symptom: eval says the model is fine, production is repetitive &mdash; because eval used greedy and production uses top-p 0.95. The eval measured a different system.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a17-s6">6 &middot; Connects to <a class="hook" href="#a17-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="16-loss-perplexity.html">L16</a> (the distribution being sampled). &nbsp;
+    <strong>Unlocks:</strong> decoding strategies, eval design, determinism audits.</p>
+    <ul>
+      <li><a class="tag-a" href="18-decoding-strategies.html">L18 &middot; Beam, speculative, constrained</a> &mdash; when one-token-at-a-time sampling is not enough.</li>
+      <li><a class="tag-a" href="16-loss-perplexity.html">L16 &middot; Loss &amp; perplexity</a> &mdash; temperature is a rescaling of the same logits whose distribution perplexity measures.</li>
+      <li><a class="tag-c" href="../track-c/61-test-time-compute.html">L61 &middot; Test-time compute</a> &mdash; best-of-n and verifiers turn sampling into a deliberate search over samples.</li>
+      <li><a class="tag-c" href="../track-c/69-reasoning-effort.html">L69 &middot; Reasoning effort</a> &mdash; thinking budgets change the distribution you are sampling from, so the sampler must be re-checked per mode.</li>
+      <li><a class="tag-d" href="../track-d/94-determinism.html">L94 &middot; Determinism</a> &mdash; the full reproducibility stack: sampler, batching, kernels, seeds.</li>
+      <li><a class="tag-d" href="../track-d/91-cost-latency.html">L91 &middot; Cost &amp; latency</a> &mdash; sampler choice changes output length, and output length is most of your bill.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: log <code>(temperature, top_p, top_k, min_p, penalties, seed, library_version)</code> with every
+      generation. A generation without those fields cannot be reproduced and therefore cannot be defended when a
+      customer disputes it.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a17-s7">7 &middot; Self-check <a class="hook" href="#a17-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why can temperature never remove a token from the support, and what is the practical consequence?</p>
+        <details><summary>Reveal answer</summary><p>Temperature divides every logit by &tau; &gt; 0, so any finite logit stays finite and exp of it stays positive; softmax of a finite vector has full support. Raising &tau; makes the tail <em>larger</em>, not smaller. Consequence: temperature cannot be used to prevent low-probability garbage; it only decides how much of the tail you are exposed to. Truncation is the only mechanism that sets support to zero, which is why real pipelines combine them.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Given probabilities [0.60, 0.22, 0.08, 0.05, 0.03, 0.011], what support do top-p 0.9 and top-p 0.5 produce?</p>
+        <details><summary>Reveal answer</summary><p>Cumulative: 0.60, 0.82, 0.90, 0.95, 0.98, 0.991. top-p 0.9 keeps tokens until the cumulative reaches 0.90 &rarr; <strong>3 tokens</strong> (0.82 &lt; 0.9, so the third is included). top-p 0.5 keeps the first token (0.60 &ge; 0.5) &rarr; <strong>1 token</strong>, i.e. greedy. This matches the verified table, where top_p 0.5 collapsed to support 1 with entropy 0. Note that top-p 0.5 is not "half as random" as top-p 0.9 &mdash; it is effectively deterministic.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: outputs are fine at temperature 0 but at temperature 1.0 the model repeats a phrase identically several times, then switches topics. What is happening, and what do you change first?</p>
+        <details><summary>Reveal answer</summary><p>Untruncated sampling re-enters high-probability loops: a repeated phrase increases the probability of repeating again (it is self-reinforcing context), and temperature 1 preserves enough mass on that path to keep taking it. First change: add truncation (min-p or top-p) to cut the tail and break the absorbing state; second: a small frequency penalty if the loop persists; last: restructure the prompt. Do not raise the penalty until the output is stilted &mdash; that trades a visible failure for an invisible one.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does a frequency penalty break code more often than prose?</p>
+        <details><summary>Reveal answer</summary><p>Because in code the most frequent tokens are often the most necessary: braces, commas, parentheses, the same variable name, the same function call. A penalty cannot tell "repeating because stuck" from "repeating because required by grammar"; it applies uniformly to all occurrences, so it pushes the model toward synonyms or omissions &mdash; exactly the failure that makes generated code stop compiling. For structured output use low temperature plus constrained decoding (L18) instead of penalties.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Two services use the same model and the same temperature 0.7, but they produce different outputs for the same prompt. Name three causes that survive "same temperature".</p>
+        <details><summary>Reveal answer</summary><p>(1) Different truncation settings or order (top-p, top-k, min-p, penalty defaults). (2) Different PRNG seeding or consumption order &mdash; the same seed produces different streams if the implementation draws different numbers of samples per step. (3) Non-determinism from batching or kernel reduction order, which changes the logits themselves at the last floating-point digits and can flip a near-tie; plus dtype differences (fp16 vs fp8 KV) that change the probabilities. Also: a different tokenizer or system prompt, which changes the logits before sampling even starts.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="16-loss-perplexity.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L16 &middot; Loss &amp; perplexity</span></a>
+    <a class="next" href="18-decoding-strategies.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L18 &middot; Beam, speculative, constrained</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b36">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L36 · Multi-Token Prediction: Training Signal and Speculation — AILearn</title>
+<meta name="description" content="Predicting several future tokens at once densifies the training signal and, with the same heads, gives you free speculative drafts at inference. What it costs and what it actually buys.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L36</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L36 &middot; Multi-Token Prediction: Training Signal and Speculation</h1>
+  <p class="lede">A standard LM gets exactly one supervision signal per forward pass, at the last position of each token. Multi-token prediction makes the model defend its future predictions too &mdash; and the same extra heads become a speculative decoder you did not have to train separately.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: 2-token prediction toy</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">MTP objective</span>
+  <span class="pill">sequential vs parallel heads</span>
+  <span class="pill">training signal density</span>
+  <span class="pill">speculative decoding</span>
+  <span class="pill">draft acceptance rate</span>
+  <span class="pill">expected tokens per step</span>
+  <span class="pill">planning in latent space</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b36-s1">1 &middot; Why it exists <a class="hook" href="#b36-s1">#</a></h2>
+
+    <p>Next-token prediction has a subtle inefficiency that is invisible on a loss curve and expensive at scale: at each
+    position the model produces a full vocabulary distribution, and that entire distribution is trained by a single
+    cross-entropy term against a single next token. The forward pass computed an enormous amount of state and used almost all
+    of it for one bit of supervision.</p>
+
+    <p>Worse, it teaches a local objective with no pressure toward global coherence. A model can be excellent at predicting
+    the next token and still drift: it has never been asked whether its <em>plan</em> for the next few tokens was
+    realisable. Errors compound because nothing in the objective penalises a locally-good, globally-bad continuation.</p>
+
+    <p>The second, more commercial failure is decoding speed. Autoregressive generation produces one token per forward pass,
+    and at long context that pass is bandwidth-bound (L35), so most of the GPU sits idle while a whole cache is streamed to
+    produce one token. Speculative decoding fixes this, but the standard form needs a <em>separate</em> draft model with
+    matched tokenizer, aligned training data, and a second serving stack.</p>
+
+    <p>Multi-token prediction (MTP), used in DeepSeek-V3 <span class="asof">arXiv:2412.19437</span>, addresses both at once:
+    extra prediction heads trained on tokens t+2, t+3&hellip; densify the training signal, and those same heads serve as the
+    draft for speculative decoding at inference.</p>
+
+    <div class="callout boss">
+      <p>One head per output token is a choice, not a law. Adding heads buys (a) a denser training signal and (b) a free
+      speculative draft &mdash; for a modest, computable increase in training compute and a small increase in parameters.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b36-s2">2 &middot; The mental model <a class="hook" href="#b36-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a chess player who must not only make a move but declare the next two moves in
+    advance. If they must commit, they choose plans that survive contact &mdash; the added commitment changes
+    <em>which</em> move they pick, not just how they describe it.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Extra commitment forces a representation that is predictive
+      further ahead. A plan that is only locally good becomes costly, so the model prefers continuations with stable futures.
+      That is the &ldquo;planning in latent space&rdquo; argument.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A player who declares two moves and then abandons them is not penalised in
+      real chess. In MTP the model is never forced to <em>use</em> its own draft; the extra heads are a training signal plus an
+      optional decoder, and the main head stays the authority. So the cognitive benefit is a side effect of the auxiliary
+      gradients, not an architectural constraint.</p></div>
+    </div>
+
+    <h3>Two ways to place the heads</h3>
+    <table class="table">
+      <thead><tr><th>Design</th><th>Structure</th><th>Cost</th><th>Draft quality</th></tr></thead>
+      <tbody>
+        <tr><td>Parallel heads</td><td>D independent heads all read the same final hidden state and predict t+1..t+D</td><td>D extra small heads; cheap, fully parallel</td><td>Weak at t+2 and beyond: the draft conditions cannot depend on the predicted t+1 actual token</td></tr>
+        <tr><td>Sequential heads</td><td>Each extra head takes the previous head's hidden state plus the embedding of the token it just predicted</td><td>D small transformer blocks + the causal chain at inference</td><td>Stronger: each head conditions on the actual drafted prefix, which is what speculation needs</td></tr>
+      </tbody>
+    </table>
+    <p>DeepSeek-V3 uses the sequential form. The difference matters for speculation: a draft of t+2 is only useful if it is
+    conditioned on the t+1 token that will actually be accepted, and only the sequential chain provides that at draft time.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b36-s3">3 &middot; The mechanism <a class="hook" href="#b36-s3">#</a></h2>
+
+    <div class="formula">
+      &lagr; = &sum;<sub>d=1</sub><sup>D</sup> &lambda;<sub>d</sub> &middot; CE( p<sub>&theta;</sub>(&middot; | x<sub>&le;t</sub>, drafts), x<sub>t+d</sub> )
+      <span class="note">d = 1 is the ordinary next-token loss; d = 2..D are the MTP losses, each with its own weight &lambda;<sub>d</sub> and its own head. D is typically small (2 or 3) because each extra head has diminishing returns and increases training compute.</span>
+    </div>
+
+    <h3>Cost: parameters and training compute</h3>
+    <p>For a model with d<sub>model</sub> = 7168, an extra MTP head is roughly a transformer block's worth of computation:
+    attention projections and MLP are &asymp; 4&middot;d<sup>2</sup> parameters for a GLU MLP of width 4d is
+    3&middot;d&middot;4d = 12d<sup>2</sup>, so order 10<sup>1</sup>&middot;d<sup>2</sup> per head. With d = 7168,
+    4d<sup>2</sup> = 2.06&times;10<sup>8</sup> = 0.206B parameters for a minimal block, and the LM head is shared with the main
+    head (output embeddings tie).</p>
+
+    <table class="table">
+      <thead><tr><th>D (extra heads)</th><th>Extra parameters (blocks only)</th><th>Extra training FLOPs vs one head</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>0.206B</td><td>+~10% (one extra small block)</td></tr>
+        <tr><td>2</td><td>0.411B</td><td>+~20%</td></tr>
+        <tr><td>3</td><td>0.617B</td><td>+~30%</td></tr>
+      </tbody>
+    </table>
+
+    <p>The +10%-per-head figure is an estimate from block size, not a published number; treat it as the order of magnitude
+    and measure the actual ratio on your own architecture. What matters is the shape: MTP cost is <em>linear in D</em> and
+    small compared to the main model, which is why it is affordable at all.</p>
+
+    <h3>Benefit 1: expected tokens per decoding step</h3>
+    <p>If the model drafts a chain of D tokens and the main model verifies them, the number of tokens accepted per forward
+    pass is the number of draft tokens that pass verification plus one from the main model. With independent per-token
+    acceptance probability a, the expected accepted-token count for a chain of length D is</p>
+    <div class="formula">
+      E[tokens/step] = 1 + a + a&sup2; + &hellip; + a<sup>D</sup>
+      <span class="note">The 1 is the token the main model always contributes; each drafted token is accepted with probability a and must also have had all earlier tokens accepted, hence the powers. This is the standard speculative-decoding expectation under the assumption of a perfectly aligned draft distribution.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Draft acceptance a</th><th>D = 1 (E[tok])</th><th>D = 2</th><th>D = 3</th></tr></thead>
+      <tbody>
+        <tr><td>0.60</td><td>1.600</td><td>1.960</td><td>2.176</td></tr>
+        <tr><td>0.70</td><td>1.700</td><td>2.190</td><td>2.533</td></tr>
+        <tr><td>0.80</td><td>1.800</td><td>2.440</td><td>2.952</td></tr>
+        <tr><td>0.90</td><td>1.900</td><td>2.710</td><td>3.439</td></tr>
+      </tbody>
+    </table>
+
+    <p>The margin on the third drafted token is small &mdash; going from D = 2 to D = 3 at a = 0.8 adds 0.512 tokens per step (2.952 &minus; 2.440)
+    but costs another head and another sequential verification. That is why D stays at 2 or 3 and why <strong>a is the number
+    to optimise</strong>, not D. A draft with a = 0.9 outperforms a longer draft with a = 0.6 at every D.</p>
+
+    <p>Note the caveat hidden in that table: these are the gains <em>if verification is free</em>. Verification of D drafted
+    tokens is one batched forward pass through the main model, which costs roughly the same as one ordinary forward pass when
+    D is small, but is not actually free at long context because the cache for D positions must be written and read.</p>
+
+    <div class="callout audit">
+      <p>The three numbers that make an MTP claim auditable: <strong>D</strong>, the measured <strong>acceptance rate a</strong>
+      per draft position (not just position 1), and the <strong>verification overhead</strong> in ms. Reporting a
+      &ldquo;2.4&times; speedup&rdquo; without a is reporting a table lookup without its input.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b36-s4">4 &middot; Your hands <a class="hook" href="#b36-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the acceptance-rate table, computed</h4>
+      <p>The whole economics of speculative decoding in one loop. Run it before believing any speedup claim, including your
+      own.</p>
+      <div class="code" data-lang="bash">
+python -c "
+for a in (0.5,0.6,0.7,0.8,0.9,0.95):
+    row=[sum(a**i for i in range(D+1)) for D in (1,2,3,4)]
+    print(f'a={a:.2f}: ' + '  '.join(f'D={D}:{v:.3f}' for D,v in enumerate(row,1)))
+"
+      </div>
+      <p class="expect">At a = 0.5, D = 4 gives 1.938 tokens/step &mdash; barely better than D = 1's 1.5 while costing four
+      heads and four verifications. At a = 0.95, D = 2 gives 2.853 and D = 4 gives 4.524. The crossover where extra depth pays
+      is a &gtrsim; 0.7. <strong>Falsification:</strong> if your measured speedup exceeds E[tokens/step], the verifier is
+      batching more than you think or the measurement is wrong.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; 2-token prediction on a Markov toy</h4>
+      <p>Confirm that an MTP objective really does change what the first prediction learns, not just add a second output. The
+      toy is a 2-state Markov chain where predicting t+2 requires committing to the transition pattern.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">36</span>)
+<span class="cm"># a corpus where every 'A' is followed by 'B' then 'C', every 'X' by 'Y' then 'Z'</span>
+seq = []
+<span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">2000</span>):
+    seq += [<span class="nm">0</span>, <span class="nm">1</span>, <span class="nm">2</span>] <span class="kw">if</span> rng.random() &lt; <span class="nm">0.5</span> <span class="kw">else</span> [<span class="nm">3</span>, <span class="nm">4</span>, <span class="nm">5</span>]
+seq = np.array(seq)
+
+<span class="kw">def</span> <span class="fn">bigram</span>(tokens, order=<span class="nm">1</span>):
+    m = {}
+    <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="fn">len</span>(tokens) - order):
+        ctx = <span class="fn">tuple</span>(tokens[i:i+order]); m.setdefault(ctx, np.zeros(<span class="nm">6</span>))
+        m[ctx][tokens[i+order]] += <span class="nm">1</span>
+    <span class="kw">return</span> {k: v / v.sum() <span class="kw">for</span> k, v <span class="kw">in</span> m.items()}
+
+unigram = np.bincount(seq, minlength=<span class="nm">6</span>) / <span class="fn">len</span>(seq)
+bi = <span class="fn">bigram</span>(seq, <span class="nm">1</span>)
+<span class="fn">print</span>(<span class="st">"unigram entropy  :"</span>, -np.sum(unigram*np.log2(unigram)).round(<span class="nm">3</span>))
+<span class="kw">for</span> ctx, p <span class="kw">in</span> <span class="fn">sorted</span>(bi.items()):
+    <span class="fn">print</span>(ctx, <span class="st">"->"</span>, np.round(p, <span class="nm">2</span>), <span class="st">" H="</span>, -np.sum(p[p&gt;<span class="nm">0</span>]*np.log2(p[p&gt;<span class="nm">0</span>])).round(<span class="nm">3</span>))
+      </div>
+      <p class="expect">Unigram entropy is 2.585 bits. Conditional on a single token the next is deterministic (H = 0) for tokens 0, 1, 3 and 4;
+      from token 2 and its partner 5 the next is a coin flip (H = 1.0 bit) &mdash; which is exactly the position where a 1-step
+      model cannot tell which chain follows, while the token at t+2 is fully determined by the chain we are in. The MTP head on t+2 forces the model's representation of
+      position t to encode <em>which chain we are in</em> &mdash; information the 1-step objective never needed. That is the
+      measurable effect to look for: a rise in linear-probe accuracy for t+2 identity at hidden layer t.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; when MTP loses money</h4>
+      <p>Speculation pays only if the draft is cheap relative to the verifier. In an MoE, drafting with the full model is not
+      cheap &mdash; quantify the condition under which the extra heads are a net loss.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">speedup</span>(a, D, draft_cost_ratio):
+    <span class="cm"># one step: draft D tokens sequentially (D * ratio of a full pass), then verify in one pass</span>
+    tokens = <span class="fn">sum</span>(a**i <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(D+<span class="nm">1</span>))
+    cost = D * draft_cost_ratio + <span class="nm">1.0</span>
+    <span class="kw">return</span> tokens / cost
+
+<span class="kw">for</span> ratio <span class="kw">in</span> (<span class="nm">0.05</span>, <span class="nm">0.2</span>, <span class="nm">0.5</span>):
+    <span class="kw">for</span> D, a <span class="kw">in</span> [(<span class="nm">1</span>, <span class="nm">0.9</span>), (<span class="nm">2</span>, <span class="nm">0.8</span>), (<span class="nm">2</span>, <span class="nm">0.6</span>)]:
+        <span class="fn">print</span>(<span class="st">f"draft_ratio={ratio}  D={D} a={a:.1f}  speedup={speedup(a,D,ratio):.3f}x"</span>)
+      </div>
+      <p class="expect">With a cheap draft (ratio 0.05) the D = 2, a = 0.8 configuration gives 2.44/1.10 = 2.218&times;. With a
+      draft costing half a full pass the same configuration gives 2.44/2.00 = 1.220&times;; and at a = 0.6 with ratio 0.5 it
+      collapses to 1.960/2.00 = 0.980&times; &mdash; a <em>slowdown</em>. The extra heads must be much cheaper than the main
+      forward pass, which is why MTP heads are small and why long-context acceptance rates matter so much.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b36-s5">5 &middot; Failure modes <a class="hook" href="#b36-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Draft acceptance measured only at position 1.</strong> Symptom: claimed speedup is 1.8&times; but users see
+        1.2&times;. Acceptance falls off sharply with chain depth; report a<sub>1</sub>, a<sub>2</sub>, a<sub>3</sub>
+        separately, because the benefit is the sum of their products.</li>
+        <li><strong>Draft trained on pre-training data, verified on agent traces.</strong> Symptom: acceptance is good on prose and
+        poor on JSON, code and tool-call markup &mdash; exactly the outputs an agent produces most of. Acceptance must be
+        measured per workload, not in aggregate.</li>
+        <li><strong>Verification overhead at long context.</strong> Symptom: speculation helps at short prompts and hurts past
+        32k, because the verifier must write D extra cache entries and read the whole cache for D positions. Measure net tokens/second,
+        not acceptance rate.</li>
+        <li><strong>MTP loss weight competing with the main objective.</strong> Symptom: the main head's loss is slightly worse
+        than a matched baseline while the MTP loss looks great. &lambda;<sub>d</sub> too high; the extra heads are starving the
+        primary signal.</li>
+        <li><strong>Assuming MTP improves quality unconditionally.</strong> Symptom: a well-tuned baseline beats the MTP variant on
+        downstream evals despite a better pre-training loss. The gains reported for MTP are relative to a specific baseline and
+        data regime; re-validate on your own task rather than importing a multiplier.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b36-s6">6 &middot; Connects to <a class="hook" href="#b36-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L16 (cross-entropy) and L18 (speculative decoding basics). &nbsp;
+    <strong>Unlocks:</strong> serving throughput (L44) and the V3 architecture stack.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/16-loss-perplexity.html">L16 &middot; Cross-entropy &amp; perplexity</a> &mdash; the loss being multiplied per head.</li>
+      <li><a class="tag-a" href="../track-a/18-decoding-strategies.html">L18 &middot; Speculative decoding</a> &mdash; the decoding mechanism MTP feeds.</li>
+      <li><a class="tag-b" href="32-deepseek-moe.html">L32 &middot; DeepSeekMoE</a> &mdash; the architecture MTP ships alongside in V3.</li>
+      <li><a class="tag-b" href="44-inference-serving.html">L44 &middot; Serving</a> &mdash; where acceptance rate becomes throughput.</li>
+      <li><a class="tag-b" href="35-long-context.html">L35 &middot; Long context</a> &mdash; why verification is not free at 1M tokens.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b36-s7">7 &middot; Self-check <a class="hook" href="#b36-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> With acceptance a = 0.75 and D = 2, what is the expected number of tokens per decoding step, and what is it with D = 1?</p>
+        <details><summary>Reveal answer</summary><p>D = 2: 1 + 0.75 + 0.5625 = 2.3125 tokens/step. D = 1: 1.75. So the second draft adds 0.5625 tokens
+        per step &mdash; a 32% increase over D = 1 for one extra head and one extra sequential draft pass. Whether that pays depends entirely on
+        the draft cost ratio from Experiment 3.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A draft costs 15% of a full forward pass. With D = 2 and a = 0.85, compute the speedup including draft cost.</p>
+        <details><summary>Reveal answer</summary><p>E[tokens] = 1 + 0.85 + 0.7225 = 2.5725. Cost = 2 &times; 0.15 + 1.0 = 1.30 passes per step.
+        Speedup = 2.5725/1.30 = 1.979&times;. Note that the naive &ldquo;tokens per step&rdquo; figure of 2.57 overstates it by 30% &mdash; this is the
+        most common overclaim in speculative-decoding write-ups.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: acceptance rate is 0.9 on Wikitext and 0.55 on your agent's tool-call traces. What is happening and what do you do?</p>
+        <details><summary>Reveal answer</summary><p>The draft head was trained on a corpus whose distribution favours prose; tool-call traces are highly structured,
+        low-entropy but with rare exact tokens (IDs, JSON keys, paths) where a draft is likely to guess wrong. The higher the
+        structure the <em>less</em> helpful a probabilistic draft and the more helpful grammars/constrained decoding (L18). Fix: include
+        agent traces in the MTP training mixture, or switch to constrained decoding for the structured segments.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does the sequential head design need the token it just drafted as input, while the parallel design does not, and why does the difference matter at verification time?</p>
+        <details><summary>Reveal answer</summary><p>Sequential heads condition on the drafted prefix, which is what the verifier will actually check against; parallel heads condition only on the
+        original hidden state and predict t+2 without knowing the t+1 that will be accepted. At verification time the parallel draft for t+2 may be
+        conditioned on the wrong prefix, so its acceptance rate is systematically lower for the second and third tokens &mdash; the exact
+        positions where speculative gain is already thin.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Give the honest accounting of what MTP costs a pre-training run and what it buys.</p>
+        <details><summary>Reveal answer</summary><p>Costs: D extra small transformer blocks (&asymp;0.2B params each at d = 7168 for a minimal block), roughly
+        +10% training compute per head, and a slightly more complex data pipeline (needs targets at t+2..t+D). Buys: a denser training
+        signal which is reported to improve pre-training efficiency, plus a draft for speculative decoding with no separate model. The
+        training-efficiency gain is the harder claim to isolate &mdash; to prove it you need matched-compute baselines, which most write-ups do
+        not provide.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="35-long-context.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L35 &middot; Long context: what 1M tokens actually costs</span></a>
+    <a class="next" href="37-encoder-decoder.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L37 &middot; Encoder&ndash;decoder &amp; the V4.1 asymmetric split</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

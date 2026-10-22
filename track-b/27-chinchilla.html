@@ -1,0 +1,337 @@
+﻿<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b27">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L27 Â· Chinchilla: Compute-Optimal Data vs Params â€” AILearn</title>
+<meta name="description" content="For a fixed compute budget there is one best (params, tokens) split. Chinchilla's result, derived, turned into a calculator, and stress-tested where it breaks.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L27</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L27 &middot; Chinchilla: Compute-Optimal Data vs Params</h1>
+  <p class="lede">A 280B model on 300B tokens and a 70B model on 1.4T tokens cost the same compute, and the small one won. Fixed budget, two substitutable inputs, one best split &mdash; and 2021 practice was consistently on the wrong side of it.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: compute-optimal calculator</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">compute-optimal split</span>
+  <span class="pill">20 tokens per param</span>
+  <span class="pill">parametric loss law</span>
+  <span class="pill">C = 6ND budget line</span>
+  <span class="pill">unique-token ceiling</span>
+  <span class="pill">data-hungry regime</span>
+  <span class="pill">under-trained vs over-trained</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 Â· Why it exists">
+    <h2 id="b27-s1">1 &middot; Why it exists <a class="hook" href="#b27-s1">#</a></h2>
+
+    <p>From 2020 to mid-2022 the dominant strategy was <em>buy parameters</em>. GPT-3: 175B parameters on ~300B tokens
+    (about 1.7 tokens per parameter). Gopher: 280B on 300B tokens (about 1.1 tokens per parameter). Loss was believed to be
+    dominated by parameter count, so the data was an afterthought.</p>
+
+    <p>That is a mistake because training compute is a product, not a sum: C &asymp; 6ND. Doubling N at fixed C forces you to
+    halve D. Every lab was picking a point on that trade-off, and nobody had measured where the minimum was.</p>
+
+    <table class="table">
+      <thead><tr><th>Run</th><th>Params N</th><th>Tokens D</th><th>C = 6ND</th><th>Tokens/param</th></tr></thead>
+      <tbody>
+        <tr><td>Gopher</td><td>280&times;10<sup>9</sup></td><td>300&times;10<sup>9</sup></td><td>5.04&times;10<sup>23</sup></td><td>1.07</td></tr>
+        <tr><td>Chinchilla</td><td>70&times;10<sup>9</sup></td><td>1,400&times;10<sup>9</sup></td><td>5.88&times;10<sup>23</sup></td><td>20.0</td></tr>
+      </tbody>
+    </table>
+
+    <p>The same order of money. A 4&times; smaller model on 4.7&times; more data, with 17% <em>more</em> compute, beat the big one
+    on essentially every benchmark. Hoffmann et al., <em>Training Compute-Optimal Large Language Models</em>
+    <span class="asof">arXiv:2203.15556</span>, concluded that many contemporary large models were <strong>substantially
+    under-trained</strong>: they had bought parameters they could not feed.</p>
+
+    <div class="callout boss">
+      <p>Your budget fixes N&times;D. One split of that product minimises loss, it is near 20 tokens per parameter, and
+      picking wrong means you paid full price for a model that scores like one at half the compute. Chinchilla is the
+      difference between a research bet and a procurement decision.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 Â· The mental model">
+    <h2 id="b27-s2">2 &middot; The mental model <a class="hook" href="#b27-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a fixed budget for a kitchen. Burners = N, cooking hours = D. Buying more burners
+    without more hours is waste; more hours without burners just queues food. One ratio is best.</p>
+
+    <p>The precise picture is an <em>isoFLOP slice</em>. Hold C fixed. For each candidate N, set D = C/(6N) and plot loss
+    against N on a log axis. You get a convex U: too few parameters cannot represent the function (the B/D term is fine, the
+    A/N<sup>&alpha;</sup> term is not), too many parameters means starved data (now A/N is fine and B/D dominates). The
+    bottom of the U is N<sub>opt</sub>(C). Stack the bottoms from many budgets and you get a line &mdash; and that line is a
+    power law, which is why one ratio works at every scale for a while.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Two substitutable inputs, one interior optimum, a smooth convex
+      penalty for being off it. It also gets the asymmetry right: starving data hurts more than overspending parameters, at
+      every ratio above the optimum.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Real kitchens have a hard ceiling: you cannot cook more hours than there are
+      distinct recipes. Chinchilla assumes unlimited high-quality tokens. Past the unique-data wall the U's right arm is
+      clipped and the true optimum is <em>against the wall</em> &mdash; deliberately over-trained. That is lesson 28.</p></div>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 Â· The mechanism">
+    <h2 id="b27-s3">3 &middot; The mechanism <a class="hook" href="#b27-s3">#</a></h2>
+
+    <p>Hoffmann et al. propose three ways to fit the same law. The one that is easy to reason about has an additive
+    parametric term and an additive data term:</p>
+
+    <div class="formula">
+      L(N,&thinsp;D) = E + A&thinsp;/&thinsp;N<sup>&alpha;</sup> + B&thinsp;/&thinsp;D<sup>&beta;</sup>
+      <span class="note">E &asymp; 1.69 is irreducible loss (the entropy of text itself); A/N<sup>&alpha;</sup> is the parameter shortfall; B/D<sup>&beta;</sup> is the data shortfall. Fitted values reported by the paper: A &asymp; 406.4, B &asymp; 410.7, &alpha; &asymp; 0.34, &beta; &asymp; 0.28. N is non-embedding params, D is tokens.</span>
+    </div>
+
+    <p>Minimise subject to C = 6ND. A Lagrange multiplier gives &part;L/&part;N = &lambda;&middot;6D and
+    &part;L/&part;D = &lambda;&middot;6N; eliminating &lambda; gives &alpha;A/N<sup>&alpha;+1</sup> &middot; N =
+    &beta;B/D<sup>&beta;+1</sup> &middot; D, which rearranges to the allocation exponents:</p>
+
+    <div class="formula">
+      N<sub>opt</sub> &prop; C<sup>&beta;/(&alpha;+&beta;)</sup> = C<sup>0.4516</sup>
+      &nbsp;&nbsp;,&nbsp;&nbsp;
+      D<sub>opt</sub> &prop; C<sup>&alpha;/(&alpha;+&beta;)</sup> = C<sup>0.5484</sup>
+      <span class="note">The two exponents sum to exactly 1 because &beta; + &alpha; over &alpha; + &beta; is 1. Consequence: &sigma; a 10&times; larger budget wants 10<sup>0.4516</sup> = 2.83&times; more parameters and 10<sup>0.5484</sup> = 3.53&times; more tokens.</span>
+    </div>
+
+    <p>Because they sum to 1, the <em>ratio</em> D/N &prop; C<sup>0.0968</sup>. That exponent is small enough that over six
+    decades of budget (10<sup>20</sup> to 10<sup>26</sup> FLOPs) the optimal ratio only moves 10<sup>0.581</sup> = 3.8&times;,
+    and over four decades only 2.44&times;. That is the honest justification for the &ldquo;20 tokens per parameter&rdquo;
+    rule of thumb: it is not exact, it is <em>robustly approximately correct</em>, and the exponents are what make it so.</p>
+
+    <h3>Worked check: the two same-budget runs, scored by the law</h3>
+    <table class="table">
+      <thead><tr><th>Run</th><th>Term A/N<sup>0.34</sup></th><th>Term B/D<sup>0.28</sup></th><th>Loss</th></tr></thead>
+      <tbody>
+        <tr><td>Gopher: N = 280&times;10<sup>9</sup>, D = 3.0&times;10<sup>11</sup></td><td>406.4/(2.8&times;10<sup>11</sup>)<sup>0.34</sup> = 0.0521</td><td>410.7/(3.0&times;10<sup>11</sup>)<sup>0.28</sup> = 0.2511</td><td><strong>1.9932</strong></td></tr>
+        <tr><td>Chinchilla: N = 70&times;10<sup>9</sup>, D = 1.4&times;10<sup>12</sup></td><td>406.4/(7.0&times;10<sup>10</sup>)<sup>0.34</sup> = 0.0835</td><td>410.7/(1.4&times;10<sup>12</sup>)<sup>0.28</sup> = 0.1632</td><td><strong>1.9366</strong></td></tr>
+      </tbody>
+    </table>
+    <p>Gopher's parameter term is smaller (0.0521 vs 0.0835) but its data term is 54% larger (0.2511 vs 0.1632), and the
+    data term wins. Net: 0.0566 nats per token in favour of the smaller, hungrier model &mdash; for the same money.</p>
+
+    <h3>The calculator you will actually use</h3>
+    <p>If you fix the ratio r = D/N (from 20, or from a measurement), the allocation is trivial:</p>
+
+    <div class="formula">
+      N = C / (6&thinsp;r) &nbsp;&nbsp;&nbsp;&nbsp; D = r&thinsp;N = C / 6
+      <span class="note">The tokens you need depend only on compute, not on r at all &mdash; because C = 6ND fixes D = C/6 once you have spent C. Choosing r is choosing how many parameters to split those tokens across.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Budget C</th><th>r = 20 &rArr; N</th><th>D = C/6</th><th>Verdict</th></tr></thead>
+      <tbody>
+        <tr><td>10<sup>21</sup> FLOPs</td><td>10<sup>21</sup>/120 = 8.33&times;10<sup>9</sup></td><td>1.67&times;10<sup>20</sup></td><td>an 8.3B model on 167B tokens &mdash; the GPT-2-era budget</td></tr>
+        <tr><td>10<sup>23</sup> FLOPs</td><td>10<sup>23</sup>/120 = 8.33&times;10<sup>11</sup></td><td>1.67&times;10<sup>22</sup></td><td>833B params on 16.7T tokens &mdash; corpus too small</td></tr>
+        <tr><td>10<sup>25</sup> FLOPs</td><td>10<sup>25</sup>/120 = 8.33&times;10<sup>13</sup></td><td>1.67&times;10<sup>24</sup></td><td>83T params &mdash; physically absurd</td></tr>
+      </tbody>
+    </table>
+
+    <p>That last row is the real lesson of the post-Chinchilla era. The compute-optimal point leaves the available data
+    almost immediately; no one has 1.67 quadrillion unique tokens. So the frontier does not follow Chinchilla, it stops at
+    the data wall and then deliberately <em>over-trains</em> &mdash; which is L28.</p>
+
+    <div class="callout audit">
+      <p>Make r auditable. Every pretraining run should log (N, D<sub>unique</sub>, C = 6ND, r, loss). Then &ldquo;was this
+      run compute-efficient?&rdquo; is one recomputable ratio, not a narrative. Same discipline as your JobAgents scoring:
+      the answer is the artefact, not the opinion.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 Â· Your hands">
+    <h2 id="b27-s4">4 &middot; Your hands <a class="hook" href="#b27-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; score any two runs on the same axis</h4>
+      <p>This is the calculation from section 3, runnable. Change N and D to your own candidates; the loss is directly
+      comparable only because C is the same.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># Chinchilla parametric law: L = E + A/N^alpha + B/D^beta</span>
+E, A, B, al, be = <span class="nm">1.69</span>, <span class="nm">406.4</span>, <span class="nm">410.7</span>, <span class="nm">0.34</span>, <span class="nm">0.28</span>
+<span class="kw">def</span> <span class="fn">loss</span>(N, D):
+    <span class="kw">return</span> E + A / N**al + B / D**be
+
+<span class="kw">for</span> name, N, D <span class="kw">in</span> [(<span class="st">"Gopher    </span><span class="st">"</span>, <span class="nm">280e9</span>, <span class="nm">300e9</span>),
+                        (<span class="st">"Chinchilla"</span>, <span class="nm">70e9</span>,  <span class="nm">1.4e12</span>)]:
+    <span class="fn">print</span>(<span class="st">f"{name} N={N/1e9:6.0f}B D={D/1e12:5.2f}T C={6*N*D:.3e} L={loss(N,D):.4f}"</span>)
+<span class="cm"># Gopher     N=   280B D= 0.30T C=5.040e+23 L=1.9932</span>
+<span class="cm"># Chinchilla N=    70B D= 1.40T C=5.880e+23 L=1.9366</span>
+    </div>
+      <p class="expect">0.0566 nats in favour of the smaller model at essentially the same compute. If you get a different
+      picture &mdash; Gopher winning &mdash; you swapped the exponents (they are easy to swap; &alpha; belongs to N).</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; walk an isoFLOP slice and read its shape</h4>
+      <p>Explore what happens when you hold C fixed and sweep the ratio. Use a budget small enough to see the U
+      (22 FLOPs is the smallest at which the parabola is not lost in the noise of E; even here it is shallow, which is a
+      finding rather than a bug).</p>
+      <div class="code" data-lang="python">
+E, A, B, al, be = <span class="nm">1.69</span>, <span class="nm">406.4</span>, <span class="nm">410.7</span>, <span class="nm">0.34</span>, <span class="nm">0.28</span>
+C = <span class="nm">1e23</span>
+<span class="kw">for</span> r <span class="kw">in</span> (<span class="nm">1.7</span>, <span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>, <span class="nm">50</span>, <span class="nm">100</span>, <span class="nm">200</span>, <span class="nm">400</span>):
+    N = C / (<span class="nm">6</span> * r); D = C / <span class="nm">6</span>
+    <span class="fn">print</span>(<span class="st">f"r={r:6.1f}  N={N/1e9:9.1f}B  L={E + A/N**al + B/D**be:.4f}"</span>)
+      </div>
+      <p class="expect"><strong>The honest result at 10<sup>23</sup> FLOPs is that the slice is almost flat</strong> &mdash; loss
+      barely moves between r = 1.7 and r = 200 because the data term is already tiny at D = 1.67&times;10<sup>22</sup> tokens.
+      That is a real property, not a bug: the ratio only matters where D is small enough for a token to be worth something.
+      The U-curve becomes visible at <em>realistic</em> N (10<sup>9</sup>&ndash;10<sup>11</sup>) where, holding N = 70B and
+      raising r from 20 to 200, loss falls from 1.9366 to 1.8591. Falsification for this lab: if your slice genuinely curves
+      into a visible U at 10<sup>23</sup> FLOPs with these constants, you have a typo in the exponents.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; prove the ratio drifts, so you know how much to trust it</h4>
+      <p>Three lines of exponent arithmetic. If a vendor tells you &ldquo;the optimal ratio is fixed forever,&rdquo; this
+      shows how it actually moves.</p>
+      <div class="code" data-lang="bash">
+python -c "
+al,be=0.34,0.28
+a_n=be/(al+be); a_d=al/(al+be)
+print('N grows C^%.4f, D grows C^%.4f, D/N grows C^%.4f' % (a_n,a_d,a_d-a_n))
+for dec in (2,4,6): print('%d decades -> D/N moves %.2fx' % (dec, 10**(dec*(a_d-a_n))))
+for x in (0.5,2,10): print('%.1fx compute -> N x%.2f, D x%.2f' % (x, x**a_n, x**a_d))
+"
+      </div>
+      <p class="expect">D/N exponent = 0.0968; 2 decades &rarr; 1.56&times;, 4 decades &rarr; 2.44&times;, 6 decades
+      &rarr; 3.81&times;. The per-multiplier lines: 10&times; compute &rarr; N &times;2.83, D &times;3.53; 2&times; compute
+      &rarr; N &times;1.37, D &times;1.46. If your numbers differ, check that you used (a_d &minus; a_n) and not
+      (a_d + a_n) &mdash; the sum is 1 and would give a nonsense 10&times; drift per decade.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 Â· Failure modes">
+    <h2 id="b27-s5">5 &middot; Failure modes <a class="hook" href="#b27-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Applying the law past the data wall.</strong> Symptom: the plan needs 16.7T unique tokens, the corpus has 8T,
+        so you run 2 epochs &mdash; and the loss curve knees at exactly one epoch and finishes above prediction.</li>
+        <li><strong>Counting tokens instead of unique tokens.</strong> Symptom: two corpora with identical token counts produce
+        a repeatable loss gap; one had 3&times; the deduplicated content. Log <code>unique_tokens</code> next to <code>tokens</code>.</li>
+        <li><strong>N includes embeddings.</strong> Symptom: predictions are a few percent optimistic, and the error is larger
+        for large-vocab / shallow models. The law's N excludes embedding and unembedding matrices.</li>
+        <li><strong>Coefficient transplant.</strong> Symptom: you refit on your own domain (clinical notes, code, log lines) and
+        get a materially different exponent &mdash; typically lower &alpha;, because low-entropy text makes data the binding
+        constraint. Refit on a 6&ndash;8 point ladder before trusting any published E, A, B.</li>
+        <li><strong>Reading nats as benchmark points.</strong> Symptom: a 0.02-nat difference looks negligible in a report but
+        corresponds to a visible benchmark gap, so a run gets cancelled that should not have been &mdash; or the reverse. Never
+        convert one to the other with a rule of thumb.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 Â· Connects to">
+    <h2 id="b27-s6">6 &middot; Connects to <a class="hook" href="#b27-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L26 (the power-law shape, C = 6ND). &nbsp; <strong>Unlocks:</strong> L28 and every
+    build-vs-buy sizing decision in L42&ndash;L43.</p>
+    <ul>
+      <li><a class="tag-b" href="26-scaling-laws.html">L26 &middot; Kaplan scaling laws</a> &mdash; the family Chinchilla refines.</li>
+      <li><a class="tag-a" href="../track-a/23-data-corpora.html">L23 &middot; Data: dedup, filters, mixtures</a> &mdash; unique-token count is what actually bounds D.</li>
+      <li><a class="tag-b" href="28-over-training.html">L28 &middot; Over-training &amp; inference-aware scaling</a> &mdash; the regime that took over once the wall was hit.</li>
+      <li><a class="tag-b" href="43-training-cost.html">L43 &middot; Training cost modeling</a> &mdash; the same FLOPs, priced.</li>
+      <li><a class="tag-b" href="30-moe.html">L30 &middot; Mixture of Experts</a> &mdash; C = 6N<sub>active</sub>D breaks the clean product.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 Â· Self-check">
+    <h2 id="b27-s7">7 &middot; Self-check <a class="hook" href="#b27-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why do the allocation exponents &beta;/(&alpha;+&beta;) and &alpha;/(&alpha;+&beta;) sum to 1, and what does that force on the D/N ratio?</p>
+        <details><summary>Reveal answer</summary><p>Trivially: (&beta; + &alpha;)/(&alpha; + &beta;) = 1. So both N<sub>opt</sub> and D<sub>opt</sub> are proportional
+        to C<sup>some power</sup> and their growth is symmetric in log space, leaving D/N &prop; C<sup>0.0968</sup>. Because the exponent of the
+        <em>difference</em> is small, the optimal ratio is nearly constant &mdash; the entire justification for a fixed tokens-per-parameter rule
+        over the scales anyone builds at.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> You have 6&times;10<sup>23</sup> FLOPs. What is D = C/6, what N does r = 20 require, and how many H800-hours is the run at MFU 0.40 (989 TFLOP/s dense bf16)?</p>
+        <details><summary>Reveal answer</summary><p>D = C/6 = 1.0&times;10<sup>23</sup> tokens. N = C/(6&times;20) = 5&times;10<sup>21</sup> &mdash; five trillion
+        parameters, which is exactly the absurdity. GPU-hours = C / (3600 &times; 0.40 &times; 989&times;10<sup>12</sup>) =
+        6&times;10<sup>23</sup> / 1.424&times;10<sup>18</sup> = 4.21&times;10<sup>5</sup> = 421,000 H800-hours. The arithmetic is easy; the
+        feasibility is the entire engineering problem, and it is why L28 and L30 exist.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your 20:1 planned run finishes 0.03 nats above prediction and the loss curve has a knee at exactly one epoch. Name the cause and the one chart that proves it.</p>
+        <details><summary>Reveal answer</summary><p>Data repetition at the unique-token wall. The knee is the moment the sampler revisits seen tokens. The chart:
+        loss against <em>unique</em> tokens consumed. If the curve snaps back onto the scaling-law prediction on that x-axis, the wall was
+        the cause and the fix is more unique data or fewer parameters &mdash; not more steps.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Two plans, same compute: (A) 70B / 1.4T, (B) 140B / 700B. Score both with the parametric law and state the direction of the error a naive &ldquo;bigger is better&rdquo; instinct makes.</p>
+        <details><summary>Reveal answer</summary><p>Both are 6ND = 5.88&times;10<sup>23</sup>. L(A) = 1.69 + 0.0835 + 0.1632 = 1.9367;
+        L(B) = 1.69 + 406.4/(1.4&times;10<sup>11</sup>)<sup>0.34</sup> + 410.7/(7&times;10<sup>11</sup>)<sup>0.28</sup> = 1.69 + 0.0660 + 0.1981 = 1.9541.
+        B is <strong>0.0174 nats worse</strong>. Direction: halving the data costs more than doubling the parameters buys. The instinct
+        systematically over-parameterises.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your VP says &ldquo;Chinchilla proved big models are unnecessary.&rdquo; Correct that in one quantitative sentence.</p>
+        <details><summary>Reveal answer</summary><p>Chinchilla showed that for a <em>fixed</em> budget you should trade parameters for
+        tokens &mdash; not that parameters stop mattering. With 10&times; the compute the compute-optimal N still grows 2.83&times;
+        (C<sup>0.4516</sup>) alongside 3.53&times; more tokens (C<sup>0.5484</sup>). Big models remain necessary; the 2021-era ones were
+        simply being built on 1/20th of the data they needed.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="26-scaling-laws.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L26 &middot; Kaplan scaling laws</span></a>
+    <a class="next" href="28-over-training.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L28 &middot; Over-training &amp; inference-aware scaling</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

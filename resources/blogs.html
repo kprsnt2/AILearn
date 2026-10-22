@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="blogs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blogs &amp; Newsletters — AILearn</title>
+<meta name="description" content="25 sources worth subscribing to, sorted by whether they are primary engineering, researcher craft, practitioner signal, or docs-as-blog — with an honest list of what to skip.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .rl-card { background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:16px 20px; margin:14px 0; }
+  .rl-card h3 { margin:0 0 2px !important; font-size:1.02rem; }
+  .rl-card h3 a { border-bottom:0; }
+  .rl-why { font-size:.93rem; margin:8px 0 0; }
+  .starthere { font-family:var(--mono); font-size:.72rem; color:var(--txt-3); border-left:2px solid var(--emerald); padding-left:11px; margin-top:10px; }
+  .starthere::before { content:"START HERE \25B8 "; color:var(--emerald); font-weight:700; letter-spacing:1px; font-size:.64rem; }
+  .rl-kind { font-family:var(--mono); font-size:.62rem; letter-spacing:1.2px; color:var(--txt-3); }
+  .skipcard { border:1px solid rgba(245,158,11,.28); background:rgba(245,158,11,.045); border-radius:var(--r); padding:14px 20px; margin:14px 0; }
+  .skipcard h3 { margin:0 0 4px !important; font-size:.98rem; color:var(--txt) !important; }
+  .honest { font-size:.9rem; color:var(--txt-2); }
+  .count { color:var(--amber); font-family:var(--mono); font-size:.92em; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../track-a/index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <span>Resources</span> <span>/</span> <span>Blogs</span></div>
+  <div class="track-tag">RESOURCES &middot; MAINTAINED SOURCES</div>
+  <h1>Blogs &amp; Newsletters &mdash; 25 sources, four kinds</h1>
+  <p class="lede">Papers tell you what was proved; engineering blogs tell you what broke. The failure mode of
+  following blogs is that you cannot tell a primary source from a person who read three tweets about it. This
+  page separates the two, marks the noise honestly, and gives every source a topic to start on instead of a
+  deep link that will rot.</p>
+  <div class="chips">
+    <span class="chip">25 sources</span>
+    <span class="chip">4 tiers</span>
+    <span class="chip">links verified 2026-10</span>
+    <span class="chip">+ a skip list</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">primary engineering</span>
+  <span class="pill">researcher craft</span>
+  <span class="pill">practitioner signal</span>
+  <span class="pill">docs-as-blog</span>
+  <span class="pill">hype filter</span>
+</div>
+
+<p class="honest"><strong>How to read the links here.</strong> Each source links its <em>root</em> or its
+<em>index</em> &mdash; the stable thing &mdash; and the &ldquo;start here&rdquo; line names a <em>topic</em> to
+search for on that site rather than a deep URL that will 404 in eighteen months. Where a deep URL is stable and
+checked, it is linked inline. Every root on this page returned HTTP 200 at build time (Oct 2026); deep links are
+flagged inline and were separately checked.</p>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; First-party engineering">
+    <h2 id="blogs-s1">1 &middot; First-party engineering <a class="hook" href="#blogs-s1">#</a></h2>
+
+    <p>The lab&rsquo;s own account of its own systems. Highest density of detail nobody else can supply &mdash;
+    actual failure modes, actual cost numbers, actual post-mortems &mdash; and also the most marketing-shaped, so
+    read the engineering write-ups and ignore the launch posts. <span class="count">Seven sources.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://www.anthropic.com/engineering">Anthropic &mdash; Engineering</a></h3>
+      <div class="rl-kind">FIRST-PARTY &middot; AGENT SYSTEMS</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the only first-party source that documents agent
+      <em>harness</em> design &mdash; tool interfaces, context management, multi-agent orchestration, evaluation
+      infrastructure &mdash; as patterns rather than announcements. One entry is effectively required reading for
+      this course: the piece on building effective agents (workflows vs agents, orchestrator-worker,
+      evaluator-optimizer) at
+      <a href="https://www.anthropic.com/engineering/building-effective-agents">anthropic.com/engineering/building-effective-agents</a>.</p>
+      <p class="starthere">Topic: context engineering and agent evaluation &mdash; how they keep a long-running
+      agent&rsquo;s context from degrading. Maps to <a href="../track-d/79-context-engineering.html">L79</a> and
+      <a href="../track-d/81-subagents.html">L81</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://openai.com/news/">OpenAI &mdash; News &amp; Research</a></h3>
+      <div class="rl-kind">FIRST-PARTY &middot; MODELS &amp; SYSTEMS</div>
+      <p class="rl-why"><strong>Why it matters:</strong> system cards and model-index pages are where the
+      <em>honest</em> hedged claims live &mdash; eval methodology, refusal rates, the known-limitations section. A
+      system card is the closest thing the industry has to an audit document; read it the way you would read a
+      10-K, for the footnotes.</p>
+      <p class="starthere">Topic: system cards and eval methodology. Every launch, read the limitations section
+      before the benchmark chart. Maps to <a href="../track-c/74-eval-contamination.html">L74</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://deepmind.google/discover/blog/">Google DeepMind &mdash; Blog</a></h3>
+      <div class="rl-kind">FIRST-PARTY &middot; SCIENCE</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the research-lab voice &mdash; Gemini technical reports,
+      proof-search systems, and longer science write-ups &mdash; is the best available demonstration of how a
+      serious lab reasons about verification, search, and formal rewards. It is also where the technical reports
+      behind most &ldquo;new capability&rdquo; claims are published.</p>
+      <p class="starthere">Topic: formal verification and search-augmented reasoning &mdash; the write-ups behind
+      math-proof systems. Maps to <a href="../track-c/63-verifiable-rewards.html">L63</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/deepseek-ai">DeepSeek &mdash; Releases, Docs &amp; Model Repos</a></h3>
+      <div class="rl-kind">FIRST-PARTY &middot; MOST OPERATIONAL</div>
+      <p class="rl-why"><strong>Why it matters:</strong> DeepSeek publishes what other labs redact &mdash; training
+      cost, the load-balancing trick, inference kernel choices &mdash; in technical reports and repo READMEs. For
+      this course it is the single most useful first-party source, because architecture, serving economics, and
+      agent data synthesis are all documented at a level you can reimplement.</p>
+      <p class="starthere">Topic: the release notes that accompany each generation &mdash; in particular the
+      V3.2-Exp notes on sparse attention at
+      <a href="https://github.com/deepseek-ai/DeepSeek-V3.2-Exp">github.com/deepseek-ai/DeepSeek-V3.2-Exp</a>
+      and the API docs at <a href="https://api-docs.deepseek.com/">api-docs.deepseek.com</a> for the serving model
+      (thinking mode, reasoning effort, peak/off-peak pricing). Maps to <a href="../track-b/34-dsa.html">L34</a>,
+      <a href="../track-b/45-caching.html">L45</a>, <a href="../track-c/69-reasoning-effort.html">L69</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://ai.meta.com/blog/">Meta AI &mdash; Blog</a></h3>
+      <div class="rl-kind">FIRST-PARTY &middot; OPEN WEIGHTS</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the Llama model cards and the posts around them are the
+      most complete public description of an open-weights release process &mdash; data-filtering decisions,
+      acceptable-use policy, red-team results. When you fine-tune an open model, this is the document that tells
+      you what you may ship.</p>
+      <p class="starthere">Topic: the Llama model cards &mdash; specifically the red-team and data-handling
+      sections, not the benchmark table. Maps to <a href="../track-c/52-sft.html">L52</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://mistral.ai/news">Mistral AI &mdash; News</a></h3>
+      <div class="rl-kind">FIRST-PARTY &middot; EFFICIENCY</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the clearest writing from a lab whose entire thesis is
+      efficiency &mdash; small active-parameter sparse models that are cheap to serve, document models, and the
+      argument for cost per task over peak capability. Useful as a counterweight to pretraining-scale narratives.</p>
+      <p class="starthere">Topic: sparse models and cost per token &mdash; read a MoE announcement beside a napkin
+      calculation from <a href="../track-b/43-training-cost.html">L43</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://research.google/blog/">Google Research &mdash; Blog</a></h3>
+      <div class="rl-kind">FIRST-PARTY &middot; METHOD</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the institutional home of the papers this course rests on
+      &mdash; the transformer, T5, the MoE line &mdash; and the posts that explain the <em>experimental design</em>
+      behind each result. When a paper&rsquo;s ablation leaves you guessing what they varied, the accompanying post
+      usually says.</p>
+      <p class="starthere">Topic: the post that accompanies each scaling or MoE paper. Read it immediately after
+      the paper and compare what the post claims with what the ablation shows.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; Researcher blogs">
+    <h2 id="blogs-s2">2 &middot; Researcher blogs <a class="hook" href="#blogs-s2">#</a></h2>
+
+    <p>One person, thinking carefully, with the machinery in front of them. Highest signal-per-minute on the
+    internet, because there is no marketing department and no release date to hit. Where a blog post and a
+    technical report disagree, read the post first, then the report &mdash; and assume neither is lying.
+    <span class="count">Seven sources.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://lilianweng.github.io/">Lilian Weng &mdash; Lil&rsquo;Log</a></h3>
+      <div class="rl-kind">RESEARCHER BLOG &middot; THE BEST INDEX IN THE FIELD</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the field&rsquo;s best survey writer. Each post builds an
+      entire taxonomy for a young area &mdash; mechanisms, formulas, failure modes, citations &mdash; without hype
+      and without omitting the awkward cases. Two posts have served as whole teams&rsquo; syllabus: the agent post
+      at <a href="https://lilianweng.github.io/posts/2023-06-23-agent/">posts/2023-06-23-agent</a> (planning,
+      memory, tool use) and the reward-hacking post at
+      <a href="https://lilianweng.github.io/posts/2024-11-28-reward-hacking/">posts/2024-11-28-reward-hacking</a>.
+      The hallucination post is the best plain-language account of why grounded systems still confabulate.</p>
+      <p class="starthere">Topic: start with the agent post, then reward hacking, then hallucination. Maps to
+      <a href="../track-d/76-agents.html">L76</a> and <a href="../track-c/75-reward-hacking.html">L75</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://sebastianraschka.com/blog/">Sebastian Raschka &mdash; Blog</a> &middot; <a href="https://magazine.sebastianraschka.com/">Ahead of AI</a></h3>
+      <div class="rl-kind">RESEARCHER BLOG &middot; BUILD-FROM-SCRATCH</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the person who most consistently turns a paper into runnable
+      code and then tells you which parts of the paper the code cannot reproduce. His architecture and fine-tuning
+      explainers are the clearest bridge from equation to training script, and the companion repo
+      (<a href="https://github.com/rasbt/LLMs-from-scratch">github.com/rasbt/LLMs-from-scratch</a>) is the one to
+      actually run.</p>
+      <p class="starthere">Topic: the &ldquo;implement this from scratch&rdquo; series &mdash; attention, LoRA,
+      preference tuning. Maps to <a href="../track-a/06-attention-core.html">L06</a> and
+      <a href="../track-c/55-dpo.html">L55</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://jalammar.github.io/">Jay Alammar &mdash; Visualizing Machine Learning</a></h3>
+      <div class="rl-kind">RESEARCHER BLOG &middot; MECHANICAL INTUITION</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the diagrams that taught a generation what attention
+      actually computes. Not current research, and not trying to be &mdash; it is the fastest way to make the
+      transformer&rsquo;s tensor shapes permanent in your head, which is a prerequisite for reading any of the
+      efficiency papers on the <a href="papers.html">papers page</a>.</p>
+      <p class="starthere">Topic: the illustrated transformer and illustrated GPT-2 posts (both checked live at
+      <a href="https://jalammar.github.io/illustrated-transformer/">illustrated-transformer</a> and
+      <a href="https://jalammar.github.io/illustrated-gpt2/">illustrated-gpt2</a>). Maps to
+      <a href="../track-a/06-attention-core.html">L06</a> and <a href="../track-a/19-full-transformer.html">L19</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://karpathy.github.io/">Andrej Karpathy &mdash; Blog</a></h3>
+      <div class="rl-kind">RESEARCHER BLOG &middot; FIRST PRINCIPLES</div>
+      <p class="rl-why"><strong>Why it matters:</strong> long gaps between posts and every one worth the wait. The
+      unpublished-transformers essay on how the unreasonable effectiveness of recurrent networks is really about
+      training a program, and the essay on deep reinforcement learning and the policy-gradient family, are the
+      clearest explanations of &ldquo;what is the neural net an implementation of&rdquo; anywhere.</p>
+      <p class="starthere">Topic: the essays on RNN effectiveness and on deep RL &mdash; both checked live at
+      <a href="https://karpathy.github.io/2015/05/21/rnn-effectiveness/">2015/05/21/rnn-effectiveness</a> and
+      <a href="https://karpathy.github.io/2016/05/31/rl/">2016/05/31/rl</a>. For the video side of the same
+      material, see <a href="videos.html">videos</a>. Maps to
+      <a href="../track-a/03-backprop-autograd.html">L03</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://eugeneyan.com/">Eugene Yan &mdash; Blog</a></h3>
+      <div class="rl-kind">RESEARCHER BLOG &middot; APPLIED SYSTEMS</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the rare writer who documents applied systems with
+      evaluation numbers attached &mdash; RAG decompositions, recommendation and ranking pipelines, and the
+      engineering discipline of writing down what you measured. His &ldquo;patterns&rdquo; write-ups are the ones
+      that survive contact with a production system.</p>
+      <p class="starthere">Topic: RAG and recommender-system evaluation write-ups &mdash; search the site for
+      &ldquo;patterns&rdquo;. Maps to <a href="../track-d/85-rag-retrieval.html">L85</a> and
+      <a href="../track-d/87-rag-evaluation.html">L87</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://huyenchip.com/blog/">Chip Huyen &mdash; Blog</a></h3>
+      <div class="rl-kind">RESEARCHER BLOG &middot; ML SYSTEMS</div>
+      <p class="rl-why"><strong>Why it matters:</strong> writes about ML as a systems and operations problem
+      &mdash; serving, data distribution shift, inference optimisation, evaluation in production &mdash; which is
+      precisely the layer your agent projects live in. The ML-interview book at
+      <a href="https://huyenchip.com/ml-interviews-book/">huyenchip.com/ml-interviews-book</a> is a free, unusually
+      rigorous checklist of the systems knowledge expected of someone at your level.</p>
+      <p class="starthere">Topic: inference optimisation and data distribution shift. Maps to
+      <a href="../track-b/44-inference-serving.html">L44</a> and <a href="../track-d/91-cost-latency.html">L91</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://transformer-circuits.pub/">Transformer Circuits Thread (Anthropic)</a></h3>
+      <div class="rl-kind">RESEARCH PUBLICATION &middot; MECHANISTIC INTERPRETABILITY</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the primary venue for mechanistic interpretability &mdash;
+      not a blog but a serialized research object, with interactive toy models you can run in the browser. The
+      &ldquo;toy models of superposition&rdquo; piece at
+      <a href="https://transformer-circuits.pub/2022/toy_model/index.html">transformer-circuits.pub/2022/toy_model</a>
+      and the induction-heads piece at
+      <a href="https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html">2022/in-context-learning-and-induction-heads</a>
+      are the two that change how you debug a model rather than how you talk about one.</p>
+      <p class="starthere">Topic: superposition, then induction heads. Maps to
+      <a href="../track-b/49-components-circuits.html">L49</a> and <a href="../track-b/48-residual-stream.html">L48</a>.</p>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; Practitioner media">
+    <h2 id="blogs-s3">3 &middot; Practitioner media <a class="hook" href="#blogs-s3">#</a></h2>
+
+    <p>Where the field argues with itself. Faster than papers, less verifiable than papers, and often the first
+    place a real production failure gets named. Read these for <em>signal about what is breaking</em>, not for
+    facts you will cite. <span class="count">Six sources.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://simonwillison.net/">Simon Willison &mdash; Weblog</a></h3>
+      <div class="rl-kind">PRACTITIONER &middot; HIGHEST FREQUENCY, HIGHEST DISCIPLINE</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the best-documented practitioner log in the field. Writes
+      daily, experiments in public, and &mdash; unusually &mdash; labels his own uncertainty and corrects himself
+      on the record. His posts are the fastest reliable way to find out that a model or tool you were about to
+      bet on has a specific, reproducible problem.</p>
+      <p class="starthere">Topic: prompt injection and tool-permission attacks, and the running commentary on
+      agent security. Maps to <a href="../track-d/93-safety-alignment.html">L93</a> and
+      <a href="../track-d/84-safety-sandboxing.html">L84</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://www.latent.space/">Latent Space &mdash; Newsletter &amp; Podcast</a></h3>
+      <div class="rl-kind">PRACTITIONER &middot; AI ENGINEERING</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the only outlet whose beat is explicitly &ldquo;AI
+      engineer&rdquo; rather than &ldquo;researcher&rdquo; &mdash; shipping, serving, evaluating, pricing. The
+      interview format is where practitioners say the operational thing they would not put in a paper: what the
+      eval actually cost, what the latency actually was, what they had to rip out.</p>
+      <p class="starthere">Topic: episodes on inference economics and agent infrastructure. Listen at 1.5&times;
+      and check one number per episode against the vendor&rsquo;s own docs. Maps to
+      <a href="../track-b/44-inference-serving.html">L44</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://thegradient.pub/">The Gradient</a></h3>
+      <div class="rl-kind">PRACTITIONER &middot; LONG-FORM EXPLAINERS</div>
+      <p class="rl-why"><strong>Why it matters:</strong> commissioned long-form explainers written by people who
+      talk to the authors &mdash; the closest thing to a per-paper companion essay with the surrounding context
+      reconstructed. Their metrics-explainer work is the best plain-language treatment of why a benchmark number
+      is not a capability.</p>
+      <p class="starthere">Topic: their explainer on evaluation metrics for language models &mdash; checked live at
+      <a href="https://thegradient.pub/understanding-evaluation-metrics-for-language-models/">thegradient.pub/understanding-evaluation-metrics-for-language-models</a>.
+      Maps to <a href="../track-d/88-evals.html">L88</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://www.interconnects.ai/">Interconnects &mdash; Nathan Lambert</a></h3>
+      <div class="rl-kind">PRACTITIONER &middot; POST-TRAINING &amp; POLICY</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the most consistent public analysis of post-training
+      &mdash; preference data, RLHF/RLVR tradeoffs, why some labs&rsquo; recipes work and others quietly fail
+      &mdash; written by someone who worked on the inside. It is the commentary layer over
+      <a href="../track-c/51-post-training.html">Track C</a>, and it is honest about the parts nobody benchmarks.</p>
+      <p class="starthere">Topic: RLVR vs RLHF and the state of the post-training stack &mdash; browse the archive
+      at <a href="https://www.interconnects.ai/archive">interconnects.ai/archive</a> by tag. Maps to
+      <a href="../track-c/64-rlvr-vs-rlhf.html">L64</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://www.alignmentforum.org/">Alignment Forum</a></h3>
+      <div class="rl-kind">PRACTITIONER &middot; ADVERSARIAL TECHNICAL DEBATE</div>
+      <p class="rl-why"><strong>Why it matters:</strong> threaded technical argument with the norms of a research
+      forum &mdash; claims get challenged, authors reply, and the critique is part of the artifact. This is the
+      venue for questions your production system will ask you later: what does the model actually want, what does
+      a refusal mean, what breaks containment.</p>
+      <p class="starthere">Topic: interpretability and deception-adjacent evaluation threads. Read the objection
+      replies, not the top-level post. Maps to <a href="../track-d/93-safety-alignment.html">L93</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://www.lesswrong.com/">LessWrong</a></h3>
+      <div class="rl-kind">PRACTITIONER &middot; MIXED SIGNAL</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the origin of most of the vocabulary the safety
+      literature uses &mdash; specification gaming, Goodhart, mesa-optimisation &mdash; and still the best place to
+      find carefully argued operationalisations of those ideas. It is also a general-purpose community, so signal
+      rate varies enormously by author; filter hard.</p>
+      <p class="starthere">Topic: specification gaming and reward-gaming case lists &mdash; these are directly
+      reusable as your adversarial reward tests. Maps to
+      <a href="../track-c/75-reward-hacking.html">L75</a>.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Docs-as-blogs">
+    <h2 id="blogs-s4">4 &middot; Docs-as-blogs <a class="hook" href="#blogs-s4">#</a></h2>
+
+    <p>Not blogs in tone &mdash; release notes, tutorials, and design docs that happen to be published as posts.
+    This is where the thing you are actually going to run is described, and where the honest performance numbers
+    usually live. <span class="count">Six sources.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://huggingface.co/blog">Hugging Face &mdash; Blog</a></h3>
+      <div class="rl-kind">DOCS-AS-BLOG &middot; THE REFERENCE LIBRARY</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the largest free library of worked examples in the field
+      &mdash; family-by-family model write-ups, trainer and quantisation recipes, and detailed architecture
+      explainers. The magnum opus is the mixture-of-experts explainer at
+      <a href="https://huggingface.co/blog/moe">huggingface.co/blog/moe</a>, which is the clearest companion to the
+      MoE papers in <a href="../track-b/30-moe.html">L30</a>.</p>
+      <p class="starthere">Topic: MoE explained, then the TRL fine-tuning posts (preference optimisation, GRPO).
+      Maps to <a href="../track-b/30-moe.html">L30</a> and <a href="../track-c/56-grpo.html">L56</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://pytorch.org/blog/">PyTorch &mdash; Blog</a></h3>
+      <div class="rl-kind">DOCS-AS-BLOG &middot; THE FRAMEWORK LAYER</div>
+      <p class="rl-why"><strong>Why it matters:</strong> release notes are where distributed-training reality is
+      documented &mdash; FSDP/DTensor sharding changes, compile behaviour, numerics changes that break your
+      reproducibility. When a training job behaves differently after an upgrade, the answer is usually a
+      paragraph here. Their inference-performance posts are also unusually concrete about memory-bandwidth
+      accounting (see <a href="https://pytorch.org/blog/flash-decoding/">pytorch.org/blog/flash-decoding</a>).</p>
+      <p class="starthere">Topic: FSDP/DTensor release notes and anything on quantisation numerics. Maps to
+      <a href="../track-b/42-parallelism.html">L42</a> and <a href="../track-b/40-precision-quant.html">L40</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://blog.vllm.ai/">vLLM &mdash; Blog</a> &middot; <a href="https://vllm.ai/">vllm.ai</a></h3>
+      <div class="rl-kind">DOCS-AS-BLOG &middot; SERVING PRIMITIVE</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the reference for how a modern inference server actually
+      schedules work &mdash; paged attention, continuous batching, prefill/decode disaggregation, prefix caching.
+      Read the design posts before you dimension a deployment, because they contain the numbers your own
+      latency model needs to be calibrated against.</p>
+      <p class="starthere">Topic: paged attention and continuous batching, then prefill/decode disaggregation. Maps
+      to <a href="../track-b/44-inference-serving.html">L44</a> and
+      <a href="../track-b/45-caching.html">L45</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/sgl-project/sglang">SGLang &mdash; Project &amp; Docs</a></h3>
+      <div class="rl-kind">DOCS-AS-BLOG &middot; STRUCTURED &amp; AGENT SERVING</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the serving stack built around the assumption your
+      workload is an <em>agent</em>, not a chatbot &mdash; radix-tree prefix reuse across shared system prompts,
+      constrained/structured decoding, and multi-turn scheduling. If most of your tokens are cacheable
+      instructions, the design notes here are worth more than any benchmark table.</p>
+      <p class="starthere">Topic: radix attention / prefix caching and constrained decoding, from the repo docs.
+      Maps to <a href="../track-b/45-caching.html">L45</a> and <a href="../track-d/91-cost-latency.html">L91</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://triton-lang.org/main/index.html">Triton &mdash; Language &amp; Tutorials</a></h3>
+      <div class="rl-kind">DOCS-AS-BLOG &middot; KERNELS</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the shortest honest path from &ldquo;I understand the
+      math&rdquo; to &ldquo;I wrote the fused kernel&rdquo;. The tutorial that goes from a vector add to a fused
+      softmax to a flash-attention implementation &mdash; at
+      <a href="https://triton-lang.org/main/getting-started/tutorials/index.html">triton-lang.org tutorials</a> &mdash;
+      is the best executable answer to &ldquo;why is attention memory-bound?&rdquo; anywhere.</p>
+      <p class="starthere">Topic: the fused-softmax and fused-attention tutorials, in that order. Maps to
+      <a href="../track-b/39-kernels.html">L39</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://modal.com/blog">Modal &mdash; Blog</a> &middot; <a href="https://modal.com/docs/examples">Examples</a></h3>
+      <div class="rl-kind">DOCS-AS-BLOG &middot; GPU OPS</div>
+      <p class="rl-why"><strong>Why it matters:</strong> writes about the unglamorous half of shipping GPU
+      workloads &mdash; cold starts, container images, batch scheduling, cost per run &mdash; with reproducible
+      code. The examples index is a working library of serving and fine-tuning patterns you can lift for a
+      weekend experiment instead of a cluster.</p>
+      <p class="starthere">Topic: cold-start elimination and serverless GPU cost accounting. Maps to
+      <a href="../track-d/91-cost-latency.html">L91</a> and <a href="../track-b/44-inference-serving.html">L44</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://www.together.ai/blog">Together AI &mdash; Blog</a></h3>
+      <div class="rl-kind">DOCS-AS-BLOG &middot; KERNELS &amp; INFERENCE</div>
+      <p class="rl-why"><strong>Why it matters:</strong> the most kernel-level writing of the inference providers
+      &mdash; their FlashAttention-3 work and the memory-bandwidth arguments that go with it &mdash; plus concrete
+      throughput/latency reports for open models. Read it when you need to know what a GPU can actually do, not
+      what a benchmark suite says it can do.</p>
+      <p class="starthere">Topic: attention kernel design and long-context inference cost. Maps to
+      <a href="../track-b/38-flash-attention.html">L38</a> and <a href="../track-b/35-long-context.html">L35</a>.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Skip these (honestly)">
+    <h2 id="blogs-s5">5 &middot; Skip these, honestly <a class="hook" href="#blogs-s5">#</a></h2>
+
+    <p>No names, because the specific outlets change every quarter and the <em>shape</em> of the noise does not.
+    These are neutrally described: nothing here is malicious, it just costs you time and gives you
+    false confidence. If you have a finite reading budget, the categories below are where it leaks.</p>
+
+    <div class="skipcard">
+      <h3>&ldquo;#1 on MMLU&rdquo; leaderboard aggregators</h3>
+      <p>Sites that rank models by scraped public benchmark scores. The scores are usually real; the ranking is
+      not a measurement of your task. Saturated benchmarks plus undocumented contamination produce confidently
+      ordered lists of models that differ by less than the run-to-run noise. Use them as a pointer to what exists,
+      never as evidence.</p>
+    </div>
+
+    <div class="skipcard">
+      <h3>&ldquo;Top 10 AI tools / prompts&rdquo; listicles</h3>
+      <p>Written for distribution, not for use. They optimise for search traffic and affiliate links, contain no
+      failure analysis, and are obsolete within a release cycle. The information you were looking for is in the
+      docs.</p>
+    </div>
+
+    <div class="skipcard">
+      <h3>Mid-length &ldquo;X is dead / AGI by Thursday&rdquo; think pieces</h3>
+      <p>Fast, engaging, and unfalsifiable. Their predictions are not scored, so there is no accountability
+      gradient; the argument is usually an analogy rather than a measurement. Interesting as sociology of the
+      industry, worthless as input to an engineering decision.</p>
+    </div>
+
+    <div class="skipcard">
+      <h3>Vendor-neutral &ldquo;best LLM&rdquo; comparisons</h3>
+      <p>Third-party posts that benchmark many models on a handful of prompts without a reproducibility package.
+      The method is usually under-specified (which temperature, which version, how many trials, what cost), so
+      the numbers cannot be re-derived. Prefer a benchmark you can run yourself, or the vendor&rsquo;s own system
+      card and its stated limitations &mdash; those at least answer to someone.</p>
+    </div>
+
+    <div class="skipcard">
+      <h3>Aggregate &ldquo;AI news&rdquo; newsletters</h3>
+      <p>Daily digests that summarise press releases. They keep you aware of announcements and cost you twenty
+      minutes a day. If you need awareness, one weekly skim of a first-party source is cheaper and more accurate
+      than a daily summary of a summary.</p>
+    </div>
+
+    <div class="callout warn">
+      <p><strong>The test that filters everything on this page.</strong> Before you spend twenty minutes on any
+      source, ask: <em>if this were wrong, how would I find out?</em> If the answer is &ldquo;I would not&rdquo;
+      &mdash; because there is no method, no number, no response to criticism &mdash; it is not a source, it is a
+      claim. Spend the twenty minutes building the thing it was about instead.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; How to consume this">
+    <h2 id="blogs-s6">6 &middot; How to consume this <a class="hook" href="#blogs-s6">#</a></h2>
+
+    <p>This block is identical on all three resource pages, deliberately. The cadence is the same whether you are
+    reading a paper, a blog post, or watching a talk, because the failure is the same.</p>
+
+    <div class="grid2">
+      <div class="card">
+        <h4>The 30-minutes-a-day cadence</h4>
+        <p><strong>00&ndash;05 &mdash; orient.</strong> Title, opening claim, all figures, and the last paragraph.
+        Write one sentence: <em>what claim is this making, and what would falsify it?</em></p>
+        <p><strong>05&ndash;25 &mdash; the load-bearing part.</strong> One section or one argument, never the whole
+        thing. For a blog post that is usually the failure mode or the numbers; for a paper it is the ablation.
+        Take notes as questions, not summaries.</p>
+        <p><strong>25&ndash;30 &mdash; the tag.</strong> One line in a log: claim &middot; evidence &middot; what I
+        would have to build to check it. A source you cannot cite from memory did not get read.</p>
+      </div>
+      <div class="card">
+        <h4>The skim-versus-read rule</h4>
+        <p><strong>Read deeply only if you will implement something from it within two weeks.</strong> That is the
+        whole rule. Everything else is a skim, permanently, and that is correct &mdash; you need the abstraction,
+        not the derivation.</p>
+        <p>Concretely: about to write a DPO or GRPO loss &rarr; read deeply. About to pick an inference server
+        &rarr; read the scheduling design post and the cost accounting, skip the rest. About to cite an
+        architecture &rarr; skim, and keep the memory arithmetic.</p>
+        <p>If the two-week window is imaginary &mdash; you are &ldquo;staying current&rdquo; &mdash; it is a skim.
+        Mark it as one and move on without guilt.</p>
+      </div>
+    </div>
+
+    <div class="callout boss">
+      <p><strong>Reading without a build is entertainment.</strong> Following a hundred blogs produces the feeling
+      of competence and none of the artifacts. The only defence is a hard gate: a source earns a place in your
+      log when a number in a repo you own moved because of it &mdash; a latency, a memory line, a loss curve, a
+      pass rate. If nothing moved, you were watching.</p>
+    </div>
+
+    <p class="honest">Back to <a href="papers.html">the paper canon</a>, or forward to
+    <a href="videos.html">videos and courses</a>.</p>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="papers.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">The paper canon</span></a>
+    <a class="next" href="videos.html"><span class="dir">NEXT &rarr;</span><span class="ttl">Videos &amp; courses</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

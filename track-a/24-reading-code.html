@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a24">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L24 · Reading a Real Model Repo: nanoGPT to HF Transformers — AILearn</title>
+<meta name="description" content="A repeatable protocol for reading an unfamiliar model implementation: locate the parameter contract, read the block in order, verify shapes, and prove your reading with a parameter count and a forward-pass fingerprint.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L24</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L24 &middot; Reading a Real Model Repo: nanoGPT to HF Transformers</h1>
+  <p class="lede">You will spend more time reading model code than writing it. The difference between a slow reader and a fast one is not speed &mdash; it is having a fixed protocol that turns an unfamiliar repository into a parameter table and a verified forward pass in under an hour.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: an annotated source walkthrough + a reading checklist</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">config → weights contract</span>
+  <span class="pill">state_dict keys</span>
+  <span class="pill">block read order</span>
+  <span class="pill">shape trace</span>
+  <span class="pill">tied vs untied</span>
+  <span class="pill">fused vs eager kernels</span>
+  <span class="pill">checkpoint fingerprint</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a24-s1">1 &middot; Why it exists <a class="hook" href="#a24-s1">#</a></h2>
+
+    <p>Every downstream decision &mdash; can I fine-tune this, where does it cache KV, what does "context length" mean,
+    why is this loss different from the paper &mdash; is a question about the <em>implementation</em>, not the
+    architecture diagram. And implementations diverge from diagrams in ways that matter: a config flag changes the
+    normalisation placement, a different d_ff changes the parameter count, a fused attention path changes the mask
+    semantics, a conversion script renames every tensor.</p>
+
+    <p>The failure this causes is concrete: you load a checkpoint, it loads without error, and the model behaves worse
+    than the reported benchmark &mdash; because the config you used was the released config but your code's default
+    attention implementation differs, or because the head was untied and you initialised it randomly, or because
+    positions are added at the input but your fork assumed RoPE. All of those are silent. The protocol below is designed
+    to make them loud.</p>
+
+    <div class="callout boss">
+      <p>You have understood a model repo when you can state its parameter count from the config, list every tensor in
+      the state dict, and predict the shape of every intermediate. If you cannot do those three things, you have read the
+      README, not the model.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a24-s2">2 &middot; The mental model <a class="hook" href="#a24-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> Reading a model repo is auditing a filing system. First find the index (config, which
+    declares what should exist), then reconcile it against the actual files (state dict, which declares what does
+    exist), then audit one folder in detail (one block), then spot-check the output. Any mismatch between the index and
+    the files is a finding.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The config does not fully specify the model: many repos have code
+    defaults that the config omits, and a checkpoint can be trained with settings not recorded in the config JSON. That
+    is why the state dict is the ground truth for shapes. (2) The "files" are not independent: a fused kernel can be
+    numerically equivalent to eager code for the same weights but produce different floating-point results, so
+    fingerprinting must distinguish "as implemented" from "as intended". (3) Reading is not enough for correctness:
+    you only know the code is right when a test passes &mdash; causal-mask test, parameter count, and a logit
+    fingerprint against a reference.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Layer 1: the contract</h4><p>Config fields &rarr; expected tensors &rarr; parameter count. Ten minutes of arithmetic that catches a surprising number of config mistakes.</p></div>
+      <div class="card"><h4>Layer 2: the block</h4><p>Read the forward in execution order: norm, attention, residual, norm, FFN, residual. Write the shape at each step. If you cannot, you do not yet understand it.</p></div>
+      <div class="card"><h4>Layer 3: the kernels</h4><p>Which path is actually executed (eager vs fused, dtype, KV layout)? This is where "same model" stops being true.</p></div>
+      <div class="card"><h4>Layer 4: the proof</h4><p>Parameter count matches, causal mask test passes, and a fixed input produces the same logits as the reference. Anything less is an impression.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a24-s3">3 &middot; The mechanism <a class="hook" href="#a24-s3">#</a></h2>
+
+    <h3>The reading protocol, in order</h3>
+    <ol>
+      <li><strong>Read <code>config.json</code> and find the architecture class.</strong> Note: vocab size, d_model, n_layers, n_heads, n_kv_heads (if present), intermediate_size, activation, norm type, position type, tie_word_embeddings, max_position_embeddings, dtype.</li>
+      <li><strong>List the state dict keys and shapes</strong> from the checkpoint (without loading weights if it is huge). Reconcile against the config: does <code>wte</code> exist once or twice, is there a <code>lm_head</code>, are there <code>bias</code> tensors?</li>
+      <li><strong>Compute the parameter count from the config</strong> with the L19 formula and compare. A mismatch means the repo has extra parameters (biases, separate head, position table) you have not accounted for.</li>
+      <li><strong>Read the block forward pass</strong> and write the shape trace. This is where norm placement, residual scaling, and GQA mapping become visible.</li>
+      <li><strong>Find the attention dispatch</strong>: which implementation runs by default, and does the mask semantics match your assumptions (L06, L15)?</li>
+      <li><strong>Fingerprint</strong>: run a fixed input and record the first-token logits (or their sum) to 6 decimals. This is the artefact you compare against after any refactor.</li>
+    </ol>
+
+    <div class="code" data-lang="python">
+<span class="cm"># Layer 1: the config &rarr; parameter contract, and the checklist that goes with it.</span>
+<span class="kw">import</span> json
+config = {
+  <span class="st">"vocab_size"</span>: <span class="nm">50257</span>, <span class="st">"n_embd"</span>: <span class="nm">768</span>, <span class="st">"n_layer"</span>: <span class="nm">12</span>, <span class="st">"n_head"</span>: <span class="nm">12</span>,
+  <span class="st">"n_inner"</span>: <span class="kw">None</span>, <span class="st">"activation_function"</span>: <span class="st">"gelu_new"</span>, <span class="st">"tie_word_embeddings"</span>: <span class="kw">True</span>,
+  <span class="st">"layer_norm_epsilon"</span>: <span class="nm">1e-5</span>, <span class="st">"n_positions"</span>: <span class="nm">1024</span>
+}
+<span class="kw">def</span> <span class="fn">contract</span>(c):
+    d, L, V = c[<span class="st">"n_embd"</span>], c[<span class="st">"n_layer"</span>], c[<span class="st">"vocab_size"</span>]
+    dff = c[<span class="st">"n_inner"</span>] <span class="kw">or</span> <span class="nm">4</span> * d
+    attn = <span class="nm">4</span>*d*d + <span class="nm">4</span>*d + <span class="nm">3</span>*d                <span class="cm"># qkv bias (3d) + out bias (d); final bias is d in ffn</span>
+    ffn = <span class="nm">2</span>*d*dff + dff + d
+    norms = <span class="nm">2</span>*(<span class="nm">2</span>*d)                          <span class="cm"># 2 LayerNorms per block, gamma + beta</span>
+    per_block = attn + ffn + norms
+    emb = V*d + (V*d <span class="kw">if</span> <span class="kw">not</span> c[<span class="st">"tie_word_embeddings"</span>] <span class="kw">else</span> <span class="nm">0</span>)
+    pos = c[<span class="st">"n_positions"</span>] * d                   <span class="cm"># learned position table (this config has one)</span>
+    final_ln = <span class="nm">2</span>*d
+    <span class="kw">return</span> {<span class="st">"per_block"</span>: per_block, <span class="st">"trunk"</span>: per_block*L, <span class="st">"emb"</span>: emb, <span class="st">"pos"</span>: pos, <span class="st">"final_ln"</span>: final_ln,
+            <span class="st">"total"</span>: per_block*L + emb + pos + final_ln}
+r = <span class="fn">contract</span>(config)
+<span class="kw">for</span> k, v <span class="kw">in</span> r.items(): <span class="fn">print</span>(<span class="st">f"{k:10s} {v:&gt;12,}"</span>)
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+per_block      7,090,176
+trunk         85,082,112
+emb           38,597,376
+pos              786,432
+final_ln           1,536
+total        124,467,456
+    </div>
+    <p>This is the arithmetic that catches config mistakes before you load a 124M-parameter checkpoint. Note what changed
+    versus L19's count of 123.55M: attention and FFN biases, a learned position table (786,432), and the final
+    LayerNorm &mdash; about 0.9M parameters that an architecture diagram does not show. Those are exactly the terms a diagram of "a transformer block" omits and an implementation includes. When
+    your count disagrees with the checkpoint's actual tensor sum, the difference tells you which term you missed.</p>
+
+    <h3>Reading the block: what to look for, in execution order</h3>
+    <table class="table">
+      <tr><th>Step</th><th>What the code says</th><th>What it decides for you</th></tr>
+      <tr><td>norm<sub>1</sub>(x)</td><td><code>ln_1</code> / <code>rmsnorm</code> / <code>input_layernorm</code></td><td>pre-norm vs post-norm; whether &beta; exists; eps value and precision (L05)</td></tr>
+      <tr><td>attention</td><td><code>c_attn</code> fused into one matmul, then split</td><td>QKV layout; the split order defines which head slice maps to which head (L07)</td></tr>
+      <tr><td>mask</td><td><code>causal</code>, <code>attention_mask</code>, <code>sdpa</code>, <code>flash_attn</code></td><td>which mask implementation runs; whether padding and causal combine (L15)</td></tr>
+      <tr><td>pos encoding</td><td>added at input vs applied to q,k inside attention</td><td>whether positions survive chunking and caching (L08)</td></tr>
+      <tr><td>residual</td><td><code>x = x + ...</code></td><td>residual scaling, drop path, and whether the stream is normalised after (L05)</td></tr>
+      <tr><td>mlp</td><td><code>c_fc</code>/<code>c_proj</code> vs gate/up/down</td><td>d_ff convention and the 1.5&times; parameter difference (L11)</td></tr>
+      <tr><td>head</td><td><code>lm_head</code> present or tied to <code>wte</code></td><td>embedding share of parameters, and whether you can safely re-initialise it</td></tr>
+    </table>
+    <div class="formula">
+      fingerprint = tuple(round(float(v), 6) for v in logits[0, -1, :k])&nbsp;&nbsp;for a fixed token sequence and seed<br>
+      invariant &nbsp;&Rightarrow;&nbsp; refactor is safe; &nbsp; changed &nbsp;&Rightarrow;&nbsp; something in the forward moved
+      <span class="note">Choose k = 8 or so, and record the sequence length and dtype with it. The fingerprint is device- and library-dependent, so it is only valid for the same environment &mdash; which is exactly what a refactor test needs.</span>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a24-s4">4 &middot; Your hands <a class="hook" href="#a24-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Reconcile a config against a real state dict</h4>
+      <p>Run the contract function on a model you actually have, then sum the real tensors. The difference, decomposed,
+      is your understanding of the repo.</p>
+      <div class="code" data-lang="bash">
+python -c "from safetensors.torch import load_file; sd=load_file('model.safetensors'); print(len(sd)); print(sum(t.numel() for t in sd.values())); [print(k, tuple(v.shape)) for k,v in list(sd.items())[:12]]"
+      </div>
+      <p class="expect">Expect three findings: (1) the tensor sum matches your contract once you add the terms you
+      missed; (2) if there is both <code>wte.weight</code> and <code>lm_head.weight</code>, the head is untied and the
+      model is ~V&times;d larger than you thought; (3) if there is a <code>wpe.weight</code> (or
+      <code>position_embeddings</code>), positions are learned-and-absolute, not RoPE, which changes the long-context
+      story entirely (L08). Falsifier: if the sum matches exactly on the first try, you have read the block code already
+      &mdash; verify by predicting one intermediate shape.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The fingerprint test after a refactor</h4>
+      <p>The only cheap way to prove a rewrite is behaviour-preserving. Record before, refactor, compare after.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib
+<span class="kw">def</span> <span class="fn">fingerprint</span>(logits, k=<span class="nm">8</span>):
+    <span class="kw">return</span> tuple(<span class="fn">round</span>(<span class="fn">float</span>(v), <span class="nm">6</span>) <span class="kw">for</span> v <span class="kw">in</span> logits[<span class="nm">0</span>][-<span class="nm">1</span>][:k])
+before = (<span class="nm">-12.034512</span>, -<span class="nm">11.998701</span>, <span class="nm">0.881203</span>, -<span class="nm">3.440012</span>, <span class="nm">2.117650</span>, -<span class="nm">0.003291</span>, <span class="nm">4.550091</span>, -<span class="nm">1.221004</span>)
+<span class="kw">def</span> <span class="fn">h</span>(t): <span class="kw">return</span> hashlib.sha256(<span class="fn">repr</span>(t).encode()).hexdigest()[:<span class="nm">16</span>]
+<span class="fn">print</span>(<span class="st">"fingerprint hash:"</span>, <span class="fn">h</span>(before))
+<span class="fn">print</span>(<span class="st">"after refactor: recompute and compare the tuple, then hash it; equal hash == numerically identical forward"</span>)
+      </div>
+      <p class="expect">The hash is a convenience, not the proof &mdash; store the tuple. Two caveats: floating-point
+      results depend on kernel and reduction order, so the fingerprint is only valid within one environment; and a
+      refactor that changes dtype or fuses a kernel can legitimately change the last digits. Compare to ~1e-5 relative,
+      not to the last bit, and record the environment with the fingerprint.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Find the mask semantics in the attention dispatch</h4>
+      <p>The highest-value single read in any repo. Different implementations disagree about how padding and causality
+      combine, and about the meaning of the attention mask's values.</p>
+      <div class="code" data-lang="bash">
+python -c "import inspect, transformers.models.llama.modeling_llama as m; print([n for n in dir(m) if 'attention' in n.lower()]); print(inspect.getsource(m.LlamaAttention.forward)[:1500])"
+      </div>
+      <p class="expect">Read for three things: whether the mask is added as a float bias or applied as a boolean (and what
+      convention: True = keep or True = mask); whether positions are applied inside attention (RoPE) or added before;
+      and which backend is dispatched by default. Write down one sentence per item. Those three sentences are the
+      difference between code that works under batching and packing and code that leaks across documents (L15).</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a24-s5">5 &middot; Failure modes <a class="hook" href="#a24-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Trusting the config to be complete.</strong> Symptom: the parameter count does not match the checkpoint and nobody knows why. Enumerate state-dict keys; the config is a summary.</li>
+        <li><strong>Missing a tied/untied distinction.</strong> Symptom: after a "small" fine-tune, the model degrades on rare tokens; the head was untied and initialised randomly instead of loaded.</li>
+        <li><strong>Assuming RoPE where absolute positions are used.</strong> Symptom: long-context behaviour does not match expectations; slicing or extending context fails in a way the architecture diagram would not predict.</li>
+        <li><strong>Reading the class but not the dispatch.</strong> Symptom: the model is correct in one environment and worse in another; the fused kernel path was selected and its mask/dtype semantics differ.</li>
+        <li><strong>A refactor with no fingerprint.</strong> Symptom: a mysterious small quality regression after "a cleanup" that changed the normalisation epsilon or the residual scale. No test would catch it.</li>
+        <li><strong>Copying a block without its masks.</strong> Symptom: works in inference on single sequences, breaks under padding or packing. The mask is not part of the block class in many repos; it lives outside.</li>
+        <li><strong>Reading a conversion script as documentation.</strong> Symptom: tensor names differ between the original and the converted repo, and you chase a renaming that is cosmetic. Read the script's mapping table instead of the model.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a24-s6">6 &middot; Connects to <a class="hook" href="#a24-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="05-layernorm-rmsnorm.html">L05</a>, <a class="tag-a" href="06-attention-core.html">L06</a>, <a class="tag-a" href="08-positional.html">L08</a>, <a class="tag-a" href="11-activations.html">L11</a>, <a class="tag-a" href="19-full-transformer.html">L19</a>. &nbsp;
+    <strong>Unlocks:</strong> fine-tuning, debugging real models, reading papers against code.</p>
+    <ul>
+      <li><a class="tag-a" href="23-data-corpora.html">L23 &middot; Data</a> &mdash; the config also encodes the vocabulary, which is a data artefact (L01).</li>
+      <li><a class="tag-a" href="25-foundations-capstone.html">L25 &middot; Capstone</a> &mdash; you will apply this protocol to produce a verified training curve.</li>
+      <li><a class="tag-b" href="../track-b/30-moe.html">L30 &middot; MoE</a> &mdash; a repo where the block read order changes entirely (routing between norm and FFN).</li>
+      <li><a class="tag-b" href="../track-b/33-mla.html">L33 &middot; MLA</a> &mdash; you cannot understand a cache implementation without the tensor layout, and this is where you learn to read it.</li>
+      <li><a class="tag-b" href="../track-b/40-precision-quant.html">L40 &middot; Quantisation</a> &mdash; reading which tensors are quantised and which stay in higher precision.</li>
+      <li><a class="tag-d" href="../track-d/94-determinism.html">L94 &middot; Determinism</a> &mdash; the fingerprint test is the practical form of reproducibility for model code.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: commit the parameter contract and the fingerprint as files in the repo &mdash; a small
+      <code>contract.json</code> with the expected count and a <code>fingerprint.json</code> with the fixed-input
+      logits. They turn "this repo still produces the same model" into a one-line CI assertion.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a24-s7">7 &middot; Self-check <a class="hook" href="#a24-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Your config-derived count is 84.95M for the trunk (the L19 formula, no biases) but the checkpoint trunk sums to 85.08M. What explains the 130,048 difference?</p>
+        <details><summary>Reveal answer</summary><p>Biases, plus the difference in d_ff. Per block the bias terms are qkv bias 3d = 2,304, out-projection bias d = 768 and FFN biases d_ff + d = 3,072 &rarr; <strong>6,912 per block, 82,944 over 12 layers</strong>. LayerNorm already has beta in both counts. The remaining gap comes from the second cause: L19 used the SwiGLU-style d_ff = int(8d/3) = 2,048 while this contract uses 3,072 (the ReLU convention), and 12 &times; 3 &times; 768 &times; (3,072 &minus; 2,048) = <strong>28.3M</strong> &mdash; which is why the two trunk figures differ by ~28.3M, not by 0.13M. The lesson: the config's <code>n_inner: None</code> means a <em>code default</em> decides the FFN width, so the formula is only as correct as the default you assumed. Exactly the failure this protocol exists to catch.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> What is the first thing you check in the state dict after "does it load"?</p>
+        <details><summary>Reveal answer</summary><p>Whether the output head is tied to the input embedding. If <code>lm_head.weight</code> exists as a separate tensor and is <em>identical</em> to <code>wte.weight</code>, tying was used and the config flag is informational; if it differs, the head is untied, the parameter count is larger by V&times;d, and re-initialising the head destroys the model's output distribution. This single check changes both the parameter budget and the fine-tuning recipe.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your reimplementation matches the reference for sequence length 1 but diverges for length 8. Where do you look?</p>
+        <details><summary>Reveal answer</summary><p>The attention mask and the positional mechanism &mdash; both are no-ops at length 1. At length 1, causal masking is trivial and positions are all zero, so a wrong mask convention (True = keep vs True = mask), a missing causal mask, an off-by-one in the mask, or a position encoding applied in the wrong place all look identical to the reference. Test: feed a length-8 sequence and compare the attention matrix of layer 1 against the reference; then compare position embeddings. This is by far the most common "it works on my one example" failure.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is a fingerprint not a full correctness proof, and what should it be paired with?</p>
+        <details><summary>Reveal answer</summary><p>It fixes one input and compares one slice of output, so it cannot detect behaviours that are not exercised &mdash; masking, padding, long context, GQA mapping or positional handling beyond the length tested. Pair it with structural tests: the parameter count, the causal-mask test from L06/L15 (row 0 equals V[0], rows sum to 1, packed invariance), a padding-invariance test, and a length sweep. The fingerprint catches silent refactor regressions; the structural tests catch wrong implementations.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> You must explain in one paragraph how to answer "is this checkpoint actually the model it claims to be?"</p>
+        <details><summary>Reveal answer</summary><p>Reconcile three independent artefacts: (1) the config, expanded into a parameter contract and checked against the actual tensor sum and the state-dict key list; (2) the source, read in execution order for norm placement, position mechanism, activation/FFN structure and head tying; and (3) a runtime fingerprint on a fixed input within a pinned environment, plus structural tests (causal mask, padding invariance). Agreement across all three makes the claim auditable; any single one alone is a hope.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="23-data-corpora.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L23 &middot; Data: crawl, dedup, quality</span></a>
+    <a class="next" href="25-foundations-capstone.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L25 &middot; Capstone: GPT-2 scale truth check</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

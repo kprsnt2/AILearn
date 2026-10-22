@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a06">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L06 · Self-Attention From First Principles — AILearn</title>
+<meta name="description" content="Scaled dot-product attention implemented in numpy: the sqrt(d_k) variance argument, causal and padding masks, softmax stability, and the O(n^2) memory bill worked for n=8192, d=4096.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L06</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L06 &middot; Self-Attention From First Principles</h1>
+  <p class="lede">Attention is a soft, learned lookup: each token asks a question, every earlier token advertises a key, and the answer is a weighted average of values. Get the scaling, the mask, and the softmax stability right and you have the block that every modern LLM is made of &mdash; and the exact source of their quadratic memory bill.</p>
+  <div class="chips">
+    <span class="chip">~35 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: numpy attention with correct masking + memory model</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">query / key / value</span>
+  <span class="pill">scaled dot product</span>
+  <span class="pill">sqrt(d_k) variance argument</span>
+  <span class="pill">causal mask</span>
+  <span class="pill">-inf masking</span>
+  <span class="pill">softmax max-subtraction</span>
+  <span class="pill">O(n^2) score matrix</span>
+  <span class="pill">attention dropout</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a06-s1">1 &middot; Why it exists <a class="hook" href="#a06-s1">#</a></h2>
+
+    <p>Before attention, sequence models carried information through a fixed-size state: an RNN compresses everything
+    seen so far into one vector, a CNN only sees a fixed-width window. Both fail in the same way, and it is an audit
+    problem more than a modelling problem: <strong>the model cannot point at the evidence it used</strong>. A
+    compliance question that depends on clause 4 of page 2 and a date on page 9 has two long-range dependencies; an RNN
+    must have squeezed both into a single hidden state, and past a few dozen tokens the early ones are numerically
+    decayed. Attention replaces "carry a summary" with "look back at everything, weighted".</p>
+
+    <p>The mechanism is also the reason modern LLMs can be audited at all: the attention weights are an explicit,
+    inspectable matrix saying which tokens influenced which output positions. Whether those weights are a
+    <em>faithful</em> explanation is a separate question (see <a class="tag-b" href="../track-b/49-components-circuits.html">L49</a>),
+    but the structure gives you a hook that a hidden state never does.</p>
+
+    <div class="callout boss">
+      <p>Attention = learned, content-based, differentiable lookup. Cost = O(n<sup>2</sup>) scores and O(n<sup>2</sup>) memory
+      per head, per layer. Every trick in Track B &mdash; KV cache, GQA, MLA, sparse attention, FlashAttention &mdash; is a
+      negotiation with that one quadratic, so you need to be able to compute it exactly.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a06-s2">2 &middot; The mental model <a class="hook" href="#a06-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> A library. Each token writes a <em>query</em> ("I need the date this policy took
+    effect"). Every token also posts a <em>key</em> ("I am a date") and files a <em>value</em> (its content). Attention
+    matches the query against every key, turns the match scores into weights with softmax, and returns the weighted
+    sum of values. It is a soft dictionary lookup where the "which entry matched" decision is differentiable.</p>
+
+    <p><strong>Where the analogy breaks.</strong> Three places, each operationally important.
+    (1) A dictionary returns one entry; attention returns a <em>convex combination</em> of all of them, so the output is
+    always a mixture and can never be "no match". (2) The query, key and value are <em>different learned projections</em>
+    of the same token vector, so "what I am looking for", "what I advertise" and "what I return" are independent
+    &mdash; that is where the capacity comes from, and why one head cannot do everything (L07).
+    (3) A dictionary is one lookup; attention runs n lookups in parallel, which is exactly why it is a matrix
+    multiplication and a GPU's dream &mdash; and why the n&times;n score matrix is materialised, which is the cost.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What attention can do</h4><p>Copy a previous token (induction heads), aggregate a global statistic, resolve a pronoun to its antecedent, retrieve a key&rarr;value pair seen in context &mdash; all with the same operation, learned.</p></div>
+      <div class="card"><h4>What it cannot do</h4><p>Know the order of tokens: the operation is permutation-equivariant, so positions must be injected separately (L08). It also cannot do exact arithmetic on arbitrary positions without a positional mechanism that makes them addressable.</p></div>
+      <div class="card"><h4>The two axes of failure</h4><p>Too flat: weights nearly uniform, the model averages everything and learns nothing specific. Too sharp: one-hot weights, gradients vanish through softmax. The sqrt(d_k) scaling is precisely the control for this.</p></div>
+      <div class="card"><h4>Cost shape</h4><p>n&times;n per head. Doubling context quadruples attention compute and memory. That single sentence explains most of the architecture choices in Track B.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a06-s3">3 &middot; The mechanism <a class="hook" href="#a06-s3">#</a></h2>
+
+    <div class="formula">
+      Q = XW<sub>Q</sub>, &nbsp; K = XW<sub>K</sub>, &nbsp; V = XW<sub>V</sub> &nbsp;&nbsp;(X &isin; R<sup>n&times;d</sup>, W &isin; R<sup>d&times;d<sub>k</sub></sup>)<br><br>
+      S = QK<sup>T</sup> / &radic;d<sub>k</sub> &nbsp;&isin; R<sup>n&times;n</sup><br>
+      S<sub>ij</sub> &larr; &minus;&infin; &nbsp;if&nbsp; j &gt; i &nbsp;&nbsp;(causal) &nbsp;or&nbsp; token j is padding<br>
+      A = softmax(S, axis=1), &nbsp; A<sub>ij</sub> = e<sup>S<sub>ij</sub></sup>/&sum;<sub>k</sub>e<sup>S<sub>ik</sub></sup><br>
+      out = AV
+      <span class="note">Each ROW of S/A is one query. Row i answers "how much does token i attend to each key j". Because &minus;&infin; exponentiates to 0, masking is exact: a masked key receives exactly zero weight. Rows must sum to 1 &mdash; if a whole row is masked you get 0/0 = NaN, which is why every real implementation guards or excludes those rows.</span>
+    </div>
+
+    <h3>WHY divide by &radic;d<sub>k</sub> &mdash; the variance argument</h3>
+    <p>Assume each component of q and k is approximately independent with mean 0 and variance 1 (true at
+    initialisation, and approximately maintained by normalisation). Then</p>
+    <div class="formula">
+      E[q&middot;k] = &sum;<sub>i=1..d<sub>k</sub></sub> E[q<sub>i</sub>]E[k<sub>i</sub>] = 0, &nbsp;&nbsp;
+      Var(q&middot;k) = &sum;<sub>i=1..d<sub>k</sub></sub> Var(q<sub>i</sub>k<sub>i</sub>) = &sum; Var(q<sub>i</sub>)Var(k<sub>i</sub>) = d<sub>k</sub><br>
+      &rArr; std(q&middot;k) = &radic;d<sub>k</sub> &nbsp;&nbsp;&rArr;&nbsp;&nbsp; Var(q&middot;k / &radic;d<sub>k</sub>) = 1
+      <span class="note">The raw dot product of two d_k-dimensional vectors is a sum of d_k terms, so its typical magnitude grows as &radic;d_k. With d_k = 128, logits routinely reach &plusmn;11. Softmax with logits of that magnitude is nearly one-hot: the winner gets weight ~1 and every other key gets ~0. Its gradient is then ~0 for everything except the winner, so the model stops learning which non-winner is second best.</span>
+    </div>
+    <p>Two verified consequences of forgetting the scale, from Experiment 1 below: with d<sub>k</sub> = 64 the maximum
+    softmax probability already hits <strong>1.0000</strong> without scaling (versus 0.8561 with it), and with
+    d<sub>k</sub> = 8 the unscaled distribution is already visibly peaked (0.5551 vs 0.2873). The scaling is not a
+    convention copied between papers; it is the factor that keeps the logits variance-stable as width changes &mdash;
+    which is also why you must re-check it if you change the architecture.</p>
+
+    <h3>The reference implementation</h3>
+    <div class="code" data-lang="python">
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+
+<span class="kw">def</span> <span class="fn">softmax</span>(x, axis=-<span class="nm">1</span>):
+    x = x - x.max(axis=axis, keepdims=<span class="kw">True</span>)      <span class="cm"># stability: max-subtraction, result identical</span>
+    e = np.exp(x)
+    <span class="kw">return</span> e / e.sum(axis=axis, keepdims=<span class="kw">True</span>)
+
+<span class="kw">def</span> <span class="fn">attention</span>(Q, K, V, causal=<span class="kw">False</span>, pad_mask=<span class="kw">None</span>, dropout_p=<span class="nm">0.0</span>, rng=<span class="kw">None</span>):
+    <span class="cm">"""Q: (n_q, d_k)  K: (n_k, d_k)  V: (n_k, d_v)  pad_mask: (n_q, n_k) bool, True = keep."""</span>
+    d_k = Q.shape[-<span class="nm">1</span>]
+    S = Q @ K.T / np.sqrt(d_k)                        <span class="cm"># (n_q, n_k)  -- scale BEFORE softmax</span>
+    <span class="kw">if</span> causal:
+        n_q, n_k = S.shape
+        S = S + np.triu(np.full((n_q, n_k), -np.inf), k=n_k - n_q + <span class="nm">1</span>)
+    <span class="kw">if</span> pad_mask <span class="kw">is not None</span>:
+        S = np.where(pad_mask, S, -np.inf)             <span class="cm"># -inf, NOT -1e9 and NOT 0</span>
+    A = softmax(S, axis=-<span class="nm">1</span>)                             <span class="cm"># rows sum to 1</span>
+    <span class="kw">if</span> dropout_p &gt; <span class="nm">0</span>:
+        keep = (rng.random(A.shape) &gt;= dropout_p) / (<span class="nm">1</span> - dropout_p)
+        A = A * keep
+    <span class="kw">return</span> A @ V, A
+
+rng = np.random.default_rng(<span class="nm">0</span>)
+n, d = <span class="nm">4</span>, <span class="nm">8</span>
+Q, K, V = (rng.normal(size=(n, d)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">3</span>))
+out, A = <span class="fn">attention</span>(Q, K, V, causal=<span class="kw">True</span>)
+<span class="fn">print</span>(A.round(<span class="nm">3</span>)); <span class="fn">print</span>(<span class="st">"row sums:"</span>, A.sum(-<span class="nm">1</span>))
+<span class="fn">print</span>(<span class="st">"row 0 attends only to token 0 -&gt; output == V[0]?"</span>, np.allclose(out[<span class="nm">0</span>], V[<span class="nm">0</span>]))
+    </div>
+
+    <p>Verified output (numpy 2.3.5):</p>
+    <div class="code" data-lang="output">
+[[1.    0.    0.    0.   ]
+ [0.827 0.173 0.    0.   ]
+ [0.34  0.413 0.247 0.   ]
+ [0.102 0.031 0.684 0.183]]
+row sums: [1. 1. 1. 1.]
+row 0 attends only to token 0 -&gt; output == V[0]? True
+    </div>
+
+    <p>Read the matrix as a lower-triangular pattern: row i has non-zero entries only in columns 0..i. Row 0 is exactly
+    <code>[1,0,0,0]</code> because the only unmasked key is its own, so its output is exactly <code>V[0]</code> &mdash;
+    that identity is the cleanest unit test for a causal mask and it is the test that catches the classic
+    off-by-one (attend to <code>j &lt;= i</code>, not <code>j &lt; i</code>).</p>
+
+    <h3>The four masking bugs, and their symptoms</h3>
+    <table class="table">
+      <tr><th>Bug</th><th>What it does</th><th>Symptom</th></tr>
+      <tr><td>Mask with 0 instead of &minus;&infin;</td><td>softmax(0) = 1, so padded positions get <em>equal weight to real ones</em></td><td>Long-padding batches perform worse than batch-of-one; loss depends on how much padding is in the batch</td></tr>
+      <tr><td>&minus;inf mask in fp16</td><td>Usually fine, but a finite sentinel like &minus;1e9 is out of range and becomes &minus;inf on cast; some kernels then produce NaN from &minus;inf arithmetic</td><td>Sporadic NaNs only on the mixed-precision path</td></tr>
+      <tr><td>Mask added <em>after</em> softmax (multiplying A by 0/1)</td><td>Rows no longer sum to 1; the output is a shrunken value</td><td>RMS of attention output depends on the number of pads; "it works but worse"</td></tr>
+      <tr><td>Causal off-by-one (<code>j &lt; i</code>)</td><td>The diagonal is masked, so each token cannot see itself</td><td>Row 0 is all &minus;&infin; &rarr; NaN; or if guarded, the first-token prediction is garbage</td></tr>
+    </table>
+
+    <h3>What it costs: the worked number for n = 8192, d = 4096</h3>
+    <div class="formula">
+      score entries = batch &times; heads &times; n &times; n &nbsp;&nbsp;&nbsp; bytes = entries &times; 2 (fp16) &nbsp;or&nbsp; &times; 4 (fp32)<br>
+      n = 8192, d = 4096, so 32 heads of d<sub>k</sub> = 128, batch 1:<br>
+      32 &times; 8192 &times; 8192 = <strong>2.147 &times; 10<sup>9</sup> score entries</strong> = <strong>4.29 GB in fp16</strong> (8.59 GB in fp32)<br>
+      same at batch 8: <strong>17.18 &times; 10<sup>9</sup> entries = 34.36 GB fp16</strong> (68.72 GB fp32)
+      <span class="note">And the model weights you are trying to fit on the same GPU are only about 0.40 GB fp32 for the four d&times;d projections (batch 1). The attention score matrix alone is ~11x the size of those weights &mdash; for ONE of 32 layers, ONE batch. Continue: 32 layers would need ~137 GB just for the live score matrices if they were all retained.</span>
+    </div>
+    <p>Also count the FLOPs, because they explain why prefill is compute-bound while decode is not:
+    <code>QK<sup>T</sup></code> is 2&middot;n&middot;n&middot;d<sub>k</sub> per head; over 32 heads at d<sub>k</sub>=128 that is
+    2 &times; 8192 &times; 8192 &times; 4096 &asymp; <strong>0.55 TFLOP</strong> for a single QK<sup>T</sup> pass, and the
+    same again for <code>AV</code>. At a realistic 400 TFLOP/s that is ~2.7 ms of pure matmul for one layer's attention.
+    Twenty such layers at 1 ms each is not the problem &mdash; the <em>materialisation</em> is: writing and re-reading
+    4.29 GB of scores at ~3 TB/s costs ~1.4 ms of bandwidth <em>per pass</em>, and you need several passes to
+    softmax and multiply. This is the gap FlashAttention closes by never writing S to memory
+    (<a class="tag-b" href="../track-b/38-flash-attention.html">L38</a>).</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a06-s4">4 &middot; Your hands <a class="hook" href="#a06-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Measure the variance claim yourself</h4>
+      <p>Do not take the &radic;d<sub>k</sub> argument on faith; measure the dot-product variance and the softmax
+      peak. This is the diagnostic that tells you whether a new architecture can drop the scaling.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">softmax</span>(x, axis=-<span class="nm">1</span>):
+    x = x - x.max(axis=axis, keepdims=<span class="kw">True</span>); e = np.exp(x); <span class="kw">return</span> e / e.sum(axis=axis, keepdims=<span class="kw">True</span>)
+<span class="kw">for</span> dk <span class="kw">in</span> [<span class="nm">16</span>, <span class="nm">256</span>, <span class="nm">4096</span>]:
+    a = rng.normal(size=(<span class="nm">20000</span>, dk)); b = rng.normal(size=(<span class="nm">20000</span>, dk))
+    dots = (a * b).sum(-<span class="nm">1</span>)
+    <span class="fn">print</span>(<span class="st">f"d_k={dk:5d} var(dot)={dots.var():9.2f}  var(dot/sqrt(d_k))={dots/np.sqrt(dk):.0f}"</span>)
+<span class="kw">for</span> dk <span class="kw">in</span> [<span class="nm">8</span>, <span class="nm">64</span>]:
+    q = rng.normal(size=dk); K = rng.normal(size=(<span class="nm">6</span>, dk))
+    <span class="fn">print</span>(<span class="st">f"d_k={dk}: raw max prob={softmax(q @ K.T).max():.4f}  scaled max prob={softmax((q @ K.T)/np.sqrt(dk)).max():.4f}"</span>)
+      </div>
+      <p class="expect">Verified: variance 15.97 / 254.31 / 4132.35 for d<sub>k</sub> 16 / 256 / 4096 &mdash; tracking
+      d<sub>k</sub> closely, as the derivation predicts &mdash; and the divided versions stay near 1.0 (0.998,
+      0.993, 1.009). For the peaks: d<sub>k</sub>=8 gives <code>raw 0.5551, scaled 0.2873</code>; d<sub>k</sub>=64 gives
+      <code>raw 1.0000, scaled 0.8561</code>. Falsifier: if var(dot) stayed constant as d<sub>k</sub> grew, the scaling
+      would be unnecessary. It grows linearly, so it is necessary.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The mask test suite (run this against any attention implementation)</h4>
+      <p>Four assertions that catch all the masking bugs in the table above, including the ones that only show up in
+      mixed precision.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">1</span>)
+<span class="kw">def</span> <span class="fn">attn</span>(Q, K, V, bias=<span class="kw">None</span>):
+    S = Q @ K.T / np.sqrt(Q.shape[-<span class="nm">1</span>])
+    <span class="kw">if</span> bias <span class="kw">is not None</span>: S = S + bias
+    A = np.exp(S - S.max(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>)); A = A / A.sum(-<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+    <span class="kw">return</span> A @ V, A
+n, d = <span class="nm">5</span>, <span class="nm">8</span>
+Q, K, V = (rng.normal(size=(n, d)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">3</span>))
+causal = np.triu(np.full((n, n), -np.inf), k=<span class="nm">1</span>)
+out, A = <span class="fn">attn</span>(Q, K, V, causal)
+<span class="fn">print</span>(<span class="st">"1 triangular:"</span>, np.allclose(A, np.tril(A)))                       <span class="cm"># no weight above diagonal</span>
+<span class="fn">print</span>(<span class="st">"2 row0 == V[0]:"</span>, np.allclose(out[<span class="nm">0</span>], V[<span class="nm">0</span>]))
+<span class="fn">print</span>(<span class="st">"3 rows sum to 1:"</span>, np.allclose(A.sum(-<span class="nm">1</span>), <span class="nm">1.0</span>))
+m = np.array([[<span class="nm">0</span>, <span class="nm">0</span>, -np.inf, -np.inf, -np.inf]])       <span class="cm"># keep only the first two keys</span>
+<span class="fn">print</span>(<span class="st">"4 padding invariance:"</span>, np.allclose(<span class="fn">attn</span>(Q, K, V, m)[<span class="nm">0</span>], <span class="fn">attn</span>(Q, K[:, :<span class="nm">2</span>], V[:, :<span class="nm">2</span>])[<span class="nm">0</span>]))
+      </div>
+      <p class="expect">All four print <code>True</code>. Test 4 is the one people skip: <strong>masking a key must be
+      numerically identical to deleting that key</strong>. If it is not, your mask is applied after softmax or with a
+      finite sentinel. Test 3 is the NaN canary: a row that is fully masked makes the denominator zero, and
+      <code>np.allclose([nan], 1.0)</code> is False &mdash; which is exactly how you want the bug to present.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Compute the memory bill for your own configuration</h4>
+      <p>The number that decides whether a context length fits. Run it before you promise a customer 128k context.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">score_mem</span>(n, d, batch=<span class="nm">1</span>, heads=<span class="nm">32</span>, bytes_per=<span class="nm">2</span>, layers=<span class="nm">32</span>):
+    entries = batch * heads * n * n
+    <span class="kw">return</span> entries, entries * bytes_per / <span class="nm">1e9</span>, entries * bytes_per * layers / <span class="nm">1e9</span>
+<span class="kw">for</span> n <span class="kw">in</span> [<span class="nm">2048</span>, <span class="nm">8192</span>, <span class="nm">32768</span>, <span class="nm">131072</span>]:
+    e, per_layer, all_layers = <span class="fn">score_mem</span>(n)
+    <span class="fn">print</span>(<span class="st">f"n={n:6d}: {e/1e9:9.3f} G scores, {per_layer:8.2f} GB/layer fp16, {all_layers:10.1f} GB for 32 layers"</span>)
+<span class="fn">print</span>(<span class="st">"ratios vs n=2048:"</span>, [<span class="fn">round</span>((n/<span class="nm">2048</span>)**<span class="nm">2</span>, <span class="nm">1</span>) <span class="kw">for</span> n <span class="kw">in</span> [<span class="nm">8192</span>, <span class="nm">32768</span>, <span class="nm">131072</span>]])
+      </div>
+      <p class="expect">Observed: 0.27 GB/layer at n=2048, 4.29 GB at n=8192, 68.72 GB at n=32768 and
+      <strong>1099.51 GB per layer</strong> at n=131072 &mdash; with length ratios 16&times;, 256&times;, 4096&times;
+      against n=2048. That is why 128k context is not "attention with a bigger buffer": the live score matrix is
+      impossible, so implementations either stream it (FlashAttention) or sparsify it (L34, L38). Note the Q2 check:
+      4&times;24&times;4096<sup>2</sup> = 1,610,612,736 entries = 3.22 GB fp16. If someone proposes long context with no
+      mention of this arithmetic, the proposal is incomplete.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a06-s5">5 &middot; Failure modes <a class="hook" href="#a06-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Missing &radic;d<sub>k</sub>.</strong> Symptom: attention entropy near zero from the first steps, loss decreases slightly then plateaus; attention maps are one-hot. Measured in Experiment 1.</li>
+        <li><strong>Wrong &radic;d.</strong> Scaling by &radic;d<sub>model</sub> instead of &radic;d<sub>k</sub> means the factor is &radic;H too large for multi-head (L07). Symptom: soft attention that never sharpens; under-confident predictions.</li>
+        <li><strong>&minus;inf sentinel in fp16.</strong> Symptom: NaN only on the mixed-precision path, only on batches with padding. A finite sentinel such as &minus;1e9 is outside fp16's &plusmn;65504 range and saturates to &minus;&infin;, and &minus;&infin; arithmetic in some kernels yields NaN. Use a large finite value that is representable (or &minus;inf with a kernel that handles it) and test at the target precision (L21).</li>
+        <li><strong>Fully masked row.</strong> Symptom: NaN in the first forward pass, or a random-looking output at padding positions that then contaminates the loss if you forgot the loss mask too. Two independent masks are needed: attention mask and loss mask (L15, L16).</li>
+        <li><strong>Softmax without max subtraction.</strong> Symptom: overflow to inf at fp16 for logits above 65504, silent underflow to uniform for very negative logits. Always subtract the row max; it is mathematically a no-op and numerically mandatory.</li>
+        <li><strong>Padding mask on the wrong axis.</strong> Symptom: results depend on how many pads are in the batch; a sequence evaluated alone scores differently from the same sequence in a padded batch. Reproduce with Experiment 2, test 4.</li>
+        <li><strong>Attention dropout applied after renormalisation, or scaled wrong.</strong> Symptom: attention output RMS shrinks at train time and jumps at eval; training loss is worse than eval. Dropout must be scaled by 1/(1&minus;p) at train time and removed at eval.</li>
+        <li><strong>Positional information assumed.</strong> Symptom: the model answers "the first X" and "the last X" identically; shuffle-invariance. Attention without positional encoding cannot distinguish orders (L08).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a06-s6">6 &middot; Connects to <a class="hook" href="#a06-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="02-embeddings.html">L02</a> (dot product as similarity), <a class="tag-a" href="03-backprop-autograd.html">L03</a> (softmax backward). &nbsp;
+    <strong>Unlocks:</strong> multi-head, KV cache, every efficiency trick in Track B.</p>
+    <ul>
+      <li><a class="tag-a" href="07-multihead.html">L07 &middot; Multi-head</a> &mdash; split d<sub>model</sub> into H heads of d<sub>k</sub>=d<sub>model</sub>/H; the scaling changes with the split, which is a common bug source.</li>
+      <li><a class="tag-a" href="08-positional.html">L08 &middot; Positional encoding</a> &mdash; attention is permutation-equivariant; positions must be injected somewhere.</li>
+      <li><a class="tag-a" href="09-kv-cache.html">L09 &middot; KV cache</a> &mdash; at decode you never recompute K and V for past tokens; the cache is what makes generation linear in context rather than quadratic.</li>
+      <li><a class="tag-a" href="15-batching-seqpack.html">L15 &middot; Batching &amp; packing</a> &mdash; the mask tests here become the production test suite.</li>
+      <li><a class="tag-b" href="../track-b/34-dsa.html">L34 &middot; Sparse attention</a> &mdash; attack the n&times;n by attending to only a subset of keys.</li>
+      <li><a class="tag-b" href="../track-b/38-flash-attention.html">L38 &middot; FlashAttention</a> &mdash; never materialise S; compute the same maths in tiles that fit in SRAM.</li>
+      <li><a class="tag-b" href="../track-b/49-components-circuits.html">L49 &middot; Circuits</a> &mdash; what the attention matrices actually learn to compute (previous-token, induction heads).</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: persist the attention matrices of the layer that produced a decision (or their row-entropy
+      summary) alongside the answer. It is not proof of causation, but it makes "which evidence did the model see"
+      queryable and it is the cheapest possible explainability artefact.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a06-s7">7 &middot; Self-check <a class="hook" href="#a06-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Derive the variance of q&middot;k and explain in one sentence why the softmax gradient matters.</p>
+        <details><summary>Reveal answer</summary><p>With independent zero-mean unit-variance components, E[q&middot;k] = 0 and Var(q&middot;k) = &sum;<sub>i</sub> Var(q<sub>i</sub>k<sub>i</sub>) = &sum;<sub>i</sub> 1&middot;1 = d<sub>k</sub>, so std = &radic;d<sub>k</sub>. Dividing restores variance 1. It matters because softmax's gradient is p(1&minus;p)-like: when one probability saturates near 1, gradients for all other keys vanish, so the head cannot learn to rank the runner-ups &mdash; it stops learning attention structure and only learns a hard argmax.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> n = 4096, 24 heads, batch 4, fp16. How many score entries and how many GB of the score matrix does one layer need? And at n = 16384?</p>
+        <details><summary>Reveal answer</summary><p>entries = 4 &times; 24 &times; 4096<sup>2</sup> = 1.61 &times; 10<sup>9</sup> &rArr; 3.22 GB fp16 per layer. At n = 16384 the length factor is 4&times; so entries = 6.44 &times; 10<sup>9</sup> &rArr; <strong>12.88 GB per layer</strong>. Both numbers are per layer and per live buffer; with 24 layers the aggregate is 77 GB and 309 GB respectively. This is why chunked/streaming attention exists.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why must a padding mask be applied with &minus;&infin; rather than by multiplying probabilities by 0 after softmax?</p>
+        <details><summary>Reveal answer</summary><p>Multiplying after softmax destroys the normalisation: the remaining weights sum to less than 1, so the output is a shrunken combination of values &mdash; the more padding in the batch, the more shrinkage. The effect is batch-composition dependent, which makes evaluation non-comparable between batch sizes. Applying &minus;&infin; before softmax makes e<sup>&minus;&infin;</sup> = 0 and renormalises the surviving weights exactly, which is equivalent to having never included the key (Experiment 2, test 4).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: your loss is good, but a sequence evaluated alone gives a different answer from the same sequence inside a batch with 200 padding tokens. Which two masks do you audit, in which order?</p>
+        <details><summary>Reveal answer</summary><p>(1) The attention mask: is it keyed on the padding pattern per batch row, applied before softmax, and shape-broadcast correctly over (batch, heads, n_q, n_k)? Test with the invariance assertion from Experiment 2. (2) The loss mask: are padded positions excluded from the cross-entropy (L16)? If both are right, check that position ids reset correctly per sequence and that the model's positional encoding is not reading past the sequence end.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Attention is described as permutation-equivariant. What exactly does that mean, and what breaks if you drop positional encoding from a language model?</p>
+        <details><summary>Reveal answer</summary><p>If you permute the input tokens consistently, the output tokens are permuted the same way, because S<sub>ij</sub> depends only on the pair (x<sub>i</sub>, x<sub>j</sub>) and softmax over the set of keys is symmetric. Without positional information the model therefore cannot represent "the token before this one", "clause 4", or word order in any form &mdash; it becomes a bag-of-words model with better mixing and, under a causal mask, an artifact where a token sees only the multiset of earlier tokens (L08).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="05-layernorm-rmsnorm.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L05 &middot; LayerNorm, RMSNorm</span></a>
+    <a class="next" href="07-multihead.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L07 &middot; Multi-head &amp; why heads</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

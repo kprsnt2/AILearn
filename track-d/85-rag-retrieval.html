@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d85">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L85 · Retrieval: hybrid search, chunking, embedding choice — AILearn</title>
+<meta name="description" content="Hybrid retrieval wins because BM25 and dense have different failure sets, not because both are good. BM25 returns all zeros on a paraphrase query; dense gets it. And RRF ties break arbitrarily.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L85</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L85 &middot; Retrieval: hybrid search, chunking, embedding choice</h1>
+  <p class="lede">Hybrid retrieval is not "two retrievers are better than one". It works because their <em>failure sets are different</em> &mdash; and when both fail on the same query, reciprocal rank fusion hands you a tie that a sort order resolves. The chunker is where most RAG quality is actually decided.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: chunker + hybrid retriever</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">BM25</span>
+  <span class="pill">dense retrieval</span>
+  <span class="pill">reciprocal rank fusion</span>
+  <span class="pill">divergent failure sets</span>
+  <span class="pill">chunking strategies</span>
+  <span class="pill">tokenizer as hidden variable</span>
+  <span class="pill">recall@k ceiling</span>
+  <span class="pill">rank ties</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d85-s1">1 &middot; Why it exists <a class="hook" href="#d85-s1">#</a></h2>
+
+    <p>The failure: <strong>the answer is in the corpus and retrieval returns nothing useful.</strong> A user asks
+    "how do we prove nothing was edited" and the document says "tamper-evident append-only log". Zero shared words. BM25
+    &mdash; a genuinely excellent lexical ranker &mdash; scores every document 0.000 and returns an arbitrary ordering. The
+    model then answers from its priors, confidently, with a citation that does not support it.</p>
+
+    <p>The mirror failure: <strong>the answer has a unique identifier and dense retrieval fuzzes it.</strong> A query for
+    "Postgres 14" or an error code or a ticket number should be found by exact match. Embeddings compress specific tokens
+    into a neighbourhood, so <code>PROD-4417</code> lands near <code>PROD-4427</code> and the retriever returns the wrong
+    incident report with high cosine similarity and no warning.</p>
+
+    <p>These two failures are complementary, which is the entire argument for hybrid. But the complementary argument does
+    not say "fuse the scores" &mdash; it says <strong>fuse the rankings</strong>, because BM25 scores and cosine similarities live on
+    incomparable scales and any weighted sum requires a calibration you do not have.</p>
+
+    <div class="callout boss">
+      <p>Retrieval quality is decided at three layers and they are not equally important: <strong>chunking</strong> (is the
+      answer entirely inside one retrievable unit?), <strong>the lexical/semantic split</strong> (does at least one retriever
+      score it highly?), and <strong>fusion</strong> (does the fused ranking preserve the individual wins?). Most teams tune
+      layer three first because it is the most fun and the least important.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d85-s2">2 &middot; The mental model <a class="hook" href="#d85-s2">#</a></h2>
+
+    <p>Two retrievers with <em>different inductive biases</em> over the same index. BM25 asks "which documents contain these
+    terms, weighted by how rare those terms are". Dense asks "which documents are near the query in a learned metric space".
+    They fail on different queries, and that is the product.</p>
+
+    <table class="table">
+      <thead><tr><th>Query type</th><th>BM25</th><th>Dense</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Paraphrase, no shared terms ("prove nothing was edited")</td><td><strong>0.000</strong></td><td><strong>1.000</strong></td><td>no lexical overlap at all; semantics survives paraphrase</td></tr>
+        <tr><td>Rare exact token (<code>PROD-4417</code>, error code, SKU)</td><td><strong>exact</strong></td><td>fuzzy / wrong neighbour</td><td>rarity is BM25's IDF superpower; embeddings blur identifiers</td></tr>
+        <tr><td>Short keyword query ("Postgres 14")</td><td><strong>exact</strong></td><td>exact (easy)</td><td>both work; no differentiation</td></tr>
+        <tr><td>Negation ("not the retry policy")</td><td>fails (terms present)</td><td>mostly fails</td><td>neither models negation well &mdash; needs query rewriting (L86)</td></tr>
+        <tr><td>Long natural-language question</td><td>diluted by stopwords and length</td><td><strong>good</strong></td><td>dense handles full sentences; BM25 needs its <code>k1</code>/<code>b</code> tuned</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: two librarians with different search habits</h4><p>One librarian searches by index terms (exact, unforgiving of synonyms). The other searches by "this feels related" (great with synonyms, unreliable with codes). You ask both and merge their shortlists. Merging <em>positions</em> in each list works; averaging their unrelated confidence scores does not.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Librarian positions are comparable because each list is complete over the same shelves. Here, if both retrievers return all zeros for a query &mdash; as BM25 does above &mdash; the "positions" are an arbitrary tie and fusion inherits the tie. Fusion cannot create signal that neither retriever has; it can only combine signal that exists. So a measured hybrid win always comes from queries where <em>at least one</em> retriever ranks the gold chunk highly.</p></div>
+    </div>
+
+    <p>That gives the diagnostic that matters more than fusion tuning: <strong>oracle recall@k</strong> &mdash; the fraction of
+    queries where <em>either</em> retriever puts the gold chunk in its top <code>k</code>. If that number is 0.75, no fusion
+    strategy will get you past 0.75. Chase the missing 0.25 with chunking (is the answer split across a boundary?) before
+    touching the ranker.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d85-s3">3 &middot; The mechanism <a class="hook" href="#d85-s3">#</a></h2>
+
+    <p>BM25, because every RAG engineer should be able to write it from memory:</p>
+
+    <div class="formula">
+      score(q,d) = &sum;<sub>t&isin;q</sub> IDF(t) &middot; f(t,d)(k<sub>1</sub>+1) / [ f(t,d) + k<sub>1</sub>(1&minus;b + b&middot;|d|/avgdl) ] &nbsp;&nbsp; IDF(t) = ln(1 + (N&minus;n<sub>t</sub>+0.5)/(n<sub>t</sub>+0.5))
+      <span class="note"><code>f(t,d)</code> term frequency, <code>|d|</code> document length, <code>avgdl</code> mean length, <code>N</code> documents, <code>n<sub>t</sub></code> documents containing <code>t</code>. <code>k<sub>1</sub>=1.5</code> controls TF saturation, <code>b=0.75</code> controls length normalisation. Crucially: if no query term occurs in <code>d</code>, the score is <strong>exactly 0</strong>.</span>
+    </div>
+
+    <p>Then fusion by rank, not by score. Reciprocal Rank Fusion needs no calibration because it discards magnitudes:</p>
+
+    <div class="formula">
+      RRF(d) = &sum;<sub>r&isin;retrievers</sub> 1 / (k + rank<sub>r</sub>(d)) &nbsp;&nbsp;&nbsp;&nbsp; k = 60 (standard)
+      <span class="note"><code>rank</code> is 1-based, and must be <em>competition</em> ranking so tied scores get tied ranks. A document ranked first by one retriever and second by another scores <code>1/61 + 1/62 = 0.03252</code>; first by both scores <code>2/61 = 0.03279</code>. The spread between "best possible" and "one retriever missed" is only <strong>0.00027</strong> &mdash; tiny margins, which is why ties (and the tie-break rule) dominate the ordering when a retriever has no signal at all (Experiment 2).</span>
+    </div>
+
+    <p>The retriever. Note that it records <em>why</em> each chunk was retrieved &mdash; that field is what makes a bad answer
+    debuggable.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math, re
+<span class="kw">from</span> collections <span class="kw">import</span> Counter
+
+<span class="kw">def</span> <span class="fn">tok</span>(t):
+    <span class="kw">return</span> re.<span class="fn">findall</span>(<span class="st">r"[a-z0-9]+(?:-[a-z0-9]+)*"</span>, t.<span class="fn">lower</span>())  <span class="cm"># keep hyphens: "tamper-evident"</span>
+
+<span class="kw">def</span> <span class="fn">bm25</span>(docs, query, k1=<span class="nm">1.5</span>, b=<span class="nm">0.75</span>):
+    toks = [<span class="fn">tok</span>(d) <span class="kw">for</span> d <span class="kw">in</span> docs]
+    N = <span class="fn">len</span>(docs); avgdl = <span class="fn">sum</span>(<span class="fn">map</span>(<span class="fn">len</span>, toks)) / N
+    df = Counter(w <span class="kw">for</span> t <span class="kw">in</span> toks <span class="kw">for</span> w <span class="kw">in</span> <span class="fn">set</span>(t))
+    out = []
+    <span class="kw">for</span> t <span class="kw">in</span> toks:
+        tf = Counter(t); s = <span class="nm">0.0</span>
+        <span class="kw">for</span> w <span class="kw">in</span> <span class="fn">tok</span>(query):
+            <span class="kw">if</span> <span class="kw">not</span> tf[w]:
+                <span class="kw">continue</span>
+            idf = math.<span class="fn">log</span>(<span class="nm">1</span> + (N - df[w] + <span class="nm">0.5</span>) / (df[w] + <span class="nm">0.5</span>))
+            s += idf * tf[w] * (k1 + <span class="nm">1</span>) / (tf[w] + k1 * (<span class="nm">1</span> - b + b * <span class="fn">len</span>(t) / avgdl))
+        out.<span class="fn">append</span>(s)
+    <span class="kw">return</span> out
+
+<span class="kw">def</span> <span class="fn">rank</span>(scores):
+    order = <span class="fn">sorted</span>(<span class="fn">range</span>(<span class="fn">len</span>(scores)), key=<span class="kw">lambda</span> i: -scores[i])
+    r = [<span class="nm">0</span>] * <span class="fn">len</span>(scores)
+    <span class="kw">for</span> pos, i <span class="kw">in</span> <span class="fn">enumerate</span>(order):
+        r[i] = pos + <span class="nm">1</span>
+    <span class="kw">return</span> r
+
+<span class="kw">def</span> <span class="fn">hybrid</span>(docs, query, dense_scores, k=<span class="nm">60</span>):
+    rb, rd = <span class="fn">rank</span>(<span class="fn">bm25</span>(docs, query)), <span class="fn">rank</span>(dense_scores)
+    fused = [(<span class="nm">1</span>/(k+rb[i]) + <span class="nm">1</span>/(k+rd[i]),
+              {<span class="st">"doc"</span>: i, <span class="st">"via"</span>: (<span class="st">"bm25"</span> <span class="kw">if</span> rb[i] &lt; rd[i] <span class="kw">else</span> <span class="st">"dense"</span> <span class="kw">if</span> rd[i] &lt; rb[i] <span class="kw">else</span> <span class="st">"tie"</span>)})
+             <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="fn">len</span>(docs))]
+    fused.<span class="fn">sort</span>(key=<span class="kw">lambda</span> x: (-x[<span class="nm">0</span>], x[<span class="nm">1</span>][<span class="st">"doc"</span>]))   <span class="cm"># deterministic tie-break</span>
+    <span class="kw">return</span> fused
+    </div>
+
+    <p>Three implementation notes that are worth more than the algorithm. <strong>(1) The tokenizer is a hidden
+    hyperparameter</strong> &mdash; a naive <code>[a-z0-9]+</code> splits <code>tamper-evident</code> into two tokens and loses
+    the phrase; keeping hyphens changed which documents BM25 could find at all in Experiment 1. <strong>(2) Tie-breaking must be
+    deterministic</strong> and documented; without the explicit <code>key=lambda x: (-x[0], doc)</code> the fused order depends on
+    dictionary iteration order and the same query returns different chunks across runs and processes.
+    <strong>(3) Record provenance per result</strong> (<code>via</code>): when an answer is wrong you need to know whether the
+    chunk came from lexical, semantic, or a tie.</p>
+
+    <table class="table">
+      <thead><tr><th>Chunking strategy</th><th>Unit</th><th>Best for</th><th>Breaks when</th></tr></thead>
+      <tbody>
+        <tr><td>Fixed tokens (e.g. 512, 15% overlap)</td><td>token count</td><td>homogeneous prose</td><td>splits a table, a code block, or a definition across the boundary</td></tr>
+        <tr><td>Recursive character</td><td>paragraph &rarr; sentence</td><td>mixed docs</td><td>deeply nested structure (code, tables) still splits badly</td></tr>
+        <tr><td>Structural (headings, functions)</td><td>document structure</td><td>code, specs, contracts</td><td>one section is longer than the budget</td></tr>
+        <tr><td>Semantic (embedding-shift boundaries)</td><td>topic shift</td><td>long unstructured transcripts</td><td>costly to build; boundaries are unstable across embedding versions</td></tr>
+        <tr><td>Small-to-big (index small, return parent)</td><td>two granularities</td><td>precise matching + sufficient context</td><td>parent grows past the context budget (L79)</td></tr>
+        <tr><td>Sentence-window</td><td>sentence, return neighbours</td><td>Q&amp;A over dense prose</td><td>answer spans more than the window</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>An audit-grade retriever logs, per query: the top-<code>k</code> chunk ids <em>with their source span and content hash</em>,
+      which retriever surfaced each, and the corpus index version. Without the content hash you cannot tell later whether
+      the retrieved text was the text the answer was based on &mdash; and with a live index (L97), it very often was not.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d85-s4">4 &middot; Your hands <a class="hook" href="#d85-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Catch BM25 returning exactly zero</h4>
+      <p>Eight documents, four queries with known gold chunks. Watch the paraphrase query: BM25 scores <em>every</em> document
+      zero, and the fusion then produces a tie.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math, re
+<span class="kw">from</span> collections <span class="kw">import</span> Counter
+
+DOCS = [
+    (<span class="st">"d0"</span>, <span class="st">"SHA-256 hash chain links each event to the previous event"</span>),
+    (<span class="st">"d1"</span>, <span class="st">"The promotion gate runs four checks before a patch lands"</span>),
+    (<span class="st">"d2"</span>, <span class="st">"Backoff with jitter prevents synchronized retries"</span>),
+    (<span class="st">"d3"</span>, <span class="st">"Production database is Postgres 14"</span>),
+    (<span class="st">"d4"</span>, <span class="st">"Five deterministic factors score each job posting"</span>),
+    (<span class="st">"d5"</span>, <span class="st">"Deduplication drops repeated rows before insert"</span>),
+    (<span class="st">"d6"</span>, <span class="st">"Tamper-evident append-only log of every tool call"</span>),
+    (<span class="st">"d7"</span>, <span class="st">"Rate limiting caps outbound calls per minute"</span>),
+]
+STOP = {<span class="st">"the"</span>,<span class="st">"a"</span>,<span class="st">"an"</span>,<span class="st">"is"</span>,<span class="st">"of"</span>,<span class="st">"to"</span>,<span class="st">"and"</span>,<span class="st">"we"</span>,<span class="st">"do"</span>,<span class="st">"how"</span>,<span class="st">"on"</span>,<span class="st">"in"</span>,<span class="st">"each"</span>,<span class="st">"every"</span>,<span class="st">"before"</span>,<span class="st">"with"</span>,<span class="st">"per"</span>}
+<span class="kw">def</span> <span class="fn">content</span>(t): <span class="kw">return</span> [w <span class="kw">for</span> w <span class="kw">in</span> re.<span class="fn">findall</span>(<span class="st">r"[a-z0-9]+(?:-[a-z0-9]+)*"</span>, t.<span class="fn">lower</span>()) <span class="kw">if</span> w <span class="kw">not in</span> STOP]
+
+<span class="kw">def</span> <span class="fn">bm25</span>(docs, q, k1=<span class="nm">1.5</span>, b=<span class="nm">0.75</span>):
+    toks = [<span class="fn">content</span>(t) <span class="kw">for</span> _, t <span class="kw">in</span> docs]
+    N = <span class="fn">len</span>(docs); avgdl = <span class="fn">sum</span>(<span class="fn">map</span>(<span class="fn">len</span>, toks)) / N
+    df = Counter(w <span class="kw">for</span> t <span class="kw">in</span> toks <span class="kw">for</span> w <span class="kw">in</span> <span class="fn">set</span>(t))
+    out = []
+    <span class="kw">for</span> t <span class="kw">in</span> toks:
+        tf = Counter(t); s = <span class="nm">0.0</span>
+        <span class="kw">for</span> w <span class="kw">in</span> <span class="fn">content</span>(q):
+            <span class="kw">if</span> <span class="kw">not</span> tf[w]: <span class="kw">continue</span>
+            idf = math.<span class="fn">log</span>(<span class="nm">1</span> + (N - df[w] + <span class="nm">0.5</span>) / (df[w] + <span class="nm">0.5</span>))
+            s += idf * tf[w] * (k1 + <span class="nm">1</span>) / (tf[w] + k1 * (<span class="nm">1</span> - b + b * <span class="fn">len</span>(t) / avgdl))
+        out.<span class="fn">append</span>(s)
+    <span class="kw">return</span> out
+
+q = <span class="st">"how do we prove nothing was edited"</span>
+scores = <span class="fn">bm25</span>(DOCS, q)
+<span class="kw">for</span> (did, text), s <span class="kw">in</span> <span class="fn">zip</span>(DOCS, scores):
+    print(<span class="st">f"{did}  bm25={s:.3f}  {text[:48]}"</span>)
+print(<span class="st">"\nall zero?"</span>, <span class="fn">all</span>(s == <span class="nm">0</span> <span class="kw">for</span> s <span class="kw">in</span> scores))
+      </div>
+      <p class="expect"><strong>Observed output:</strong> every line reads <code>bm25=0.000</code>, and
+      <code>all zero? True</code>. This is not a bug &mdash; it is BM25 working exactly as specified, because no query content
+      word occurs in any document ("prove", "nothing", "edited" are absent; "was" is a stopword here).
+      The retrieval system then returns documents in index order, which happens to put <code>d0</code> (&ldquo;hash chain&rdquo;) first
+      &mdash; plausibly related, wrong document. <strong>This is the case dense retrieval exists for</strong>: a semantic model scores
+      <code>d6</code> (&ldquo;tamper-evident append-only log&rdquo;) at 1.000 on the same query.
+      <strong>Falsifier:</strong> if your BM25 never returns all-zero, your corpus is small and lexically lucky; the failure
+      appears as the corpus grows and vocabulary diverges from user phrasing.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; RRF ties, and why the tie-break is a correctness issue</h4>
+      <p>Fuse a perfect lexical retriever with the all-zero one. The gold document ties with its neighbours, and the sort
+      order decides the answer.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">rank</span>(scores):
+    <span class="cm"># COMPETITION ranking: equal scores get equal ranks. A sort-based rank hides ties.</span>
+    order = <span class="fn">sorted</span>(<span class="fn">range</span>(<span class="fn">len</span>(scores)), key=<span class="kw">lambda</span> i: -scores[i])
+    r = [<span class="nm">0</span>] * <span class="fn">len</span>(scores)
+    r[order[<span class="nm">0</span>]] = <span class="nm">1</span>
+    <span class="kw">for</span> pos <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">1</span>, <span class="fn">len</span>(order)):
+        i, prev = order[pos], order[pos - <span class="nm">1</span>]
+        r[i] = r[prev] <span class="kw">if</span> scores[i] == scores[prev] <span class="kw">else</span> pos + <span class="nm">1</span>
+    <span class="kw">return</span> r
+
+<span class="kw">def</span> <span class="fn">rrf</span>(rl_list, k=<span class="nm">60</span>):
+    <span class="kw">return</span> [<span class="fn">sum</span>(<span class="nm">1</span>/(k + rl[i]) <span class="kw">for</span> rl <span class="kw">in</span> rl_list) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="fn">len</span>(rl_list[<span class="nm">0</span>]))]
+
+bm25  = [<span class="nm">0.0</span>] * <span class="nm">8</span>                    <span class="cm"># lexical found nothing: everyone rank 1</span>
+dense = [<span class="nm">0.0</span>] * <span class="nm">6</span> + [<span class="nm">1.0</span>, <span class="nm">0.0</span>]   <span class="cm"># d6 is the gold chunk</span>
+rb, rd = <span class="fn">rank</span>(bm25), <span class="fn">rank</span>(dense)
+print(<span class="st">"bm25 ranks "</span>, rb)
+print(<span class="st">"dense ranks"</span>, rd)
+fused = <span class="fn">rrf</span>([rb, rd])
+<span class="kw">for</span> i <span class="kw">in</span> <span class="fn">sorted</span>(<span class="fn">range</span>(<span class="nm">8</span>), key=<span class="kw">lambda</span> i: -fused[i]):
+    print(<span class="st">f"doc{i} rrf={fused[i]:.5f} rb={rb[i]} rd={rd[i]}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>bm25 ranks [1, 1, 1, 1, 1, 1, 1, 1]</code> and
+      <code>dense ranks [2, 2, 2, 2, 2, 2, 1, 2]</code>, then <code>doc6 rrf=0.03279 rb=1 rd=1</code> followed by
+      <strong><code>doc0</code> through <code>doc7</code> all at <code>rrf=0.03252</code></strong> &mdash; seven documents sharing an
+      identical fused score. Only two distinct values exist in the whole ranking.
+      The gold chunk wins correctly (both retrievers agreed it was best), but positions 2&ndash;8 are an arbitrary permutation.
+      <strong>The critical implementation detail:</strong> if you compute ranks with a naive
+      <code>sorted(range(n), key=-score)</code> and assign <code>pos+1</code>, ties are <em>silently broken by index order</em> and you
+      will never see this. You must use competition ranking (equal scores &rarr; equal rank) to observe the tie at all &mdash; and then
+      you must add a documented tie-break, or the answer depends on document insertion order.
+      <strong>Falsifier:</strong> shuffle <code>DOCS</code> and re-run; if the order of positions 2&ndash;8 changes, your pipeline's
+      answer is a function of index layout, which is a reproducibility defect (L94), not a ranking.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Measure a chunker's boundary damage (copy-paste)</h4>
+      <p>Fixed-size chunking splits text on a character budget. Count how often a gold answer spans two chunks &mdash; those queries
+      are unretrievable no matter how good the ranker is.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">chunk_fixed</span>(text, size=<span class="nm">120</span>, overlap=<span class="nm">0</span>):
+    step = size - overlap
+    <span class="kw">return</span> [text[i:i+size] <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">0</span>, <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(text)), step)]
+
+<span class="kw">def</span> <span class="fn">boundary_damage</span>(text, gold_spans, size=<span class="nm">120</span>, overlap=<span class="nm">0</span>):
+    <span class="cm"># gold_spans: list of (start, end) of the answer text</span>
+    chunks = <span class="fn">chunk_fixed</span>(text, size, overlap)
+    <span class="cm"># map chunk boundaries back to absolute offsets</span>
+    step = size - overlap
+    starts = <span class="fn">list</span>(<span class="fn">range</span>(<span class="nm">0</span>, <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(text)), step))
+    spans = [(s, s + size) <span class="kw">for</span> s <span class="kw">in</span> starts]
+    split = <span class="nm">0</span>
+    <span class="kw">for</span> gs, ge <span class="kw">in</span> gold_spans:
+        inside = [sp <span class="kw">for</span> sp <span class="kw">in</span> spans <span class="kw">if</span> sp[<span class="nm">0</span>] &lt;= gs <span class="kw">and</span> ge &lt;= sp[<span class="nm">1</span>]]
+        <span class="kw">if</span> <span class="kw">not</span> inside:
+            split += <span class="nm">1</span>
+    <span class="kw">return</span> split, <span class="fn">len</span>(gold_spans), <span class="fn">len</span>(chunks)
+
+doc = (<span class="st">"The promotion gate requires four independent checks. "</span> * <span class="nm">3</span>
+       + <span class="st">"Each check must pass before a patch is accepted for merge. "</span>
+       + <span class="st">"The checks are: build, unit tests, ledger verification, and human sign-off. "</span> * <span class="nm">2</span>)
+gold = [(<span class="nm">170</span>, <span class="nm">230</span>), (<span class="nm">290</span>, <span class="nm">380</span>), (<span class="nm">440</span>, <span class="nm">470</span>)]
+<span class="kw">for</span> size, ov <span class="kw">in</span> ((<span class="nm">120</span>, <span class="nm">0</span>), (<span class="nm">120</span>, <span class="nm">30</span>), (<span class="nm">256</span>, <span class="nm">0</span>), (<span class="nm">512</span>, <span class="nm">0</span>)):
+    split, total, nchunks = <span class="fn">boundary_damage</span>(doc, gold, size, ov)
+    print(<span class="st">f"size={size:3d} overlap={ov:3d}  chunks={nchunks:2d}  split_gold={split}/{total}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output</strong> (370-character document, 3 gold spans):
+      <code>size=120 overlap=  0  chunks= 4  split_gold=1/3</code> &middot;
+      <code>size=120 overlap= 30  chunks= 5  split_gold=1/3</code> &middot;
+      <code>size=256 overlap=  0  chunks= 2  split_gold=0/3</code> &middot;
+      <code>size=512 overlap=  0  chunks= 1  split_gold=0/3</code>.
+      Note that <strong>adding 25% overlap did not help at all</strong> (still 1/3) because the damaged span is longer than 30
+      characters &mdash; overlap only rescues spans shorter than the overlap width. Increasing chunk size fixed it (0/3), but at
+      512 chars a single chunk is the whole document, which defeats retrieval granularity entirely.
+      The output gives you the <em>retrievability ceiling</em> before any embedding exists: with
+      <code>split_gold=1/3</code>, max recall@k is <code>2/3 = 0.667</code> no matter how good the ranker is.
+      <strong>Falsifier:</strong> if raising overlap to 50% still splits gold spans, the spans are longer than the chunk size
+      &mdash; the answer is small-to-big indexing (index small, return parent), not more overlap.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d85-s5">5 &middot; Failure modes <a class="hook" href="#d85-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Lexical zero-match on paraphrase.</strong> No query term occurs in the corpus. Symptom: BM25 scores all zero; results come back in index order; answers cite plausibly-related-but-wrong chunks.</li>
+        <li><strong>Fuzzy identifier matching.</strong> Dense returns a neighbour of an exact code. Symptom: high similarity on wrong document; the correct document is rank 2&ndash;3 and never cited. Fix: detect identifier-shaped query tokens and route them to exact-match.</li>
+        <li><strong>Score-averaging instead of rank fusion.</strong> BM25 and cosine are summed with hand-tuned weights. Symptom: the weighting changes with corpus size and query length; you re-tune after every index rebuild and never converge.</li>
+        <li><strong>Boundary-split answers.</strong> The gold span crosses two chunks. Symptom: recall@k plateaus at some value below 1 no matter what you do to the ranker; both chunks rank mid-list.</li>
+        <li><strong>Order-dependent ties.</strong> No deterministic tie-break. Symptom: the same query returns different chunks across runs/processes; evals are flaky (L94).</li>
+        <li><strong>Overlap duplication.</strong> 50% overlap surfaces the same passage twice. Symptom: the model repeats itself or treats duplicate evidence as corroboration &mdash; effectively halving your context budget.</li>
+        <li><strong>Stale embeddings after model upgrade.</strong> Query embedded with model B, index built with model A. Symptom: recall collapses from a specific deploy date; no error, just worse retrieval.</li>
+        <li><strong>Chunking that destroys structure.</strong> Tables, code blocks, or YAML split mid-structure. Symptom: retrieved chunks contain syntactically broken fragments; the model hallucinates around the corruption.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d85-s6">6 &middot; Connects to <a class="hook" href="#d85-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="../track-a/02-embeddings.html">L02 &middot; Embeddings</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="86-rag-reranking.html">L86 &middot; Reranking</a>,
+    <a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG evaluation</a>.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/22-vector-search.html">L22 &middot; ANN search</a> &mdash; HNSW recall@k caps your dense arm's ceiling before fusion runs.</li>
+      <li><a class="tag-d" href="80-memory.html">L80 &middot; Memory</a> &mdash; the same scoring problem with supersession semantics layered on.</li>
+      <li><a class="tag-d" href="86-rag-reranking.html">L86 &middot; Reranking</a> &mdash; a cross-encoder over the fused top-50 fixes much of what fusion cannot, at a latency cost.</li>
+      <li><a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG evaluation</a> &mdash; measure retrieval recall separately from answer faithfulness, or you cannot attribute a failure.</li>
+      <li><a class="tag-d" href="97-rag-in-production.html">L97 &middot; RAG in production</a> &mdash; index rebuilds, embedding version pins, and freshness.</li>
+      <li><a class="tag-a" href="../track-a/01-tokenization.html">L01 &middot; Tokenization</a> &mdash; chunk sizes in tokens are what the embedding model actually sees; character counts lie.</li>
+      <li><a class="tag-c" href="../resources/papers.html" class="tag-d">RAG &middot; arXiv:2005.11401</a> &mdash; the paper that framed retrieval-then-generate as one joint system.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d85-s7">7 &middot; Self-check <a class="hook" href="#d85-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A query returns BM25 = 0 for all 8 documents. Is that a bug? What does RRF do next, and what does that tell you?</p>
+        <details><summary>Reveal answer</summary><p>Not a bug &mdash; it is BM25 working as specified: no query content term occurs in any document, so every term's contribution is zero. RRF then treats the arbitrary order as a ranking and assigns rank 1 to whatever is first, giving it <code>1/(60+1) = 0.01639</code> &mdash; the same score every other zero-score document gets from the other retriever. With both retrievers tied, the fused order is iteration order. The lesson: <strong>fusion cannot manufacture signal</strong>; if neither retriever scored the gold document highly, no fusion strategy helps, and you should be measuring oracle recall@k before tuning fusion at all.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Compute RRF for a document ranked 1st by lexical and 5th by dense, versus one ranked 4th by both, with <code>k=60</code>. Which wins?</p>
+        <details><summary>Reveal answer</summary><p>First: <code>1/61 + 1/65 = 0.016393 + 0.015385 = 0.031778</code>. Second: <code>1/64 + 1/64 = 0.015625 &times; 2 = 0.031250</code> (verified above). The top-heavy document wins by 0.000528. That is the RRF property that makes it robust: one strong signal plus one weak signal beats two mediocre signals. It also shows the sensitivity &mdash; the margins are tiny, so ties and floating-point ordering matter, which is why a deterministic tie-break is mandatory.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Your recall@10 is 0.62 and oracle recall@10 (either retriever) is 0.81. What do you fix first?</p>
+        <details><summary>Reveal answer</summary><p><strong>Fusion</strong> &mdash; there is 19 points of headroom that pure ranking work can recover, because the gold chunk <em>is</em> in one retriever's top 10 but not in the fused top 10. Investigate: is the fusion weighting one arm too heavily, is <code>k</code> wrong for your rank distributions, or is the dense arm's ANN recall@k the limit (L22)? After that is exhausted, the remaining 19 points need chunking work, since they are cases where <em>neither</em> retriever found the answer &mdash; which is a boundary or representation problem, not a ranking problem.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: retrieval quality dropped sharply at 14:20 with no code deploy. What are the three most likely causes and what field disambiguates them?</p>
+        <details><summary>Reveal answer</summary><p>(a) <strong>Index rebuild</strong> with a changed chunker, (b) <strong>embedding model/version change</strong> on one side only (query vs index), (c) <strong>corpus content change</strong> &mdash; documents edited or deleted upstream. The disambiguating field is the <strong>index version + embedding model id + document content hash</strong>, logged per query. With all three you can bisect to the exact change; with none, you are guessing. This is the retention requirement that makes RAG debuggable, and it is cheap: three strings per query.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is a cross-encoder rerank (L86) often a bigger win than tuning the fusion weights?</p>
+        <details><summary>Reveal answer</summary><p>Because it changes the <em>kind</em> of evidence rather than its weighting. Fusion only re-orders documents that one of two bi-encoders already surfaced &mdash; it cannot promote a document both scored low. A cross-encoder reads (query, document) jointly with full attention, so it can score a low-ranked candidate highly when the pair genuinely matches, recovering cases that no weighting of the two lists could. The cost is latency proportional to the number of candidates reranked, which is why the ordering is: fix chunking &rarr; ensure oracle recall &rarr; fuse &rarr; rerank the top ~50.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="84-safety-sandboxing.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L84 &middot; Sandboxing &amp; permissions</span></a>
+    <a class="next" href="86-rag-reranking.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L86 &middot; Reranking &amp; query expansion</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

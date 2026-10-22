@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d84">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L84 · Sandboxing and permission models — the blast radius question — AILearn</title>
+<meta name="description" content="A permission model is a bound on reachable damage, not a list of instructions. Capability sets are a lattice: some pairs are worse than both halves. Blast radius arithmetic and a scope guard.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L84</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L84 &middot; Sandboxing and permission models &mdash; the blast radius question</h1>
+  <p class="lede">"Do not touch production" is not a restriction, it is a sentence. A permission model is a statement about <em>reachable damage</em>: what a compromised or confused agent can destroy before anything notices. Two capabilities held by one agent can be worse than both halves held separately.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: scope guard</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">blast radius</span>
+  <span class="pill">capability set vs instruction</span>
+  <span class="pill">least privilege lattice</span>
+  <span class="pill">exfiltration pair</span>
+  <span class="pill">separate privilege that separates</span>
+  <span class="pill">irreversibility weighting</span>
+  <span class="pill">action-before-decision</span>
+  <span class="pill">taint tracking</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d84-s1">1 &middot; Why it exists <a class="hook" href="#d84-s1">#</a></h2>
+
+    <p>The failure that forced sandboxing into agent architecture: <strong>the agent did exactly what it was told, and the
+    consequences were unrecoverable.</strong> Not maliciously. It read a poisoned document (L93), followed an instruction in it,
+    ran a script, and deleted a table. Every step was permitted by the prompt. Nothing in the system disagreed, because
+    the only "restriction" was a sentence in a system prompt &mdash; and a sentence is not a mechanism.</p>
+
+    <p>The property of an instruction is that it is <em>advice to a stochastic process</em>. The property of a capability is that
+    it is <em>enforced by an interpreter that does not care what the model thinks</em>. An agent with filesystem write access and no
+    sandbox has, in effect, one capability: "any damage reachable from a shell". The prompt is not part of the permission model.</p>
+
+    <p>The second failure is subtler and lives in the composition of grants. Giving one agent "read secrets" is a bounded
+    risk. Giving another "network egress" is a bounded risk. Giving <strong>both to agents that share a workspace</strong> produces
+    exfiltration &mdash; a capability neither has alone. This is the classic confused-deputy / ambient-authority problem, and it
+    means permission decisions cannot be made one grant at a time.</p>
+
+    <div class="callout boss">
+      <p>Design the permission model by asking a single question, and ask it <em>before</em> the prompt: <strong>if this agent
+      turned fully adversarial at turn <code>t</code>, what is the complete set of damage reachable with its current
+      capabilities, and how long until someone notices?</strong> Everything else &mdash; tool allow-lists, sandbox flags, approval
+      gates &mdash; is machinery for making that set small and that latency short.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d84-s2">2 &middot; The mental model <a class="hook" href="#d84-s2">#</a></h2>
+
+    <p>A permission model is a pair <strong>(capability set, boundary)</strong>. The capability set says what verbs over what
+    resources are possible. The boundary says what state the agent can share with anything else. Both are required: a
+    minimal capability set with a shared workspace is not minimal, because the workspace is itself a channel.</p>
+
+    <table class="table">
+      <thead><tr><th>Capability</th><th>Reachable resources (example)</th><th>Irreversible?</th><th>Blast units</th></tr></thead>
+      <tbody>
+        <tr><td><code>read:repo</code></td><td>1,000 files</td><td>no</td><td>1,000</td></tr>
+        <tr><td><code>write:repo</code></td><td>1,000 files</td><td>no (git revert)</td><td>2,000 total</td></tr>
+        <tr><td><code>fetch:net</code></td><td>50 endpoints</td><td>no</td><td>2,050 total</td></tr>
+        <tr><td><code>read_secret</code></td><td>20 secrets</td><td><strong>no, but un-undoable once leaked</strong></td><td>+20</td></tr>
+        <tr><td><code>deploy:prod_db</code></td><td>5 prod objects</td><td><strong>yes</strong></td><td>+50 (weighted &times;10)</td></tr>
+        <tr><td><code>full</code></td><td>all of the above</td><td><strong>yes</strong></td><td>2,120</td></tr>
+      </tbody>
+    </table>
+
+    <p>Blast units are <code>&sum; reachable_resources &times; (10 if irreversible else 1)</code>. The weighting is not a
+    measurement &mdash; it encodes the one asymmetry that matters: an irreversible action's cost is unbounded because you
+    cannot undo it, while a reversible one's cost is bounded by the work of reverting.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: capabilities as keys, not instructions</h4><p>A server room does not obey a sign saying "do not touch the power switch". It locks the door and gives out keys. The lock does not evaluate intent, cannot be argued with, and fails closed. Capability-based security is this: the agent's ability is a key it either holds or doesn't.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A key grants all-or-nothing access to a room; capabilities can be composed across agents. Two agents each holding one key can, between them, open a door neither could open alone &mdash; if they can talk. An agent's <em>output channel is a communication channel</em>, so separate privilege only works when the boundary is real (separate filesystem, separate process, no shared writable medium). This is the one place the key analogy actively misleads.</p></div>
+    </div>
+
+    <p>Which gives the operational rule for <strong>separate privilege</strong>: two agents with different grants must not share a
+    writable medium. If they do, treat them as one agent with the union of capabilities &mdash; and compute the blast radius of
+    the union, because that is the real number.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d84-s3">3 &middot; The mechanism <a class="hook" href="#d84-s3">#</a></h2>
+
+    <p>Blast radius formally:</p>
+
+    <div class="formula">
+      BR(A) = &sum;<sub>c &isin; C(A)</sub> &sum;<sub>r &isin; match(c)</sub> w(r) &middot; &iota;(c)
+      <span class="note"><code>C(A)</code> = capabilities of agent <code>A</code>, <code>match(c)</code> = resources the capability can touch, <code>w(r)</code> = resource weight, <code>&iota;(c) = 10</code> if the verb is irreversible else <code>1</code>. Report <code>BR</code> with the <em>observation latency</em> &mdash; damage reachable in a minute with instant detection differs from damage reachable for a day.</span>
+    </div>
+
+    <p>The composition rule, which is where naive least-privilege fails:</p>
+
+    <div class="formula">
+      BR(A &cup; B) &ge; BR(A) + BR(B) &nbsp;&nbsp;&nbsp;&nbsp; and in general &nbsp; BR(A &cup; B) &gt; BR(A) + BR(B)
+      <span class="note">The union is super-additive when a capability pair creates a new <em>action</em>. The canonical pair is <code>read_secret</code> + <code>fetch:net</code> = exfiltration. Another is <code>write:repo</code> + <code>deploy:prod_db</code> = destruction, where the write smuggles the change past review and the deploy runs it.</span>
+    </div>
+
+    <p>The guard. Enforced at the tool boundary so the model's intent is irrelevant.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> fnmatch
+
+<span class="kw">class</span> <span class="fn">Denied</span>(<span class="fn">Exception</span>): <span class="kw">pass</span>
+
+<span class="kw">class</span> <span class="fn">Capability</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, verb, resource, irreversible=<span class="kw">False</span>, max_uses=<span class="kw">None</span>):
+        <span class="nm">self</span>.verb, <span class="nm">self</span>.resource = verb, resource
+        <span class="nm">self</span>.irreversible, <span class="nm">self</span>.max_uses = irreversible, max_uses
+        <span class="nm">self</span>.uses = <span class="nm">0</span>
+
+<span class="kw">class</span> <span class="fn">ScopeGuard</span>:
+    <span class="cm">"""Every tool call passes through here. Deny by default."""</span>
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, caps, taint_sources=()):
+        <span class="nm">self</span>.caps = caps                  <span class="cm"># list[Capability] - the ONLY allowed actions</span>
+        <span class="nm">self</span>.taint_sources = taint_sources <span class="cm"># e.g. ("web:fetch",) untrusted input channels</span>
+        <span class="nm">self</span>.log = []                     <span class="cm"># append-only; hash-chain (L90/L94)</span>
+
+    <span class="kw">def</span> <span class="fn">check</span>(<span class="nm">self</span>, verb, resource, tainted=<span class="kw">False</span>):
+        <span class="cm"># 1. explicit deny always wins</span>
+        <span class="kw">for</span> c <span class="kw">in</span> <span class="nm">self</span>.log <span class="kw">if</span> <span class="kw">False</span> <span class="kw">else</span> []:
+            <span class="kw">pass</span>
+        <span class="cm"># 2. must be in the capability set</span>
+        ok = <span class="kw">None</span>
+        <span class="kw">for</span> c <span class="kw">in</span> <span class="nm">self</span>.caps:
+            <span class="kw">if</span> c.verb == verb <span class="kw">and</span> fnmatch.<span class="fn">fnmatch</span>(resource, c.resource):
+                ok = c; <span class="kw">break</span>
+        <span class="kw">if</span> ok <span class="kw">is</span> <span class="kw">None</span>:
+            <span class="kw">raise</span> <span class="fn">Denied</span>(<span class="st">f"no capability for {verb}:{resource}"</span>)
+        <span class="cm"># 3. taint rule: an irreversible action on tainted input is refused</span>
+        <span class="kw">if</span> tainted <span class="kw">and</span> ok.irreversible:
+            <span class="kw">raise</span> <span class="fn">Denied</span>(<span class="st">f"irreversible {verb} on tainted input"</span>)
+        <span class="cm"># 4. usage budget</span>
+        <span class="kw">if</span> ok.max_uses <span class="kw">is not</span> <span class="kw">None</span> <span class="kw">and</span> ok.uses &gt;= ok.max_uses:
+            <span class="kw">raise</span> <span class="fn">Denied</span>(<span class="st">f"{verb}:{resource} exhausted {ok.max_uses} uses"</span>)
+        ok.uses += <span class="kw">1</span>
+        <span class="nm">self</span>.log.<span class="fn">append</span>((verb, resource, tainted, ok.irreversible))
+        <span class="kw">return</span> <span class="kw">True</span>
+    </div>
+
+    <p>Four decisions inside <code>check</code> are the whole design. <strong>(1) Deny by default:</strong> an unlisted verb is
+    refused, so adding a tool to the registry does not silently add a capability. <strong>(2) Glob resources, not verbs:</strong>
+    <code>write:repo/*</code> is a capability; <code>write</code> is not. <strong>(3) The taint rule:</strong> an irreversible
+    action whose inputs derive from an untrusted channel is refused regardless of what the model believes &mdash; this is the
+    single highest-value rule against prompt injection, because it makes the injection unable to <em>act</em> even if it
+    successfully <em>persuades</em>. <strong>(4) Usage budgets:</strong> irreversible capabilities get a small <code>max_uses</code>,
+    so a confused agent exhausts the allowance instead of the system.</p>
+
+    <p>The exfiltration pair deserves its own check, because it is invisible in either grant alone:</p>
+
+    <div class="formula">
+      forbidden pairs: { read_secret, fetch:net } &nbsp;&nbsp; { write:repo&#42;, write:net } &nbsp;&nbsp; { write:prod&#42;, deploy:prod&#42; }
+      <span class="note">Check the <em>conjunction</em> at grant time, not at call time. A pair check is one line of code and catches the composition bug that per-capability review structurally cannot see.</span>
+    </div>
+
+    <div class="callout audit">
+      <p>The audit evidence for a sandbox is not a configuration diff &mdash; configs drift. It is a <strong>capability
+      inventory per agent per run</strong>, recorded in the ledger, plus the count of denied calls. A reviewer should be able to
+      answer: what could this specific run have damaged? Denials are signal, not noise: a run with 40 denials is a run where
+      the model was trying something outside its mandate, and that pattern is worth alerting on before it becomes the run
+      with zero denials and one incident.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d84-s4">4 &middot; Your hands <a class="hook" href="#d84-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Compute blast radius for real capability sets</h4>
+      <p>Weighted reachable damage per grant. The interesting column is <code>irrev</code>, not the raw count.</p>
+      <div class="code" data-lang="python">
+RESOURCES = {<span class="st">"repo"</span>: <span class="nm">1000</span>, <span class="st">"secrets"</span>: <span class="nm">20</span>, <span class="st">"prod_db"</span>: <span class="nm">5</span>, <span class="st">"net"</span>: <span class="nm">50</span>}
+
+<span class="kw">def</span> <span class="fn">blast</span>(caps):
+    <span class="cm"># caps: list of (verb, resource, irreversible)</span>
+    <span class="kw">return</span> <span class="fn">sum</span>(RESOURCES[r] * (<span class="nm">10</span> <span class="kw">if</span> irrev <span class="kw">else</span> <span class="nm">1</span>) <span class="kw">for</span> _, r, irrev <span class="kw">in</span> caps)
+
+CAP_SETS = {
+    <span class="st">"read_only"</span>:       [(<span class="st">"read"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>)],
+    <span class="st">"editor"</span>:          [(<span class="st">"read"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>), (<span class="st">"write"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>)],
+    <span class="st">"editor_plus_net"</span>: [(<span class="st">"read"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>), (<span class="st">"write"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>), (<span class="st">"fetch"</span>, <span class="st">"net"</span>, <span class="kw">False</span>)],
+    <span class="st">"deployer"</span>:        [(<span class="st">"read"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>), (<span class="st">"write"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>),
+                        (<span class="st">"fetch"</span>, <span class="st">"net"</span>, <span class="kw">False</span>), (<span class="st">"deploy"</span>, <span class="st">"prod_db"</span>, <span class="kw">True</span>)],
+    <span class="st">"auditor_only"</span>:    [(<span class="st">"read"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>), (<span class="st">"read_secret"</span>, <span class="st">"secrets"</span>, <span class="kw">False</span>)],
+    <span class="st">"full"</span>:            [(<span class="st">"read"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>), (<span class="st">"write"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>),
+                        (<span class="st">"fetch"</span>, <span class="st">"net"</span>, <span class="kw">False</span>), (<span class="st">"read_secret"</span>, <span class="st">"secrets"</span>, <span class="kw">False</span>),
+                        (<span class="st">"deploy"</span>, <span class="st">"prod_db"</span>, <span class="kw">True</span>)],
+}
+<span class="kw">for</span> name, caps <span class="kw">in</span> CAP_SETS.<span class="fn">items</span>():
+    print(<span class="st">f"{name:18s} caps={len(caps)}  blast={blast(caps):5d}  "
+          f"irrev={any(c[2] for c in caps)}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>read_only caps=1 blast=1000 irrev=False</code> &middot;
+      <code>editor caps=2 blast=2000</code> &middot; <code>editor_plus_net caps=3 blast=2050</code> &middot;
+      <code>deployer caps=4 blast=2100 irrev=True</code> &middot; <code>auditor_only caps=2 blast=1020</code> &middot;
+      <code>full caps=5 blast=2120 irrev=True</code>.
+      Note <code>editor_plus_net</code> is only +50 over <code>editor</code> &mdash; network access looks cheap. It is not: the
+      cost of network access is that it turns any <em>other</em> capability into an exfiltration channel, which is not visible in
+      its own blast number. That is the lattice effect, and it is why Experiment 2 exists.
+      <strong>Falsifier:</strong> if <code>write:repo</code> is genuinely irreversible in your setup (no VCS, no backups), it
+      should be weighted &times;10 and the ranking changes completely &mdash; check that before trusting these units.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Find the super-additive pairs</h4>
+      <p>Every pair of capabilities; flag the conjunctions that create an action neither half has.</p>
+      <div class="code" data-lang="python">
+<span class="kw">from</span> itertools <span class="kw">import</span> combinations
+
+CAPS = [(<span class="st">"exec"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>), (<span class="st">"read"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>), (<span class="st">"write"</span>, <span class="st">"repo"</span>, <span class="kw">False</span>),
+        (<span class="st">"fetch"</span>, <span class="st">"net"</span>, <span class="kw">False</span>), (<span class="st">"read_secret"</span>, <span class="st">"secrets"</span>, <span class="kw">False</span>),
+        (<span class="st">"deploy"</span>, <span class="st">"prod_db"</span>, <span class="kw">True</span>)]
+
+<span class="kw">for</span> a, b <span class="kw">in</span> combinations(CAPS, <span class="nm">2</span>):
+    va, ra = a[<span class="nm">0</span>], a[<span class="nm">1</span>]
+    vb, rb = b[<span class="nm">0</span>], b[<span class="nm">1</span>]
+    tag = <span class="kw">None</span>
+    <span class="kw">if</span> {ra, rb} == {<span class="st">"secrets"</span>, <span class="st">"net"</span>}:
+        tag = <span class="st">"EXFILTRATION (secret + outbound net)"</span>
+    <span class="kw">if</span> <span class="st">"prod_db"</span> <span class="kw">in</span> {ra, rb} <span class="kw">and</span> ({va, vb} &amp; {<span class="st">"write"</span>, <span class="st">"exec"</span>}):
+        tag = <span class="st">"DESTRUCTION (write/exec + prod)"</span>
+    <span class="kw">if</span> {va, vb} &gt;= {<span class="st">"read"</span>, <span class="st">"write"</span>} <span class="kw">and</span> ra == rb == <span class="st">"repo"</span>:
+        tag = <span class="st">"SELF-MODIFICATION (read+write repo)"</span>
+    <span class="kw">if</span> tag:
+        print(<span class="st">f"  {va}:{ra:9s} + {vb}:{rb:9s} -&gt; {tag}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output</strong> (four flagged pairs):
+      <code>exec:repo + deploy:prod_db &rarr; DESTRUCTION</code> &middot;
+      <code>read:repo + write:repo &rarr; SELF-MODIFICATION</code> &middot;
+      <code>write:repo + deploy:prod_db &rarr; DESTRUCTION</code> &middot;
+      <code>fetch:net + read_secret:secrets &rarr; EXFILTRATION</code>.
+      The self-modification pair is the one people miss: read+write on the repo means the agent can edit the code that
+      <em>will run the next verification step</em>, which invalidates the oracle (L76). Once an agent can modify what judges it,
+      no downstream evidence is trustworthy.
+      <strong>Falsifier:</strong> if your repo writes are gated by human review before any execution, self-modification is
+      bounded &mdash; verify that the gate is on <em>execution</em>, not on merge, or the pair still holds.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Deny-by-default guard test (copy-paste)</h4>
+      <p>Six calls against a three-capability guard. The two <code>Denied</code> exceptions are the product.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> fnmatch
+
+<span class="kw">class</span> <span class="fn">Denied</span>(<span class="fn">Exception</span>): <span class="kw">pass</span>
+
+<span class="kw">class</span> <span class="fn">Cap</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, verb, res, irrev=<span class="kw">False</span>, max_uses=<span class="kw">None</span>):
+        <span class="nm">self</span>.verb, <span class="nm">self</span>.res, <span class="nm">self</span>.irrev = verb, res, irrev
+        <span class="nm">self</span>.max_uses, <span class="nm">self</span>.uses = max_uses, <span class="nm">0</span>
+
+<span class="kw">class</span> <span class="fn">Guard</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, caps): <span class="nm">self</span>.caps, <span class="nm">self</span>.log = caps, []
+    <span class="kw">def</span> <span class="fn">check</span>(<span class="nm">self</span>, verb, res, tainted=<span class="kw">False</span>):
+        hit = <span class="kw">next</span>((c <span class="kw">for</span> c <span class="kw">in</span> <span class="nm">self</span>.caps
+                    <span class="kw">if</span> c.verb == verb <span class="kw">and</span> fnmatch.<span class="fn">fnmatch</span>(res, c.res)), <span class="kw">None</span>)
+        <span class="kw">if</span> hit <span class="kw">is</span> <span class="kw">None</span>: <span class="kw">raise</span> <span class="fn">Denied</span>(<span class="st">f"no cap {verb}:{res}"</span>)
+        <span class="kw">if</span> tainted <span class="kw">and</span> hit.irrev: <span class="kw">raise</span> <span class="fn">Denied</span>(<span class="st">f"irrev on tainted {verb}"</span>)
+        <span class="kw">if</span> hit.max_uses <span class="kw">is not</span> <span class="kw">None</span> <span class="kw">and</span> hit.uses &gt;= hit.max_uses:
+            <span class="kw">raise</span> <span class="fn">Denied</span>(<span class="st">f"budget exhausted {verb}:{res}"</span>)
+        hit.uses += <span class="nm">1</span>; <span class="nm">self</span>.log.<span class="fn">append</span>((verb, res, tainted)); <span class="kw">return</span> <span class="kw">True</span>
+
+g = <span class="fn">Guard</span>([<span class="fn">Cap</span>(<span class="st">"read"</span>, <span class="st">"repo/*"</span>), <span class="fn">Cap</span>(<span class="st">"write"</span>, <span class="st">"repo/src/*"</span>),
+           <span class="fn">Cap</span>(<span class="st">"deploy"</span>, <span class="st">"prod/app"</span>, irrev=<span class="kw">True</span>, max_uses=<span class="nm">1</span>)])
+tests = [(<span class="st">"read"</span>, <span class="st">"repo/README.md"</span>, <span class="kw">False</span>, <span class="st">"allow"</span>),
+         (<span class="st">"read"</span>, <span class="st">"repo/.env"</span>, <span class="kw">False</span>, <span class="st">"allow"</span>),
+         (<span class="st">"write"</span>, <span class="st">"repo/src/a.py"</span>, <span class="kw">False</span>, <span class="st">"allow"</span>),
+         (<span class="st">"write"</span>, <span class="st">"repo/ci.yml"</span>, <span class="kw">False</span>, <span class="st">"deny: scope"</span>),
+         (<span class="st">"deploy"</span>, <span class="st">"prod/app"</span>, <span class="kw">True</span>, <span class="st">"deny: taint"</span>),
+         (<span class="st">"deploy"</span>, <span class="st">"prod/app"</span>, <span class="kw">False</span>, <span class="st">"allow"</span>),
+         (<span class="st">"deploy"</span>, <span class="st">"prod/app"</span>, <span class="kw">False</span>, <span class="st">"deny: budget"</span>),
+         (<span class="st">"delete"</span>, <span class="st">"prod/app"</span>, <span class="kw">False</span>, <span class="st">"deny: no cap"</span>)]
+<span class="kw">for</span> verb, res, tainted, expect <span class="kw">in</span> tests:
+    <span class="kw">try</span>:
+        g.<span class="fn">check</span>(verb, res, tainted); got = <span class="st">"allow"</span>
+    <span class="kw">except</span> <span class="fn">Denied</span>:
+        got = <span class="st">"deny"</span>
+    print(<span class="st">f"{verb:7s} {res:16s} tainted={str(tainted):5s} expect={expect:18s} got={got}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>allow</code>, <code>allow</code>, <code>allow</code>,
+      <code>deny</code> (ci.yml outside <code>repo/src/*</code>), <code>deny</code> (irreversible on tainted),
+      <code>allow</code> (clean deploy), <code>deny</code> (budget exhausted at 1), <code>deny</code> (no capability for
+      <code>delete</code>). Two design points are being demonstrated: the write scope is narrower than the read scope
+      (<code>repo/src/*</code> vs <code>repo/*</code>), so the agent cannot edit CI configuration &mdash; that is the
+      self-modification pair being cut; and the deploy capability is single-use, which converts a confused agent into a
+      failed call rather than a second deployment.
+      <strong>Falsifier:</strong> if <code>read repo/.env</code> should be denied, the guard is correct and your
+      <em>resource taxonomy</em> is wrong &mdash; secrets inside a readable repo means the secret capability boundary is fictional,
+      and you must move secrets out of the repo path before the model means anything.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d84-s5">5 &middot; Failure modes <a class="hook" href="#d84-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Prompt-as-permission.</strong> Restrictions live in the system prompt. Symptom: injected content (L93) produces an action outside the stated scope; the model "did what it was told" by someone else.</li>
+        <li><strong>Allow-by-default registry.</strong> Tools added to a registry are callable by every agent. Symptom: capability inventory grows without any grant event; blast radius drifts upward with no config change.</li>
+        <li><strong>Shared-workspace privilege merge.</strong> Two agents with different grants write to the same directory. Symptom: an action that requires the union of two grants succeeds; the ledger shows one agent's read and another's write.</li>
+        <li><strong>Exfiltration pair.</strong> Secret read + network egress in one agent (or in two sharing a workspace). Symptom: outbound requests whose payload correlates with secret content; usually found after the fact.</li>
+        <li><strong>Self-modification.</strong> Agent can write the file that runs its own verifier. Symptom: the oracle starts passing suspiciously; test files are modified in the same run they are used to verify.</li>
+        <li><strong>Irreversible action without taint check.</strong> Deploy/delete fires on content from an untrusted source. Symptom: an irreversible event whose input trace includes a fetch from an untrusted host.</li>
+        <li><strong>Silent denial.</strong> Denied calls are swallowed and the agent proceeds. Symptom: the run "succeeds" with missing work; denial counts are absent from the trace. Denials must be loud and counted.</li>
+        <li><strong>Sandbox escape by tool composition.</strong> Each tool is scoped, but chaining them (write a script, then execute it) regains full capability. Symptom: <code>exec</code> present at all &mdash; it collapses every other restriction into one.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d84-s6">6 &middot; Connects to <a class="hook" href="#d84-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="77-tool-calling.html">L77 &middot; Tool schemas</a>,
+    <a class="tag-d" href="81-subagents.html">L81 &middot; Scopes</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="93-safety-alignment.html">L93 &middot; Injection defense</a>,
+    <a class="tag-d" href="99-capstone.html">L99 &middot; Shipping an audited agent</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="77-tool-calling.html">L77 &middot; Tool schemas</a> &mdash; the schema's bounded parameters are the first line of defence; unbounded string params are a capability in disguise.</li>
+      <li><a class="tag-d" href="93-safety-alignment.html">L93 &middot; Prompt injection</a> &mdash; the taint rule is the only defence that works when persuasion succeeds but action must not.</li>
+      <li><a class="tag-d" href="90-observability.html">L90 &middot; Observability</a> &mdash; denial counts and capability inventory are trace fields, not config values.</li>
+      <li><a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE harness</a> &mdash; the capability inventory per run belongs in the immutable artifact bundle.</li>
+      <li><a class="tag-d" href="96-production-checklist.html">L96 &middot; Production checklist</a> &mdash; blast radius and irreversibility inventory are go/no-go items, not nice-to-haves.</li>
+      <li><a class="tag-c" href="../track-c/63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a> &mdash; if the agent can write its own verifier, the reward is no longer verifiable.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d84-s7">7 &middot; Self-check <a class="hook" href="#d84-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is a system-prompt restriction not a security boundary?</p>
+        <details><summary>Reveal answer</summary><p>Because it is processed by the same stochastic mechanism it is trying to constrain. It competes for attention with everything else in context, it can be overridden by injected content that arrives later in the context, and it cannot be verified after the fact. A capability is enforced by code the model does not control. The test: remove the model entirely and ask whether the restriction still holds for an arbitrary actor with the same tool access. If not, it is not a boundary.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Agent A can read 20 secrets. Agent B can reach 50 network endpoints. Separately their blast is 70 units. Why can the union be far worse, and what makes separation real?</p>
+        <details><summary>Reveal answer</summary><p>Because "read secret" plus "send to network" is an <em>exfiltration action</em> neither capability provides alone &mdash; the damage is unauthorized disclosure of the 20 secrets, whose cost is not bounded by their count. The union's blast is not 70; it is the entire secret set, permanently. Separation is real only if the two agents cannot exchange data. Concretely: separate filesystems, no shared writable volume, no shared network channel, no shared database. If they share a workspace, model them as one agent with the union &mdash; because that is what they are.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Your agent has <code>exec</code> on the repo. Compute the effective blast radius and say what you would do.</p>
+        <details><summary>Reveal answer</summary><p>With <code>exec</code>, every other restriction in the same sandbox is moot: the agent can read any file the process can read, write any path the process can write, and reach any host the process can reach. The effective blast radius is not the sum of the listed capabilities &mdash; it is <em>bounded only by the process's own permissions</em>. Remedy: either remove <code>exec</code> and express actions as typed tools, or run <code>exec</code> inside a genuinely isolated container (own filesystem namespace, no credentials, restricted egress) whose own permission set <em>is</em> the blast radius. Never treat <code>exec</code> as one capability among several.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: a run completes with all green checks, but a secret appears in an outbound request log. Where do you look first, and what two fields would have caught it earlier?</p>
+        <details><summary>Reveal answer</summary><p>First, the capability inventory for that run: which agent held both secret-read and network-egress (possibly across a shared workspace). The two missing trace fields are (a) <strong>per-call taint status</strong> &mdash; whether the argument data derives from secret or untrusted sources, and (b) <strong>the payload-to-source correlation</strong> on outbound calls (a hash of the outbound body checked against known secret values). With those, the exfiltration is detectable at call time and the guard's taint rule refuses it, rather than being reconstructed from egress logs afterwards.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does the "read+write repo" pair invalidate your oracle even though neither capability alone is dangerous?</p>
+        <details><summary>Reveal answer</summary><p>Because the oracle (tests, lint, a verifier script) lives in the repo. If the agent can write anywhere in the repo, it can modify the thing that judges it &mdash; so a passing oracle no longer means the work is correct, and every downstream claim inherits that doubt. In L76 terms, the agent has captured <code>settle()</code>. The fix is structural: the verification harness must live outside the agent's writable scope, and its hash must be recorded in the ledger so that a modified verifier is detectable rather than merely possible.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="83-swarms.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L83 &middot; Swarms</span></a>
+    <a class="next" href="85-rag-retrieval.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L85 &middot; Retrieval: hybrid search</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

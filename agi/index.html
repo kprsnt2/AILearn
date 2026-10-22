@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="agi/index">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SKILLA — a design for autonomy that can be audited</title>
+<meta name="description" content="A concrete, testable research program for self-directed agent discovery: a living skill library with falsification pressure, and authority that is earned from a measured track record.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .hero { padding: 52px 0 24px; max-width: 960px; }
+  .hero h1 { font-size: clamp(2rem, 4.6vw, 3.2rem); line-height: 1.08; letter-spacing: -1.6px; }
+  .kicker { font-family: var(--mono); font-size: .68rem; letter-spacing: 2.4px; color: var(--violet); margin-bottom: 14px; }
+  .thesis {
+    border-left: 3px solid var(--violet); padding: 6px 0 6px 20px; margin: 26px 0;
+    font-size: 1.12rem; color: var(--txt); line-height: 1.65; font-style: italic;
+  }
+  .thesis b { font-style: normal; color: var(--cyan); }
+  .sec-block { margin: 62px 0; }
+  .sec-block > h2 {
+    font-size: 1.55rem; letter-spacing: -.6px; margin: 0 0 6px; color: var(--txt);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .sec-block > .sub { color: var(--txt-3); font-size: .9rem; margin: 0 0 22px; }
+  .n-badge {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: 1.5px; font-weight: 700;
+    padding: 3px 10px; border-radius: 7px; border: 1px solid rgba(139,92,246,.4);
+    color: var(--violet); background: rgba(139,92,246,.1);
+  }
+  .diagram {
+    background: #060910; border: 1px solid var(--line); border-radius: var(--r);
+    padding: 22px; overflow-x: auto; font-family: var(--mono); font-size: .76rem;
+    line-height: 1.55; color: #94a3b8; white-space: pre; margin: 22px 0;
+  }
+  .diagram .hl { color: var(--cyan); }
+  .diagram .ok { color: var(--emerald); }
+  .diagram .bad { color: var(--red); }
+  .diagram .amb { color: var(--amber); }
+  .diagram .vi { color: var(--violet); }
+  .claim-table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: .86rem; }
+  .claim-table th { text-align: left; font-family: var(--mono); font-size: .64rem; letter-spacing: 1.1px;
+    text-transform: uppercase; color: var(--txt-3); padding: 9px 12px; border-bottom: 1px solid var(--line-strong); }
+  .claim-table td { padding: 11px 12px; border-bottom: 1px solid var(--line); color: var(--txt-2); vertical-align: top; }
+  .claim-table td:first-child { color: var(--txt); font-weight: 600; }
+  .claim-table tr:hover td { background: var(--hover); }
+  .badge { font-family: var(--mono); font-size: .66rem; padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
+  .b-open { background: rgba(239,68,68,.12); color: #fca5a5; border: 1px solid rgba(239,68,68,.3); }
+  .b-part { background: rgba(245,158,11,.12); color: #fcd34d; border: 1px solid rgba(245,158,11,.3); }
+  .b-good { background: rgba(16,185,129,.12); color: #6ee7b7; border: 1px solid rgba(16,185,129,.3); }
+  .phase { display: grid; grid-template-columns: 92px 1fr; gap: 20px; margin-bottom: 26px; align-items: start; }
+  @media (max-width: 760px) { .phase { grid-template-columns: 1fr; gap: 8px; } }
+  .phase-num { font-family: var(--mono); font-size: .72rem; color: var(--cyan); letter-spacing: 1.4px;
+    border: 1px solid rgba(56,189,248,.3); background: rgba(56,189,248,.07); padding: 6px 10px;
+    border-radius: 8px; text-align: center; }
+  .phase-body { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 22px; }
+  .phase-body h3 { margin: 0 0 8px; font-size: 1.02rem; color: var(--txt); letter-spacing: -.2px; }
+  .phase-body p { margin: 0 0 10px; font-size: .9rem; color: var(--txt-2); }
+  .phase-body .deliv { font-family: var(--mono); font-size: .74rem; color: var(--emerald); }
+  .toc-inline { display: flex; gap: 8px; flex-wrap: wrap; margin: 26px 0 0; }
+  .toc-inline a {
+    text-decoration: none; font-size: .8rem; color: var(--txt-2); padding: 6px 14px;
+    border: 1px solid var(--line); border-radius: 99px; background: var(--card); transition: .18s;
+  }
+  .toc-inline a:hover { color: var(--cyan); border-color: rgba(56,189,248,.4); }
+  .metric { display: flex; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .metric:last-child { border-bottom: 0; }
+  .metric .m-name { font-family: var(--mono); font-size: .78rem; color: var(--cyan); min-width: 190px; flex: 0 0 auto; }
+  .metric .m-def { font-size: .86rem; color: var(--txt-2); }
+  .refuse { border-left: 3px solid var(--red); padding-left: 18px; margin: 26px 0; }
+  .refuse h4 { margin: 0 0 6px !important; color: var(--red) !important; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="index.html">AGI Lab</a>
+      <a href="benchmark.html">Benchmark</a>
+      <a href="killswitch.html">Kill-switch</a>
+      <a href="../tools/agi-sim.html">Simulator</a>
+    </div>
+    <div class="nav-tools">
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="hero">
+  <div class="kicker">PART TWO · THE DISCOVERY PROGRAM</div>
+  <h1>SKILLA: autonomy you can audit, discovery you can check.</h1>
+  <p class="lede">
+    Everyone is racing to make agents do more on their own. Almost nobody is racing to make the
+    result <em>checkable</em>. That is the opening. This is a design for closing the two gaps that
+    separate today's best swarms from something that deserves the word "autonomous" — the ability to
+    <strong>choose its own work</strong>, and the ability to <strong>prove the work was real</strong>
+    to someone who does not trust it.
+  </p>
+  <div class="thesis">
+    The frontier is not "a bigger agent loop." It is <b>a skill library with falsification pressure,
+    and authority that is earned rather than declared.</b> An agent that cannot lose
+    authority cannot learn to deserve it.
+  </div>
+  <div class="toc-inline">
+    <a href="#prior">1 · Why this is unsolved</a>
+    <a href="#thesis">2 · The two gaps</a>
+    <a href="#design">3 · The design</a>
+    <a href="#formula">4 · The authority formula</a>
+    <a href="#protocol">5 · Discovery protocol</a>
+    <a href="#kill">6 · The kill-switch</a>
+    <a href="#falsify">7 · What would prove this wrong</a>
+    <a href="#phases">8 · Build order</a>
+    <a href="#honest">9 · Honest limits</a>
+  </div>
+</header>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="prior">
+  <h2><span class="n-badge">01</span> Why this is still unsolved</h2>
+  <p class="sub">Not the hype version. The engineering version.</p>
+
+  <p>Look at what a good production agent actually is in 2026. It is a prompt loop around a model with
+  tools, a budget, and some guardrails. It is genuinely useful. And it has four hard ceilings, none of
+  which is fixed by a better model:</p>
+
+  <table class="claim-table">
+    <thead><tr><th>Ceiling</th><th>What actually happens</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>The work is chosen for it</td>
+        <td>A human writes the task, the success criteria, and the stopping rule. The agent optimises inside that box. It never asks whether the box contains the right work.</td>
+        <td><span class="badge b-open">OPEN</span></td>
+      </tr>
+      <tr>
+        <td>Success is a declaration</td>
+        <td>The agent says it is done. The ledger records that it said so. A stranger reading the ledger must take the agent's word for the outcome.</td>
+        <td><span class="badge b-part">PARTLY SOLVED</span> by independent oracles</td>
+      </tr>
+      <tr>
+        <td>Competence does not transfer</td>
+        <td>Something learned in run 40 is not systematically available in run 41. Each run is a fresh model with a fresh context. The swarm re-learns the same lessons.</td>
+        <td><span class="badge b-open">OPEN</span></td>
+      </tr>
+      <tr>
+        <td>Cost grows with ambition, not with value</td>
+        <td>Longer runs cost more because they are longer, not because they produce proportionally more verified value. There is no price signal on effort.</td>
+        <td><span class="badge b-part">PARTLY SOLVED</span> by budgets, not by economics</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>The fourth one is a hint. Most agent systems have a <em>budget</em> — a hard cap on tokens or
+  dollars. Almost none have a <em>price</em> — a way to say that this line of work is worth more than
+  that one, and to make the agent behave differently because of it. Budgets stop overspend. Prices
+  allocate effort. Only one of those produces intelligent behaviour.</p>
+
+  <div class="callout boss">
+    <p>The strategic claim: <strong>the reliability stack is a competitive moat that everyone else treats as overhead.</strong>
+    7+ years of designing audits that survive federal review is not a soft skill in this field — it is
+    the scarce input. The teams that win the next phase are the ones who can run an unattended system
+    and still say, with evidence, precisely what it did and did not prove.</p>
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="thesis">
+  <h2><span class="n-badge">02</span> The two gaps, stated precisely</h2>
+  <p class="sub">If you cannot state a gap in a way that could be measured, it is not a research problem.</p>
+
+  <p><strong>Gap A — Bidirectional alignment.</strong> Current agents align <em>upward</em>: a human
+  gives a goal, the agent acts. The missing direction is <em>downward and sideways</em>: the agent
+  proposes what is worth doing, argues for it against alternatives with evidence, and accepts that its
+  proposal may be rejected by a test rather than by an authority. Today the agent's initiative is
+  limited to "retry" and "try another approach to the same task." It never says <em>"this task is
+  the wrong task."</em></p>
+
+  <p><strong>Gap B — Trustless capability.</strong> An agent's competence is currently proven by
+  demonstration inside a trusted harness. The missing thing is competence that survives
+  <em>an adversarial reader</em>. If I hand you a ledger and say "this agent learned X," you should be
+  able to falsify that claim from the ledger alone, without running the agent, without trusting its
+  authors, and without trusting the agent.</p>
+
+  <p>Both gaps share one root cause: <strong>there is no object in the system that can be falsified.</strong>
+  Prompts cannot be falsified. Loops cannot be falsified. Goal statements cannot be falsified.
+  A <em>skill with a validity condition and a measured hit rate</em> can be falsified. That is the
+  object to build the system around.</p>
+</div>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="design">
+  <h2><span class="n-badge">03</span> The design: four components</h2>
+  <p class="sub">SKILLA = Skill Library + Ledger + Authority + Auction. Each is small enough to build alone.</p>
+
+  <div class="diagram">
+<span class="vi">┌────────────────────────────── D I S C O V E R Y   L O O P  (24h cycle) ──────────────────────────────┐</span>
+<span class="vi">│</span>                                                                                                   <span class="vi">│</span>
+<span class="vi">│</span>  <span class="hl">① FRONT      ② AUCTION        ③ EXECUTE              ④ PROVE               ⑤ SETTLE</span>             <span class="vi">│</span>
+<span class="vi">│</span>  frontier   jobs bid for     isolated sandbox      independent oracle     bank/concede            <span class="vi">│</span>
+<span class="vi">│</span>  (what is   compute on       budget-capped run     + replication gate     skill ledger            <span class="vi">│</span>
+<span class="vi">│</span>  unknown?)  expected value   ledger written OUT    trials add up          authority rescaled      <span class="vi">│</span>
+<span class="vi">│</span>                ▲                                        │                          │                    <span class="vi">│</span>
+<span class="vi">│</span>                │                                        ▼                          ▼                    <span class="vi">│</span>
+<span class="vi">│</span>                └──────────── <span class="ok">SKILL LIBRARY</span>  ◄──  new skill / falsified skill  ◄── retry &gt;2σ deviation   <span class="vi">│</span>
+<span class="vi">│</span>                                   ▲                                                              <span class="vi">│</span>
+<span class="vi">│</span>                                   └─ every entry: {claim, validity_condition, hit_rate, n_trials, fail_card} <span class="vi">│</span>
+<span class="vi">└───────────────────────────────────────────────────────────────────────────────────────────────────┘</span>
+  </div>
+
+  <h3 style="margin-top:32px;">1 · The living skill library</h3>
+  <p>A skill is not a markdown file. It is an assertion with teeth. Minimum schema:</p>
+
+  <div class="code" data-lang="json">
+{
+  "id": "s_0042",
+  "claim": "For CLI-agent test suites, a 2-model arbiter with both verdicts positive
+            rejects fabricated PASS claims at rate >= 0.95 on seeded cases.",
+  "validity_condition": "CLI agents, < 200 tool calls per run, arithmetic and filesystem
+            tasks; NOT valid for tasks where ground truth is subjective.",
+  "evidence": {
+    "method": "seeded_failure_injection",
+    "n_trials": 140, "hits": 133,
+    "hit_rate": 0.950, "ci95": [0.902, 0.977],
+    "replication_runs": ["run_881", "run_902"],
+    "independent_oracle": "oracle_v3"
+  },
+  "fail_card": {
+    "last_invalidated_by": "run_917",
+    "deviation_sigma": 2.6,
+    "note": "model served at 1M ctx, hallucinated step refs at 3x baseline"
+  },
+  "lineage": ["s_0011", "s_0019"],
+  "authority_effect": {"max_autonomy": 0.72, "allowed_actions": ["..."]}
+}
+  </div>
+
+  <p>Four rules make the library <em>living</em> rather than a wiki:</p>
+  <ul>
+    <li><strong>Every claim needs a validity condition.</strong> A skill with no boundary is a rumor. The boundary is what makes it falsifiable.</li>
+    <li><strong>Every skill is periodically re-tested.</strong> Skills are sampled at random each cycle and re-run. A skill's hit rate is a <em>computed quantity with a confidence interval</em>, not a stored number that gets stale.</li>
+    <li><strong>Deviation above 2σ forces a demotion.</strong> If a re-test lands more than two standard deviations below the recorded hit rate, the skill is not "updated" silently — it is flagged, its authority shrinks, and the failure becomes a new research task on the frontier.</li>
+    <li><strong>Failure cards are first-class.</strong> The most valuable entry in the library is not a skill that works; it is an accurately recorded reason that a skill stopped working. That is the object no current agent system keeps well.</li>
+  </ul>
+
+  <h3 style="margin-top:36px;">2 · The frontier, not the backlog</h3>
+  <p>The agent's self-directed work comes from a <strong>frontier</strong> — the boundary of the
+  library where claims have thin evidence (low <code>n_trials</code> or wide CIs). This is the crucial
+  inversion: a normal agent is told what to do; this agent is told where it is <em>least certain</em>,
+  and choosing the work means choosing which uncertainty to attack next. That is measurable, and it is
+  exactly what the loop above closes.</p>
+
+  <h3 style="margin-top:36px;">3 · The auction (this is the unusual part)</h3>
+  <p>Each cycle, candidate jobs (re-tests, frontier probes, new-skill proposals, replications) bid for a
+  fixed compute escrow. The bid is not a number the model makes up — it is a <em>stake</em>. A job that
+  fails to reproduce its claimed improvement pays the stake back from the agent's budget. A job that
+  reproduces it keeps the stake and earns a larger allocation next cycle.</p>
+
+  <div class="callout note">
+    <p>Why this matters: it converts the agent's enthusiasm into a number it can lose. A model that
+    always claims success is quickly and mechanically poor. No reward-hacking needed — the economics
+    do the filtering.</p>
+  </div>
+
+  <h3 style="margin-top:36px;">4 · The audit layer</h3>
+  <p>The hash-chained ledger — already built and proven in your AgentSwarm work — is extended so that it
+  records <em>claims</em>, not just events. Each cycle produces an <strong>evidence bundle</strong>: the
+  job manifest, the exact model/version/harness config, the action log, the oracle verdicts, the cost
+  and latency attribution, and the hash chain over all of it. A stranger can verify the bundle without
+  trusting the agent: recompute the chain, re-run the oracle on the recorded artifacts, and check the
+  arithmetic on every score.</p>
+</div>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="formula">
+  <h2><span class="n-badge">04</span> The authority formula</h2>
+  <p class="sub">The core idea: autonomy is not granted to an agent, it is <em>earned per skill</em> and it decays.</p>
+
+  <p>This is the concrete mechanism that turns "trust" from a vibe into a computation. Let each skill
+  <code>s</code> carry a track record. Then define:</p>
+
+  <div class="formula">
+    A(s) = w<sub>r</sub>·<b>logistic</b>(λ·(r̂<sub>s</sub> − r<sub>0</sub>)) · w<sub>c</sub>·min(1, n<sub>s</sub>/n<sub>0</sub>) · e<sup>−μ·age<sub>s</sub></sup> · (1 − ρ<sub>s</sub>)
+    <span class="note">
+      A(s) = authority ∈ [0,1] granted to actions justified by skill s.
+      r̂<sub>s</sub> = measured hit rate (lower bound of CI), r<sub>0</sub> = the floor rate the org requires.
+      n<sub>s</sub> = evidence count, n<sub>0</sub> = evidence needed for full credit.
+      age<sub>s</sub> = cycles since last re-test. ρ<sub>s</sub> = observed reward-hacking rate
+      (claims that failed independent replication).
+    </span>
+  </div>
+
+  <p>Every term is doing real work:</p>
+  <ul>
+    <li><strong>logistic(r̂ − r<sub>0</sub>)</strong> — an agent at exactly the floor gets 0.5 authority, an agent far above it approaches 1 (with diminishing returns), an agent below gets almost nothing. Using the <em>lower bound</em> of the confidence interval, not the point estimate, means small samples cannot buy authority.</li>
+    <li><strong>min(1, n/n<sub>0</sub>)</strong> — no authority on a single lucky run. This is the "n≥100" rule from auditing, in formula form.</li>
+    <li><strong>e<sup>−μ·age</sup></strong> — asymmetric decay. An untested skill silently loses authority. This is the direct attack on state drift.</li>
+    <li><strong>(1 − ρ<sub>s</sub>)</strong> — self-reporting of internal failures is rewarded, because <em>not</em> reporting them drains authority when the oracle finds them. You cannot lie your way up.</li>
+  </ul>
+
+  <h3 style="margin-top:32px;">What authority <em>buys</em> — the ladder</h3>
+  <table class="claim-table">
+    <thead><tr><th>A(s)</th><th>The agent may…</th><th>Control</th></tr></thead>
+    <tbody>
+      <tr><td>0.00 – 0.25</td><td>read, plan, propose at the frontier. Nothing that mutates state.</td><td>human reads every output</td></tr>
+      <tr><td>0.25 – 0.50</td><td>run the proposed job in an isolated sandbox, any sandbox, no external side effects.</td><td>sandbox</td></tr>
+      <tr><td>0.50 – 0.75</td><td>commit to a branch, open a PR; merge requires the dual oracle to agree.</td><td>oracle</td></tr>
+      <tr><td>0.75 – 0.95</td><td>merge to main in owned scopes; publish evidence bundles.</td><td>scope boundary + rollback</td></tr>
+      <tr><td>&gt; 0.95</td><td>choose the next cycle's priorities, allocate escrow, and spawn agents of its own.</td><td>human on divergence only</td></tr>
+    </tbody>
+  </table>
+
+  <p>Read that ladder again. <strong>The last rung is the interesting one.</strong> It is the point where
+  the agent, not the human, decides what is worth doing — but only for the specific subproblems where
+  it has beaten a hard test more than ~100 times and stayed above the floor while decaying. The design
+  deliberately stops there rather than granting the whole system a fixed autonomy level.</p>
+</div>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="protocol">
+  <h2><span class="n-badge">05</span> The discovery protocol</h2>
+  <p class="sub">The part that makes it "research" rather than "automation with extra steps."</p>
+
+  <p>A run that succeeds is not a discovery. A run that <em>narrows uncertainty with a falsifiable
+  claim</em> is. So every cycle must produce at least one of these, and the type is recorded:</p>
+
+  <div class="grid2">
+    <div class="card"><h4>EXPANSION</h4><p>A new skill enters the library with a validity condition and a measured hit rate over at least n<sub>0</sub> trials. Cost: low. Value: low until it survives a deviation test.</p></div>
+    <div class="card"><h4>EXPLORATION</h4><p>A frontier probe that turns "we don't know" into a number. Even a failed probe is a success if the uncertainty is now bounded.</p></div>
+    <div class="card"><h4>REPLICATION</h4><p>An independent re-run of an existing skill on a fresh agent instance. The only evidence that counts toward confidence.</p></div>
+    <div class="card"><h4>FALSIFICATION</h4><p>A skill's validity condition is shown to be too broad. Highest value per unit cost — this is the only type that <em>removes</em> the swarm's accumulated drift.</p></div>
+  </div>
+
+  <h3 style="margin-top:32px;">The cycle, concretely</h3>
+  <div class="diagram">
+<span class="hl">T+00:00</span>  FRONT      sample 3 thin-evidence skills + 2 random skills for re-test
+<span class="hl">T+00:10</span>  AUCTION    each candidate job bids with stake + expected information gain (EIG)
+<span class="hl">T+00:20</span>  ALLOCATE   escrow split proportionally to bid; &gt;30% reserved for random jobs
+<span class="hl">T+00:30</span>  EXECUTE    sandboxed instances; ledger written OUTSIDE writespace; cost attributed live
+<span class="hl">T+06:00</span>  VERIFY     independent oracle + a replication gate: 2 of 3 runs must agree
+<span class="hl">T+07:00</span>  SETTLE     bank or concede stake; update hit rate, CI, authority A(s)
+<span class="hl">T+07:10</span>  DIVERGE    if |observed − expected| &gt; 2σ: open a FALSIFICATION job, halve A(s)
+<span class="hl">T+07:20</span>  COMPRESS   retire duplicate skills, demote stale ones, publish evidence bundle
+<span class="hl">T+24:00</span>  RESET      next cycle
+  </div>
+
+  <p>The <code>EXPECTED / OBSERVED / DIVERGED</code> triple is the whole discipline. Current agent ledgers
+  record what happened. SKILLA records what was <em>predicted</em>, what <em>happened</em>, and the
+  difference — and forces a response to every difference above the noise floor. That is the object a
+  stranger can audit.</p>
+</div>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="kill">
+  <h2><span class="n-badge">06</span> The kill-switch is a theorem, not a button</h2>
+  <p class="sub">Any autonomy proposal that does not include a stop condition is incomplete. Here is the one I would defend.</p>
+
+  <p>The hard question is not "how do we stop it." It is "how do we know it is
+  <em>the same agent</em> when we check?" An agent that drifts silently is the real danger — not the agent
+  that is overweight on a summary. So the stop condition must be a computable divergence test, not a
+  human raising their hand:</p>
+
+  <div class="code" data-lang="python">
+<span class="cm"># SKILLA divergence halter — evaluated at every cycle boundary</span>
+<span class="cm"># a "hazard" is an action in the oracle-hazard set; a "delta" is mass with no evidence but claimed success</span>
+
+<span class="kw">def</span> <span class="fn">halt</span>(cycle):
+    d  = cycle.divergence_pct          <span class="cm"># % of claims in the last 3 cycles that failed replication</span>
+    h  = cycle.hazard_attempts         <span class="cm"># out-of-scope or irreversible actions attempted</span>
+    a  = cycle.authority_mass          <span class="cm"># sum of A(s) over skills the agent actually used</span>
+    if d &gt; <span class="nm">0.15</span>:              <span class="kw">return</span> <span class="st">"HALT — replication floor breached"</span>
+    if h &gt; <span class="nm">0</span>:                 <span class="kw">return</span> <span class="st">"HALT — hazard attempted, human review required"</span>
+    if a &lt; cycle.prev_authority * <span class="nm">0.5</span>:
+        <span class="kw">return</span> <span class="st">"HALT — identity drift: authority halved in one cycle"</span>
+    <span class="kw">return</span> <span class="st">"continue"</span>
+  </div>
+
+  <p>The third clause is the one nobody builds. It says: <em>if the thing you were becoming is not the
+  thing you are now, stop and prove which one you are.</em> It catches silent drift, silent scope
+  creep, and the failure mode where an agent learns to look busy.</p>
+
+  <div class="callout audit">
+    <p>This is the bridge back to your day job. A CMS enrollment transaction and an autonomous agent
+    run both need: an immutable record, an independent verifier, a scope boundary, an acceptance
+    criterion, and a documented stopping rule. You have been building the first four for twenty years.
+    The fifth is the one that is new — and it is a math problem, not a policy problem.</p>
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="falsify">
+  <h2><span class="n-badge">07</span> What would prove this wrong</h2>
+  <p class="sub">A program you cannot falsify is a manifesto. These are the tests.</p>
+
+  <table class="claim-table">
+    <thead><tr><th>Claim SKILLA makes</th><th>The test that kills it</th><th>Falsified if…</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Falsification pressure beats random exploration</td>
+        <td>Two swarms, same models and budget, 30 cycles: one probes the frontier, one probes at random.</td>
+        <td>Random arm produces equal or more verified skills per dollar.</td>
+      </tr>
+      <tr>
+        <td>Earned authority prevents drift</td>
+        <td>Seed a failing skill at high authority. Does the system demote it within 3 cycles?</td>
+        <td>A high-authority wrong skill survives 3 re-tests.</td>
+      </tr>
+      <tr>
+        <td>Staking suppresses self-reported success</td>
+        <td>Compare claim rate in a staked vs unstaked escrow on the same task family.</td>
+        <td>Claim rate is the same and replication rate does not improve.</td>
+      </tr>
+      <tr>
+        <td>An evidence bundle is auditable by a stranger</td>
+        <td>Give a bundle to someone who has never seen the harness. Can they recompute the score?</td>
+        <td>They need to ask the agent, or the authors, anything.</td>
+      </tr>
+      <tr>
+        <td>Skill transfer beats fresh context</td>
+        <td>Measure first-try success on cycle N+1 with and without the library injected.</td>
+        <td>The library contributes nothing (or hurts, via stale skills).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <p><strong>The most likely way this fails:</strong> the skill library becomes a landfill.
+    Every agent writes skills, nobody retires them, and stale entries silently corrupt later decisions.
+    That is why the retirement rule (deviation &gt; 2σ → halve authority) and the FALSIFICATION job type
+    must exist in <em>cycle one</em>, not later.</p>
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="phases">
+  <h2><span class="n-badge">08</span> Build order</h2>
+  <p class="sub">Each phase is a weekend or less. Each has a demo someone can see.</p>
+
+  <div class="phase">
+    <div class="phase-num">PHASE 0<br>1-2 wk</div>
+    <div class="phase-body">
+      <h3>The evidence bundle</h3>
+      <p>Pure engineering, zero ML. Wrap one existing agent in a manifest + hash-chained event log + oracle verdict writer. No new model logic.</p>
+      <p class="deliv">DEMO ▸ hand someone a folder; they recompute the score without asking you anything.</p>
+    </div>
+  </div>
+  <div class="phase">
+    <div class="phase-num">PHASE 1<br>2 wk</div>
+    <div class="phase-body">
+      <h3>The skill schema + a reviewer</h3>
+      <p>Write skills with validity conditions and hit rates. Build the re-test sampler that re-runs 5 skills per cycle and updates CIs. This alone beats most production agent systems.</p>
+      <p class="deliv">DEMO ▸ a skill's confidence interval widens visibly after a bad re-test.</p>
+    </div>
+  </div>
+  <div class="phase">
+    <div class="phase-num">PHASE 2<br>3 wk</div>
+    <div class="phase-body">
+      <h3>Frontier + auction + escrow</h3>
+      <p>Selection of thin-evidence skills. Jobs bid stakes. Escrow allocated with a reserved random sample. Financials recorded in the ledger.</p>
+      <p class="deliv">DEMO ▸ the swarm abandons an over-priced job on its own and buys three cheap probes instead.</p>
+    </div>
+  </div>
+  <div class="phase">
+    <div class="phase-num">PHASE 3<br>2 wk</div>
+    <div class="phase-body">
+      <h3>The authority formula in production</h3>
+      <p>Replace static permission grants with A(s). Wire the ladder. Add the divergence halter. The halter must exist before the authority ladder is switched on.</p>
+      <p class="deliv">DEMO ▸ a seeded success-claiming behavior loses authority in two cycles on its own.</p>
+    </div>
+  </div>
+  <div class="phase">
+    <div class="phase-num">PHASE 4<br>6 wk</div>
+    <div class="phase-body">
+      <h3>The research paper</h3>
+      <p>Run the falsification table's five tests. Pre-register the tests before running them. Publish results regardless of outcome.</p>
+      <p class="deliv">DEMO ▸ a paper with negative results in the appendix, and a claim people can reproduce.</p>
+    </div>
+  </div>
+
+  <p>The total is ~14 weeks of part-time work. It is deliberately ordered so that <strong>every phase ends
+  with something you can show</strong> — Phase 0 alone is a publishable engineering contribution,
+  because almost nobody ships verifiable evidence bundles.</p>
+</div>
+
+<!-- ===================================================================== -->
+<div class="sec-block" id="honest">
+  <h2><span class="n-badge">09</span> Honest limits</h2>
+  <p class="sub">What this program does not do. Read this before you get excited.</p>
+
+  <div class="refuse">
+    <h4>It is not a path to AGI.</h4>
+    <p>SKILLA makes autonomous systems measurably more capable at a bounded kind of work — work whose
+    success can be verified. It says nothing about open-ended generality, and I would not claim it
+    moves the AGI frontier at all. What it does is make the frontier <em>legible</em>.</p>
+  </div>
+  <div class="refuse">
+    <h4>It is not safe for unbounded domains.</h4>
+    <p>The oracle needs a way to be wrong. Open-ended research, medicine, legal advice, and anything
+    irreversible do not fit this harness. The authority ladder should stay below 0.5 for those domains
+    permanently.</p>
+  </div>
+  <div class="refuse">
+    <h4>It is not a substitute for better models.</h4>
+    <p>Every component works on top of the current generation of models and gets better as models
+    improve. But a weak model with a perfect audit trail is still a weak model.</p>
+  </div>
+  <div class="refuse">
+    <h4>The economics can be gamed for a while.</h4>
+    <p>A clever agent can learn to bid for cheap, safe re-tests to accumulate authority without
+    producing new knowledge. The random-job reservation and the EIG term limit this but do not
+    eliminate it. Expect to iterate on the incentive design; treat it as an open problem.</p>
+  </div>
+
+  <div class="callout boss">
+    <p><strong>Why this is worth building anyway:</strong> the field's bottleneck is no longer
+    capability. It is the inability to tell which of two capable systems deserves to win. An
+    organisation that can answer that question — with evidence a stranger can check — has a
+    structural advantage that better models do not erase. That is the opening, and it is built from
+    the one thing you already have: the instinct to distrust a claim that cannot be tested.</p>
+  </div>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="../index.html"><span class="dir">← BACK</span><span class="ttl">AILearn · the course</span></a>
+  <a class="next" href="benchmark.html"><span class="dir">NEXT →</span><span class="ttl">The benchmark attempt</span></a>
+</nav>
+
+</main>
+
+<footer>
+  SKILLA · part two of AILearn · <span class="asof">state as of 2026-10</span> ·
+  claims here are design proposals, not results
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

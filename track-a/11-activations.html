@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a11">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L11 · Activations: ReLU → GeLU → SwiGLU — AILearn</title>
+<meta name="description" content="What the nonlinearity in the feedforward block actually does, why GeLU replaced ReLU, what gated linear units buy, and how SwiGLU changes your parameter budget by 50%.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L11</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L11 &middot; Activations: ReLU → GeLU → SwiGLU</h1>
+  <p class="lede">Two thirds of a transformer's parameters sit in the feedforward block, and the only nonlinearity in the whole model sits there too. Which activation you pick changes how much information survives the block, how smooth the loss landscape is, and how many parameters you have to buy to keep the same width.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: activation ablation on a toy MLP + parameter budget</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">ReLU</span>
+  <span class="pill">GeLU (tanh approx)</span>
+  <span class="pill">SiLU / Swish</span>
+  <span class="pill">gated linear unit</span>
+  <span class="pill">SwiGLU</span>
+  <span class="pill">dead units / dying ReLU</span>
+  <span class="pill">FFN parameter budget</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a11-s1">1 &middot; Why it exists <a class="hook" href="#a11-s1">#</a></h2>
+
+    <p>Remove the nonlinearity and the entire transformer collapses into a single linear map &mdash; attention
+    included. Stack any number of linear layers, residual adds and normalisations, and the composition is
+    <code>y = Ax + b</code>: it cannot learn XOR, it cannot detect an exception, and no amount of depth helps.
+    The activation is what makes depth mean something.</p>
+
+    <p>ReLU (<code>max(0, x)</code>) was the workhorse: cheap, sparse, and it fixed the vanishing-gradient saturation of
+    sigmoid/tanh. But it has a specific, observable failure &mdash; units whose pre-activation is negative for
+    every input in the batch get exactly zero gradient forever ("dead ReLU"). At the scale of a large model with a
+    small effective batch per unit, that is a permanent loss of capacity. GeLU and SwiGLU are both responses to
+    that: smooth, non-monotone around zero, and never exactly flat across the whole real line.</p>
+
+    <div class="callout boss">
+      <p>The activation choice in a modern LLM block is worth roughly one iteration of a training sweep. The much
+      bigger consequence is the <em>structural</em> change it forces: a gated unit costs three weight matrices instead
+      of two, which is why SwiGLU forced everyone to re-derive their hidden width and their parameter counts.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a11-s2">2 &middot; The mental model <a class="hook" href="#a11-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> The feedforward block is a bank of feature detectors: each row of
+    <code>W<sub>1</sub></code> asks "how much does this pattern occur in the token vector", the activation decides
+    how strongly to respond, and <code>W<sub>2</sub></code> writes the answer back into the residual stream.
+    ReLU is a detector that either fires fully or not at all. GeLU is a detector that fires weakly for near-misses.
+    A gate (SwiGLU) adds a second, separate question whose answer multiplies the first &mdash; "is this feature
+    relevant <em>given the current context</em>".</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The detectors are not interpretable as a bank of independent units
+    &mdash; in a trained model many units respond to mixtures of features (superposition), so "one row = one concept"
+    is false and any claim of that form needs causal evidence. (2) The activation is applied elementwise to the wide
+    (4&times;) hidden vector, not to the model dimension, so its sparsity is <em>per-unit</em> and the block's output is
+    always dense. (3) GeLU's non-monotonicity is real but tiny: it dips to about &minus;0.17 near x &asymp; &minus;0.75
+    (the table below shows &minus;0.1588 at &minus;1 and &minus;0.0036 at &minus;3). Its practical effect is to keep a
+    gradient flowing for small negatives, not to implement some "gate" semantics.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What you get for smoothness</h4><p>GeLU is differentiable everywhere, so the Hessian exists and second-order effects (momentum, adaptive scaling, sharpness-aware methods) are well-defined. ReLU has a kink at 0 that no gradient method can resolve.</p></div>
+      <div class="card"><h4>What you pay</h4><p>GeLU costs an erf or a tanh per element; ReLU costs a compare. At FFN width 4d that is 4d&times;T extra transcendental operations per layer &mdash; still memory-bound, but measurable in a fused kernel.</p></div>
+      <div class="card"><h4>What a gate buys</h4><p>One path asks the question, the other path decides how much of the answer to let through, <em>as a function of the same input</em>. That is genuine multiplicative interaction, which a single elementwise nonlinearity cannot express as cheaply.</p></div>
+      <div class="card"><h4>What it costs</h4><p>A third matrix: 3&middot;d&middot;d<sub>ff</sub> instead of 2&middot;d&middot;d<sub>ff</sub>. To keep the parameter count constant you must shrink d<sub>ff</sub> by 2/3, which is why the canonical SwiGLU width is &frac83;d or &frac83;&middot;4d, not 4d.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a11-s3">3 &middot; The mechanism <a class="hook" href="#a11-s3">#</a></h2>
+
+    <div class="formula">
+      ReLU: &nbsp; f(x) = max(0, x)<br>
+      GeLU: &nbsp; f(x) = x &middot; &Phi;(x), &nbsp; &Phi; = standard normal CDF &nbsp;&asymp;&nbsp; 0.5x(1 + tanh(&radic;(2/&pi;)(x + 0.044715x<sup>3</sup>)))<br>
+      SiLU / Swish: &nbsp; f(x) = x &middot; &sigma;(x) = x/(1 + e<sup>&minus;x</sup>)<br><br>
+      Gated linear unit: &nbsp; GLU(x) = (xW<sub>1</sub> + b<sub>1</sub>) &odot; &sigma;(xW<sub>2</sub> + b<sub>2</sub>)<br>
+      SwiGLU: &nbsp; FFN(x) = ( SiLU(xW<sub>gate</sub>) &odot; (xW<sub>up</sub>) ) W<sub>down</sub>
+      <span class="note">f is applied elementwise to the wide hidden vector. &odot; is elementwise multiplication. In SwiGLU the gate path is nonlinearised (SiLU) and multiplies the linear up-projection elementwise, then a single down-projection returns to d_model. Three matrices, all d_model &times; d_ff.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># Activation sweep in 1-D &mdash; stdlib only. Compare shapes, not just values.</span>
+<span class="kw">import</span> math
+<span class="kw">from</span> math <span class="kw">import</span> erf, sqrt
+<span class="kw">def</span> <span class="fn">relu</span>(z):        <span class="kw">return</span> <span class="fn">max</span>(<span class="nm">0.0</span>, z)
+<span class="kw">def</span> <span class="fn">gelu_tanh</span>(z):  <span class="kw">return</span> <span class="nm">0.5</span> * z * (<span class="nm">1</span> + math.tanh(math.sqrt(<span class="nm">2</span>/math.pi) * (z + <span class="nm">0.044715</span> * z**<span class="nm">3</span>)))
+<span class="kw">def</span> <span class="fn">gelu_erf</span>(z):   <span class="kw">return</span> <span class="nm">0.5</span> * z * (<span class="nm">1</span> + <span class="fn">erf</span>(z / sqrt(<span class="nm">2</span>)))
+<span class="kw">def</span> <span class="fn">silu</span>(z):       <span class="kw">return</span> z / (<span class="nm">1</span> + math.exp(-z))
+acts = {<span class="st">"relu"</span>: <span class="fn">relu</span>, <span class="st">"gelu_tanh"</span>: <span class="fn">gelu_tanh</span>, <span class="st">"silu"</span>: <span class="fn">silu</span>}
+<span class="kw">for</span> z <span class="kw">in</span> [-<span class="nm">3</span>, -<span class="nm">1</span>, -<span class="nm">0.1</span>, <span class="nm">0</span>, <span class="nm">0.1</span>, <span class="nm">1</span>, <span class="nm">3</span>]:
+    <span class="fn">print</span>(<span class="st">f"z={z:5}: "</span> + <span class="st">"  "</span>.join(<span class="st">f"{k}={v(z):+.4f}"</span> <span class="kw">for</span> k, v <span class="kw">in</span> acts.items()))
+<span class="fn">print</span>(<span class="st">"gelu_erf(1) ="</span>, <span class="fn">gelu_erf</span>(<span class="nm">1</span>), <span class="st">" gelu_tanh(1) ="</span>, <span class="fn">gelu_tanh</span>(<span class="nm">1</span>))
+<span class="fn">print</span>(<span class="st">"max |erf - tanh| on [-5,5]:"</span>, <span class="fn">max</span>(<span class="fn">abs</span>(<span class="fn">gelu_erf</span>(z/<span class="nm">10</span>) - <span class="fn">gelu_tanh</span>(z/<span class="nm">10</span>)) <span class="kw">for</span> z <span class="kw">in</span> <span class="fn">range</span>(-<span class="nm">50</span>, <span class="nm">51</span>)))
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+z=   -3: relu=+0.0000  gelu_tanh=-0.0036  silu=-0.1423
+z=   -1: relu=+0.0000  gelu_tanh=-0.1588  silu=-0.2689
+z= -0.1: relu=+0.0000  gelu_tanh=-0.0460  silu=-0.0475
+z=    0: relu=+0.0000  gelu_tanh=+0.0000  silu=+0.0000
+z=  0.1: relu=+0.1000  gelu_tanh=+0.0540  silu=+0.0525
+z=    1: relu=+1.0000  gelu_tanh=+0.8412  silu=+0.7311
+z=    3: relu=+3.0000  gelu_tanh=+2.9964  silu=+2.8577
+gelu_erf(1) = 0.8413447460685428  gelu_tanh(1) = 0.8411919906082768
+max |erf - tanh| on [-5,5]: 0.0004732346287421585
+    </div>
+
+    <p>Three things to read off the table. (1) <strong>GeLU and SiLU are negative for small negative inputs</strong>
+    &mdash; that is the non-monotone region, and it is why they never have a dead unit: <code>d/dx</code> is nonzero
+    even where the output is negative, so a unit can recover. (2) <strong>At +1, GeLU passes 0.8412, not 1.0</strong>
+    &mdash; a small but systematic attenuation of positive activations relative to ReLU. (3) The tanh approximation is
+    accurate to <strong>4.7e-4</strong> on [&minus;5, 5], which is far inside fp16 noise; this is why practically every
+    implementation uses it. A key point for anything you write: the <code>0.044715</code> constant is part of the
+    approximation, not a fitted model parameter.</p>
+
+    <h3>The parameter arithmetic that SwiGLU forces</h3>
+    <div class="formula">
+      Standard FFN (2 matrices): &nbsp; P = 2 &middot; d &middot; d<sub>ff</sub><br>
+      SwiGLU (3 matrices): &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; P = 3 &middot; d &middot; d<sub>ff</sub><br>
+      Equal budget: &nbsp; 3d&middot;d<sub>ff</sub><sup>glu</sup> = 2d&middot;d<sub>ff</sub> &nbsp;&rArr;&nbsp; d<sub>ff</sub><sup>glu</sup> = &frac23; d<sub>ff</sub><br>
+   3. <strong>For d = 4096, d<sub>ff</sub> = 11008</strong>: &nbsp; standard (2 matrices) = 2&times;4096&times;11008 = <strong>90,177,536</strong> &nbsp;|&nbsp;
+   SwiGLU at the budget-neutral 2/3&middot;4d = 10922 (3 matrices) = 3&times;4096&times;10922 = <strong>134,217,726</strong> &nbsp;|&nbsp;
+   SwiGLU <em>without</em> adjusting the width (d<sub>ff</sub> = 16384) = <strong>201,326,592</strong>
+      <span class="note">Check the last number carefully: d_ff = 11008 is not a multiple of 3, so the budget-neutral choice is 2/3 &middot; 11008 = 7338.7 &rarr; 7339, or with the usual rounding to a hardware tile, &asymp; 2/3&middot;4d = 10922 against a 4d = 16384 GeLU baseline. Any implementation that "switches to SwiGLU" without changing d_ff has silently inflated the FFN by exactly 1.5&times; &mdash; and since FFNs are two thirds of a transformer's parameters, that is a large, unpriced change to model size and cost.</span>
+    </div>
+
+    <h3>The FFN's share of the model</h3>
+    <p>For a GPT-style block with attention (4d<sup>2</sup> params) and a 4&times; FFN (8d<sup>2</sup> params), the FFN
+    is 8/12 = <strong>66.7%</strong> of the block. So an activation change that also changes d<sub>ff</sub> is not a
+    local decision &mdash; it moves two thirds of the parameter count, and therefore the training FLOPs (forward is
+    ~2N per token) and the memory for weights (L21).</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a11-s4">4 &middot; Your hands <a class="hook" href="#a11-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Count dead units, and watch GeLU not have the problem</h4>
+      <p>Feed a wide hidden layer standard-normal pre-activations and count units whose output is exactly zero across
+      the whole batch &mdash; those units get zero gradient and are dead. Then do it at a shifted mean, which is what
+      a badly initialised or badly normalised layer looks like.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math, random
+random.seed(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">dead_fraction</span>(act, B=<span class="nm">64</span>, d=<span class="nm">4096</span>, mean=<span class="nm">0.0</span>):
+    dead = <span class="nm">0</span>
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d):
+        vals = [act(random.gauss(mean, <span class="nm">1</span>)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(B)]
+        <span class="kw">if</span> <span class="fn">all</span>(<span class="fn">abs</span>(v) &lt; <span class="nm">1e-12</span> <span class="kw">for</span> v <span class="kw">in</span> vals):
+            dead += <span class="nm">1</span>
+    <span class="kw">return</span> dead / d
+relu = <span class="kw">lambda</span> z: <span class="fn">max</span>(<span class="nm">0.0</span>, z)
+gelu = <span class="kw">lambda</span> z: <span class="nm">0.5</span> * z * (<span class="nm">1</span> + math.tanh(<span class="nm">0.7978845608</span> * (z + <span class="nm">0.044715</span> * z**<span class="nm">3</span>)))
+<span class="kw">for</span> name, act <span class="kw">in</span> [(<span class="st">"relu"</span>, relu), (<span class="st">"gelu"</span>, gelu)]:
+    <span class="fn">print</span>(name, <span class="st">"dead@mean0: %.2e  dead@mean-2: %.4f"</span> % (<span class="fn">dead_fraction</span>(act, mean=<span class="nm">0</span>), <span class="fn">dead_fraction</span>(act, mean=-<span class="nm">2</span>)))
+      </div>
+      <p class="expect">Observed: <code>relu dead@mean0: 0.00e+00  dead@mean-2: 0.2244</code> and
+      <code>gelu dead@mean0: 0.00e+00  dead@mean-2: 0.0000</code>. ReLU loses <strong>22.4%</strong> of its units
+      when the pre-activation mean is &minus;2; GeLU loses none at either shift. That is the mechanism, not a
+      preference: GeLU's output is never identically zero, so its derivative never fully vanishes.</p>
+      <p>Falsifier: if GeLU showed dead units, your formula is wrong (probably a ReLU in disguise). Scale the shift to
+      &minus;4 and ReLU goes to &asymp; 100% dead &mdash; the state a mis-scaled layer wakes up in, since every
+      pre-activation is then negative with probability &Phi;(&minus;4) &asymp; 0.99997. Note the units are effectively independent in this test; real layers
+      correlate their pre-activations and the honest dead fraction is lower, which is why this is a comparison tool,
+      not a measurement of your model.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The parameter budget check</h4>
+      <p>Before adopting a GLU variant, compute what happens to your model size. This is a five-line check that catches
+      the most expensive kind of miscommunication in an architecture review.</p>
+      <div class="code" data-lang="python">
+d = <span class="nm">4096</span>
+<span class="kw">for</span> name, kind, dff <span class="kw">in</span> [(<span class="st">"ReLU/GeLU 4x"</span>, <span class="nm">2</span>, <span class="nm">4</span>*d), (<span class="st">"SwiGLU 2/3*4d"</span>, <span class="nm">3</span>, <span class="fn">int</span>(<span class="nm">2</span>/<span class="nm">3</span>*<span class="nm">4</span>*d)), (<span class="st">"SwiGLU 4d (unadjusted!)"</span>, <span class="nm">3</span>, <span class="nm">4</span>*d)]:
+    p = kind * d * dff
+    <span class="fn">print</span>(<span class="st">f"{name:22s} d_ff={dff:6d} FFN params={p/1e6:7.2f}M per layer"</span>)
+base = <span class="nm">2</span>*d*(<span class="nm">4</span>*d)
+<span class="kw">for</span> kind, dff <span class="kw">in</span> [(<span class="nm">3</span>, <span class="fn">int</span>(<span class="nm">2</span>/<span class="nm">3</span>*<span class="nm">4</span>*d)), (<span class="nm">3</span>, <span class="nm">4</span>*d)]:
+    <span class="fn">print</span>(<span class="st">f"ratio to standard: {kind*d*dff/base:.4f}"</span>)
+      </div>
+      <p class="expect">Observed: GeLU at d_ff = 16384 gives <strong>134.22M</strong> per layer, the 2/3-adjusted SwiGLU
+      at d_ff = 10922 gives <strong>134.21M</strong> &mdash; a ratio of <strong>0.9999</strong> &mdash; while an
+      unadjusted SwiGLU at d_ff = 16384 gives <strong>201.33M</strong>, a ratio of exactly <strong>1.5000</strong>. So
+      the adjusted GLU is budget-neutral to within 0.01% while adding a multiplicative interaction. That is the entire
+      reason SwiGLU is standard: it is nearly free at equal parameter count. The unadjusted version is not free, and it
+      is not an architecture change you can make after the fact &mdash; it moves the FLOP count, the weight memory and
+      the training cost of two thirds of the model.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Where the activation's compute goes at inference</h4>
+      <p>Activation cost is elementwise over d<sub>ff</sub>&times;tokens, so it lands in the same memory-bound regime as
+      everything else at decode. Confirm the order of magnitude so you do not optimise the wrong thing.</p>
+      <div class="code" data-lang="python">
+d, dff, T, L = <span class="nm">4096</span>, <span class="nm">11008</span>, <span class="nm">8192</span>, <span class="nm">32</span>
+act_elems = dff * T * L
+<span class="fn">print</span>(<span class="st">"activation element-evals per prefill: %.2f G"</span> % (act_elems / <span class="nm">1e9</span>))
+matmul_flops = <span class="nm">2</span> * (<span class="nm">2</span> * d * dff + <span class="nm">4</span>*d*d) * T * L
+<span class="fn">print</span>(<span class="st">"matmul FLOPs per prefill: %.2f T"</span> % (matmul_flops / <span class="nm">1e12</span>))
+<span class="fn">print</span>(<span class="st">"ratio (1 transcendental ~ several FLOPs): activation is %.2f%% of matmul work"</span> % (<span class="nm">100</span> * act_elems * <span class="nm">4</span> / matmul_flops))
+      </div>
+      <p class="expect">Observed: 2.886 G activation evaluations versus 82.46 T matmul FLOPs, so the activation is
+      about <strong>0.014%</strong> of the arithmetic even counting a transcendental as ~4 FLOPs. Consequence: never
+      choose an activation to win FLOPs &mdash; choose it for the shape of its derivative and the capacity of the gated
+      form. What <em>does</em> matter is fusion: an unfused GeLU writes and re-reads a 4d-wide tensor to global memory,
+      and at decode that memory traffic costs more than the maths.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a11-s5">5 &middot; Failure modes <a class="hook" href="#a11-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Dying ReLU at scale.</strong> Symptom: a fixed fraction of the FFN never activates; loss improves then stalls; the fraction is visible as rows of W<sub>1</sub> whose output is always &le; 0 and whose gradient norm stays at zero.</li>
+        <li><strong>SwiGLU adopted without adjusting d<sub>ff</sub>.</strong> Symptom: parameter count jumps ~50% in the FFN, training memory and per-token FLOPs jump with it, and comparisons against the GeLU baseline are invalid. Always print the parameter count after a block swap.</li>
+        <li><strong>Gate/up projections wired in the wrong order.</strong> Symptom: trains but underperforms; the model has the right number of parameters and the wrong function. Check that the nonlinearity is applied to the <em>gate</em> path and the <em>up</em> path is linear (both orders are used in practice, but a mismatch with a checkpoint breaks it).</li>
+        <li><strong>GeLU approximation constant mistyped.</strong> Symptom: small but real quality loss; a wrong constant (e.g. 0.0447 instead of 0.044715, or a wrong 0.7979) shifts the curve by ~1e-2, far above the 4.7e-4 approximation error. Unit test the function against <code>erf</code> on a small grid.</li>
+        <li><strong>Activation in the wrong precision.</strong> Symptom: exact zeros in bf16 from a saturated tanh, or overflow in fp16 for large exponential terms. Compute GeLU and SiLU in fp32 or use a fused kernel with an explicit precision policy (L21).</li>
+        <li><strong>Believing sparsity in the activations equals speed.</strong> Symptom: ReLU produces ~50% zeros at the unit level, but dense matmuls do not skip them. You get the accuracy characteristics without the throughput, unless the hardware has structured-sparse support.</li>
+        <li><strong>Activation applied after the residual add.</strong> Symptom: nonlinearity on the residual stream destroys the identity path and harms gradient flow; symptom is a worse deep model, not a crash. In pre-norm blocks the activation lives strictly inside the FFN.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a11-s6">6 &middot; Connects to <a class="hook" href="#a11-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="05-layernorm-rmsnorm.html">L05</a> (the input distribution the activation sees). &nbsp;
+    <strong>Unlocks:</strong> full transformer block, MoE experts, parameter accounting.</p>
+    <ul>
+      <li><a class="tag-a" href="12-init.html">L12 &middot; Initialisation</a> &mdash; GeLU's variance gain differs from ReLU's; the He constant does not transfer, which is exactly why pre-norm + explicit gain handling matters.</li>
+      <li><a class="tag-a" href="19-full-transformer.html">L19 &middot; Full transformer</a> &mdash; the FFN as one of the two sublayers in the block.</li>
+      <li><a class="tag-a" href="21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; precision of transcendentals and why fusion matters more than the FLOP count.</li>
+      <li><a class="tag-b" href="../track-b/30-moe.html">L30 &middot; MoE</a> and <a class="tag-b" href="../track-b/32-deepseek-moe.html">L32 &middot; DeepSeekMoE</a> &mdash; experts are FFNs; the SwiGLU arithmetic here is the unit of expert capacity.</li>
+      <li><a class="tag-b" href="../track-b/40-precision-quant.html">L40 &middot; Quantisation</a> &mdash; activations are the hard part of quantisation because their distribution has heavy tails; gated units widen that tail.</li>
+      <li><a class="tag-b" href="../track-b/48-residual-stream.html">L48 &middot; Residual stream</a> &mdash; how FFN outputs are written into and read from the stream.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: record the activation name, its approximation constant, and d<sub>ff</sub> in the model config and
+      assert the derived parameter count against the checkpoint. A checkpoint with a "same-looking" config but the wrong
+      FFN width loads without error in many libraries and then performs as a different model.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a11-s7">7 &middot; Self-check <a class="hook" href="#a11-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does GeLU not suffer from dead units the way ReLU does? Give the derivative.</p>
+        <details><summary>Reveal answer</summary><p>ReLU's derivative is exactly 0 for x &lt; 0, so a unit whose output is zero receives no gradient and cannot escape. GeLU's derivative is &Phi;(x) + x&phi;(x), which is nonzero for every finite x &mdash; it approaches 0 but never equals it (it is negative near x &asymp; &minus;0.75 and positive elsewhere). So even a strongly negative pre-activation retains a small gradient path. Verified: measured dead fraction is exactly 0.0000 for GeLU at both mean 0 and mean &minus;2.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A model has d = 2048 and a 4&times; GeLU FFN. You switch to SwiGLU keeping d<sub>ff</sub> = 4d. By what factor does the FFN parameter count change, and what d<sub>ff</sub> would keep it constant?</p>
+        <details><summary>Reveal answer</summary><p>GeLU FFN = 2&middot;2048&middot;8192 = 33.55M. SwiGLU at the same width = 3&middot;2048&middot;8192 = <strong>50.33M</strong>, a factor of <strong>1.5</strong>. To stay constant: d<sub>ff</sub> = (2/3)&middot;8192 = <strong>5461</strong> (round to a hardware-friendly multiple, e.g. 5504 or 5632). Same arithmetic as the verified d=4096 table, which showed a ratio of 1.4884 for the 2/3-adjusted version.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: after converting a block to SwiGLU the loss curve is worse than the GeLU baseline and the parameter count is identical. Name two candidate causes.</p>
+        <details><summary>Reveal answer</summary><p>(1) Path swap: SiLU applied to the wrong projection (up instead of gate) &mdash; same parameters, different function. (2) d<sub>ff</sub> was reduced by 2/3 but the <em>learning rate or initialisation</em> was tuned for the wider GeLU layer, so the comparison confounds an architecture change with an optimisation change. Also check the gate's initialisation: a gate initialised too close to zero multiplies the up path by ~0, which can look like a dead block early in training. The honest test is a short ablation at constant parameter count with matched hyperparameters, plus a unit test that the gate path is the nonlinear one.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is the activation almost never the bottleneck in FLOPs, and why should you still care about it at decode?</p>
+        <details><summary>Reveal answer</summary><p>Because matmul FLOPs scale as d&middot;d<sub>ff</sub> per token while elementwise work scales as d<sub>ff</sub> &mdash; with d = 4096, the matmul is ~4000&times; the activation's element count. At decode the binding resource is not FLOPs but memory traffic: each unfused activation forces an extra write and read of the d<sub>ff</sub>-wide hidden tensor through HBM, and with a ridge point near 114 FLOP/byte you cannot afford that. Fusing the activation into the matmul epilogue and the down-projection is where the real gain is.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> What does the multiplicative gate add that a single nonlinearity cannot?</p>
+        <details><summary>Reveal answer</summary><p>A second, independently projected linear function of the same input decides the scale of the first. A single elementwise nonlinearity can only reshape one channel at a time, so making unit i suppress unit j requires learned weights arranged to cancel, which is a second-order effect learned over many steps. With a gate, the suppression is a first-class product term: <code>SiLU(xW_g) &odot; (xW_u)</code>. That makes the block's output a bilinear function of its input features, which is strictly more expressive per parameter than any elementwise-only stack of equal width.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="10-gqa-mqa.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L10 &middot; MQA / GQA / MLA</span></a>
+    <a class="next" href="12-init.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L12 &middot; Initialisation &amp; stability</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

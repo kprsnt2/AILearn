@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d98">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L98 · Fine-tune vs RAG vs prompting: the real decision rule — AILearn</title>
+<meta name="description" content="RAG fixes knowledge; fine-tuning fixes form. The decision is a diagnosis first and a cost model second. A $2,400 fine-tune needs 2.1M queries to pay back its context savings.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L98</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L98 &middot; Fine-tune vs RAG vs prompting: the real decision rule</h1>
+  <p class="lede">They are not competitors. RAG changes what the model <em>knows</em>; fine-tuning changes what it <em>does</em>. The decision is two steps &mdash; diagnose which one you lack, then cost the fix. And a $2,400 fine-tune needs <strong>2.1 million queries</strong> to pay back its context savings, which is the arithmetic that ends most fine-tuning proposals.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: decision matrix with costs</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">knowledge vs form</span>
+  <span class="pill">staleness of a fine-tune</span>
+  <span class="pill">payback period</span>
+  <span class="pill">context-cost elimination</span>
+  <span class="pill">LoRA / QLoRA</span>
+  <span class="pill">distillation for cost</span>
+  <span class="pill">catastrophic forgetting</span>
+  <span class="pill">eval before and after</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d98-s1">1 &middot; Why it exists <a class="hook" href="#d98-s1">#</a></h2>
+
+    <p>The failure: <strong>someone fine-tuned a model to teach it facts, and three weeks later the facts were wrong.</strong>
+    A fine-tune bakes a fact into weights. Weights do not update when the fact changes, cannot be cited, cannot be scoped per
+    user, and cannot be deleted on request. Every one of those is a requirement in a real knowledge product, and every one is
+    cheaply met by retrieval and not at all by training.</p>
+
+    <p>The mirror failure: <strong>someone added RAG to fix an output-format problem, and it did not work.</strong> The model has
+    the information and produces a malformed JSON object with a missing comma. Retrieval cannot fix syntax. Prompt engineering
+    might; constrained decoding or a fine-tune on the target format will. The technique was chosen before the diagnosis.</p>
+
+    <p>The third failure is cost accounting. "Fine-tuning removes the 4,000-token context so it pays for itself" &mdash; at
+    $0.28/1M input tokens, 4,000 tokens saves <strong>$0.00112 per query</strong>. A $2,400 fine-tune therefore needs
+    <strong>2,142,857 queries</strong> to break even, which at 1M queries/month is two months of a million-query operation, or
+    never for anything smaller. The number, not the intuition, is the decision.</p>
+
+    <div class="callout boss">
+      <p>Two questions, in order. <strong>(1) What is missing: knowledge, form, or capability?</strong> Knowledge &rarr; RAG. Form &rarr; prompt
+      first, then fine-tune or constrained decoding. Capability &rarr; fine-tune. Then <strong>(2) does the fix pay back?</strong> Cost it
+      per month and compute the payback period against your real volume. Both steps are computable before writing a line of code.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d98-s2">2 &middot; The mental model <a class="hook" href="#d98-s2">#</a></h2>
+
+    <p>Three levers act on different parts of the system, with different change rates and different audit properties:</p>
+
+    <table class="table">
+      <thead><tr><th>Lever</th><th>Changes</th><th>Updates at</th><th>Auditable?</th><th>Per-user scope?</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Prompting</strong></td><td>instruction, examples, format</td><td>immediately, no cost</td><td>yes &mdash; the prompt is text in the trace</td><td>yes</td></tr>
+        <tr><td><strong>RAG</strong></td><td>what the model can see</td><td>on index rebuild (minutes to days, L97)</td><td><strong>yes &mdash; cites its sources</strong></td><td><strong>yes &mdash; filter per user</strong></td></tr>
+        <tr><td><strong>Fine-tune</strong></td><td>behaviour, style, format, skill</td><td>on retrain (hours to weeks)</td><td>no &mdash; the cause is in weights</td><td>no &mdash; one model for all</td></tr>
+      </tbody>
+    </table>
+
+    <p>The properties that decide most real cases are in the last two columns. If your product must answer "where did this
+    claim come from", only RAG and prompting give you that. If it must enforce per-tenant access, only RAG's filters do &mdash; one
+    fine-tuned model cannot hold two tenants' facts without leaking.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a textbook versus a library card</h4><p>Fine-tuning is printing a textbook: fast to consult, expensive to reprint, and every copy is identical. RAG is the library card: the model learns <em>how to look things up</em>, the books stay current, and each reader can be given a different shelf.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A textbook is at least a snapshot with a date on it. A fine-tune carries no date and no provenance &mdash; the model cannot tell you which facts came from training and which it inferred, so it will state a stale fact with exactly the same confidence as a current one. And unlike a textbook, you cannot spot-check it cheaply: verifying that a fine-tune still holds its facts requires a full eval (L88) every time, and catastrophic forgetting (L73) means it may have lost capabilities you never tested for.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d98-s3">3 &middot; The mechanism <a class="hook" href="#d98-s3">#</a></h2>
+
+    <p>Step one is a diagnosis, and it is a lookup, not a judgement:</p>
+
+    <table class="table">
+      <thead><tr><th>Symptom</th><th>Deficiency</th><th>Lever</th><th>Why not the others</th></tr></thead>
+      <tbody>
+        <tr><td>Does not know the fact</td><td>knowledge</td><td><strong>RAG</strong></td><td>fine-tuning it goes stale; prompting cannot invent it</td></tr>
+        <tr><td>Knows the fact but uses an old version</td><td>knowledge freshness</td><td><strong>RAG</strong></td><td>weights cannot be patched per-fact</td></tr>
+        <tr><td>Cannot cite its sources</td><td>provenance</td><td><strong>RAG</strong></td><td>no citation exists inside weights</td></tr>
+        <tr><td>Output format is wrong</td><td>form</td><td>prompt &rarr; constrained decoding &rarr; fine-tune</td><td>RAG adds information the model already has</td></tr>
+        <tr><td>Won't follow the tool schema</td><td>form</td><td>schema tightening (L77) &rarr; constrained decoding</td><td>a schema change is cheaper than a retrain</td></tr>
+        <tr><td>Tone / style is wrong</td><td>form</td><td>prompt &rarr; fine-tune</td><td>cheapest lever first</td></tr>
+        <tr><td>Needs a rare skill the base model lacks</td><td>capability</td><td><strong>fine-tune</strong> (or distill)</td><td>no prompt induces a capability that isn't there</td></tr>
+        <tr><td>Too slow or too expensive</td><td>cost</td><td>route / cache (L91) &rarr; distill</td><td>distillation is a fine-tune with a cost objective</td></tr>
+      </tbody>
+    </table>
+
+    <p>Step two is arithmetic. The recurring cost of a per-query context injection, and the payback period of removing it:</p>
+
+    <div class="formula">
+      savings/query = T<sub>ctx</sub> &middot; p<sub>in</sub> &nbsp;&nbsp;&nbsp;&nbsp; payback = C<sub>ft</sub> / (Q &middot; savings/query)
+      <span class="note"><code>T<sub>ctx</sub></code> = injected context tokens, <code>p<sub>in</sub></code> = input price, <code>C<sub>ft</sub></code> = one-off fine-tune cost, <code>Q</code> = monthly query volume. With <code>T=4000, p=0.28/1M</code>: <code>savings = $0.00112</code>. At <code>C_ft=$2,400</code> and <code>Q=1M/month</code>: <strong>2.14 months</strong>. At <code>C_ft=$24,000</code>: 21.4 months. Both are quotable; neither requires an opinion.</span>
+    </div>
+
+    <p>The decision function, with the diagnosis and the economics in one place.</p>
+
+    <div class="code" data-lang="python">
+<span class="cm"># ---------- STEP 1: diagnosis ----------</span>
+KNOWLEDGE = {<span class="st">"missing_fact"</span>, <span class="st">"stale_fact"</span>, <span class="st">"needs_citation"</span>,
+             <span class="st">"per_user_scope"</span>, <span class="st">"deletable_fact"</span>}
+FORM = {<span class="st">"bad_format"</span>, <span class="st">"tone"</span>, <span class="st">"schema_noncompliance"</span>, <span class="st">"length"</span>}
+CAPABILITY = {<span class="st">"rare_skill"</span>, <span class="st">"domain_reasoning"</span>, <span class="st">"cost_reduction"</span>}
+
+<span class="kw">def</span> <span class="fn">diagnose</span>(symptoms):
+    k = symptoms &amp; KNOWLEDGE
+    f = symptoms &amp; FORM
+    c = symptoms &amp; CAPABILITY
+    <span class="kw">if</span> k:
+        <span class="kw">return</span> <span class="st">"RAG"</span>, <span class="st">f"knowledge symptoms: {sorted(k)}"</span>
+    <span class="kw">if</span> f:
+        <span class="kw">return</span> <span class="st">"PROMPT_THEN_FORMAT_ENFORCE_THEN_FT"</span>, <span class="st">f"form symptoms: {sorted(f)}"</span>
+    <span class="kw">if</span> c:
+        <span class="kw">return</span> <span class="st">"FINE_TUNE"</span>, <span class="st">f"capability symptoms: {sorted(c)}"</span>
+    <span class="kw">return</span> <span class="st">"NO_CHANGE"</span>, <span class="st">"no symptom class matched"</span>
+
+<span class="cm"># ---------- STEP 2: economics ----------</span>
+<span class="kw">def</span> <span class="fn">payback_months</span>(ft_cost, queries_per_month, ctx_tokens, price_in):
+    per_query = ctx_tokens * price_in
+    <span class="kw">if</span> per_query &lt;= <span class="nm">0</span>:
+        <span class="kw">return</span> <span class="kw">float</span>(<span class="st">"inf"</span>)
+    <span class="kw">return</span> ft_cost / (queries_per_month * per_query)
+
+<span class="kw">def</span> <span class="fn">rag_cost_per_query</span>(ctx_tokens, price_in, out_tokens, price_out, query_tokens=<span class="nm">0</span>,
+                        embed_price=<span class="nm">0</span>):
+    <span class="kw">return</span> (query_tokens*embed_price + ctx_tokens*price_in + out_tokens*price_out)
+
+<span class="cm"># ---------- STEP 3: the composed answer ----------</span>
+<span class="kw">def</span> <span class="fn">recommend</span>(symptoms, volume, ft_cost=<span class="nm">2400</span>, ctx=<span class="nm">4000</span>):
+    lever, why = <span class="fn">diagnose</span>(symptoms)
+    pb = <span class="fn">payback_months</span>(ft_cost, volume, ctx, <span class="nm">0.28</span>/<span class="nm">1e6</span>)
+    <span class="kw">return</span> {<span class="st">"lever"</span>: lever, <span class="st">"why"</span>: why,
+            <span class="st">"payback_months_if_ft"</span>: <span class="fn">round</span>(pb, <span class="nm">2</span>) <span class="kw">if</span> pb != <span class="kw">float</span>(<span class="st">"inf"</span>) <span class="kw">else</span> <span class="kw">None</span>}
+    </div>
+
+    <p>Three things about that code. <strong>(1) Knowledge symptoms short-circuit to RAG</strong> regardless of cost, because no
+    amount of training fixes a fact that changes. <strong>(2) Form symptoms route through prompt first</strong> &mdash; the cheap levers
+    precede the expensive one. <strong>(3) The payback calculation is returned even when the recommendation is RAG</strong>, because
+    the honest artefact is the number, and someone will ask "what about fine-tuning?" in the review.</p>
+
+    <table class="table">
+      <thead><tr><th>Scenario</th><th>Diagnosis</th><th>Lever</th><th>Composition</th></tr></thead>
+      <tbody>
+        <tr><td>internal policy Q&amp;A, 200k queries/mo</td><td>stale facts, needs citation</td><td>RAG</td><td>no fine-tune</td></tr>
+        <tr><td>structured extraction from invoices, 5M/mo</td><td>schema non-compliance</td><td>prompt &rarr; constrained decoding</td><td>fine-tune only if enforcement still fails at scale</td></tr>
+        <tr><td>code review with a house style, 2M/mo</td><td>tone + rare skill</td><td>fine-tune</td><td>+ RAG for the lint rules (they change)</td></tr>
+        <tr><td>support agent, 10M/mo, needs both</td><td>knowledge + form</td><td><strong>both</strong></td><td>fine-tune the <em>grounding behaviour</em>; RAG the facts</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>The audit requirement for a fine-tune is a <strong>pre/post eval on the same golden set, plus a forgetting check</strong>:
+      capabities that were not the target of the fine-tune must be re-measured, because training on one task degrades others
+      (L73). A fine-tune whose report shows only the improved metric is an unreviewable change &mdash; you cannot tell a capability gain
+      from a capability trade.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d98-s4">4 &middot; Your hands <a class="hook" href="#d98-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; The payback period, computed</h4>
+      <p>What a fine-tune must save per query, and how many queries that takes to recover its cost.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">payback_months</span>(ft_cost, queries_per_month, ctx_tokens, price_in):
+    per_query = ctx_tokens * price_in
+    <span class="kw">return</span> ft_cost / (queries_per_month * per_query)
+
+PRICE_IN = <span class="nm">0.28</span> / <span class="nm">1e6</span>
+saved = <span class="nm">4000</span> * PRICE_IN
+print(<span class="st">f"saved per query by dropping 4000 context tokens: ${saved:.6f}"</span>)
+<span class="kw">for</span> cost <span class="kw">in</span> (<span class="nm">2400</span>, <span class="nm">24000</span>):
+    print(<span class="st">f"  ft cost ${cost:,}: break-even at {cost/saved:,.0f} queries"</span>)
+<span class="kw">for</span> vol <span class="kw">in</span> (<span class="nm">100_000</span>, <span class="nm">1_000_000</span>, <span class="nm">10_000_000</span>):
+    print(<span class="st">f"  at {vol:,}/month, $2,400 pays back in {payback_months(2400, vol, 4000, PRICE_IN):.2f} months"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>saved per query ... $0.001120</code>;
+      <code>ft cost $2,400: break-even at 2,142,857 queries</code>; <code>ft cost $24,000: break-even at 21,428,571 queries</code>;
+      then at 100k/month <code>21.43 months</code>, at 1M/month <code>2.14 months</code>, at 10M/month <code>0.21 months</code>.
+      The reading: fine-tuning for context savings is a <strong>volume play</strong>. Below ~1M queries/month it does not pay back
+      within a year, and the argument "it removes the context so it's cheaper" is arithmetically false at that scale.
+      <strong>Falsifier:</strong> if your fine-tune also lets you drop to a much cheaper model, the real saving is the price
+      <em>ratio</em>, not the context &mdash; recompute with the small-model price and the payback can improve by 10&times;.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The diagnosis routes differently for the same surface symptom</h4>
+      <p>Three symptom sets that all present as "the answers are wrong", routed by class.</p>
+      <div class="code" data-lang="python">
+KNOWLEDGE  = {<span class="st">"missing_fact"</span>, <span class="st">"stale_fact"</span>, <span class="st">"needs_citation"</span>,
+              <span class="st">"per_user_scope"</span>, <span class="st">"deletable_fact"</span>}
+FORM       = {<span class="st">"bad_format"</span>, <span class="st">"tone"</span>, <span class="st">"schema_noncompliance"</span>}
+CAPABILITY = {<span class="st">"rare_skill"</span>, <span class="st">"domain_reasoning"</span>, <span class="st">"cost_reduction"</span>}
+
+<span class="kw">def</span> <span class="fn">diagnose</span>(symptoms):
+    <span class="kw">if</span> symptoms &amp; KNOWLEDGE:  <span class="kw">return</span> <span class="st">"RAG"</span>
+    <span class="kw">if</span> symptoms &amp; FORM:       <span class="kw">return</span> <span class="st">"PROMPT -&gt; CONSTRAIN -&gt; FT"</span>
+    <span class="kw">if</span> symptoms &amp; CAPABILITY: <span class="kw">return</span> <span class="st">"FINE_TUNE"</span>
+    <span class="kw">return</span> <span class="st">"NO_CHANGE"</span>
+
+cases = {
+    <span class="st">"policy Q&amp;A gives outdated numbers"</span>: {<span class="st">"stale_fact"</span>, <span class="st">"needs_citation"</span>},
+    <span class="st">"extraction emits invalid JSON"</span>:      {<span class="st">"schema_noncompliance"</span>, <span class="st">"bad_format"</span>},
+    <span class="st">"won't reason about our DSL"</span>:           {<span class="st">"rare_skill"</span>, <span class="st">"domain_reasoning"</span>},
+    <span class="st">"too slow, too expensive"</span>:              {<span class="st">"cost_reduction"</span>},
+}
+<span class="kw">for</span> desc, sym <span class="kw">in</span> cases.<span class="fn">items</span>():
+    print(<span class="st">f"  {desc:38s} -&gt; {diagnose(sym)}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>policy Q&amp;A gives outdated numbers &rarr; RAG</code> &middot;
+      <code>extraction emits invalid JSON &rarr; PROMPT -&gt; CONSTRAIN -&gt; FT</code> &middot;
+      <code>won't reason about our DSL &rarr; FINE_TUNE</code> &middot; <code>too slow, too expensive &rarr; FINE_TUNE</code>
+      (the cost path; in practice route/cache first, then distill).
+      Four "the answers are wrong" complaints, four different fixes. A team that fine-tunes all four has spent three
+      unnecessary training runs and will still be serving stale policy numbers.
+      <strong>Falsifier:</strong> if a system has both knowledge and form symptoms (common in production), the diagnosis returns
+      RAG because knowledge short-circuits &mdash; and that is correct <em>ordering</em>, not a claim that form needs no work. Do the
+      retrieval fix first because it is measurable with citations, then assess whether format problems remain.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Why the fine-tune goes stale (copy-paste)</h4>
+      <p>Model the fact-drift of a fine-tune versus a retrieval index, over time, with the same update rate.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">ft_validity</span>(days_since_train, fact_changes_per_day, n_facts):
+    <span class="cm"># each fact changes independently; a changed fact is stale in the weights</span>
+    changed = <span class="fn">min</span>(n_facts, fact_changes_per_day * days_since_train)
+    <span class="kw">return</span> <span class="nm">1</span> - changed / n_facts
+
+<span class="kw">def</span> <span class="fn">rag_validity</span>(days_since_rebuild, fact_changes_per_day, n_facts, rebuild_every):
+    <span class="cm"># retrieval is stale only within the current rebuild window (L97)</span>
+    window = days_since_rebuild % rebuild_every
+    changed = <span class="fn">min</span>(n_facts, fact_changes_per_day * window)
+    <span class="kw">return</span> <span class="nm">1</span> - changed / n_facts
+
+N, RATE = <span class="nm">500</span>, <span class="nm">2</span>   <span class="cm"># 500 facts, 2 change/day</span>
+print(<span class="st">"day   fine-tuned   RAG(daily rebuild)"</span>)
+<span class="kw">for</span> d <span class="kw">in</span> (<span class="nm">0</span>, <span class="nm">30</span>, <span class="nm">90</span>, <span class="nm">180</span>, <span class="nm">365</span>):
+    print(<span class="st">f"{d:4d}  {ft_validity(d, RATE, N):11.3f}   {rag_validity(d, RATE, N, 1):.3f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>day 0 &rarr; 1.000 / 1.000</code> &middot;
+      <code>30 &rarr; 0.880 / 1.000</code> &middot; <code>90 &rarr; 0.640 / 1.000</code> &middot;
+      <code>180 &rarr; 0.280 / 1.000</code> &middot; <code>365 &rarr; 0.000 / 1.000</code>.
+      The fine-tuned arm decays monotonically; the RAG arm stays at ~1.0 forever. With 500 facts changing twice a day the
+      fine-tune is <strong>50% stale at day 125</strong> and fully stale at day 250, while retrieval never exceeds one day of drift.
+      That is the structural argument: <em>weights are a snapshot with no refresh mechanism</em>, so any fact that changes makes a
+      fine-tune progressively less true.
+      <strong>Falsifier:</strong> if your "facts" are actually stable conventions (a DSL grammar, a house style, a schema), their
+      change rate is near zero and fine-tuning them is sound &mdash; that is the form/capability case, which is exactly where
+      fine-tuning belongs.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d98-s5">5 &middot; Failure modes <a class="hook" href="#d98-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Fine-tuning for facts.</strong> Weights bake in knowledge with no refresh path. Symptom: quality decays monotonically after deployment; answers cite numbers that were correct in training data.</li>
+        <li><strong>RAG for format.</strong> Retrieval cannot fix syntax. Symptom: the model has the right information and still emits malformed output; retrieval scores look fine.</li>
+        <li><strong>Fine-tuning before prompting.</strong> A prompt or constrained decoder would have solved it. Symptom: a training run whose gains a prompt variant achieves for free.</li>
+        <li><strong>Payback not computed.</strong> "It removes context so it's cheaper." Symptom: the monthly bill is higher after the fine-tune if the small model is not actually cheaper, or the payback period exceeds the project lifetime.</li>
+        <li><strong>Forgetting.</strong> Training on one task degrades others. Symptom: target metric up, unrelated capabilities down; discovered by users, not by the eval (L73).</li>
+        <li><strong>Per-tenant leakage.</strong> One fine-tuned model serving all tenants. Symptom: cross-tenant facts surface; no filter exists to prevent it because the facts are in weights.</li>
+        <li><strong>No deletion path.</strong> A "delete my data" request against fine-tuned weights. Symptom: the only remedy is a full retrain; compliance cannot be satisfied cheaply.</li>
+        <li><strong>Unevaluated deployment.</strong> Fine-tune shipped on training loss. Symptom: loss down, task pass rate flat or worse (L88).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d98-s6">6 &middot; Connects to <a class="hook" href="#d98-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="../track-c/51-post-training.html">L51 &middot; Post-training</a>,
+    <a class="tag-d" href="97-rag-in-production.html">L97 &middot; RAG freshness</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="99-capstone.html">L99 &middot; Capstone</a>,
+    <a class="tag-d" href="100-annual-plan.html">L100 &middot; The plan</a>.</p>
+    <ul>
+      <li><a class="tag-c" href="../track-c/51-post-training.html">L51 &middot; Post-training map</a> &mdash; the decision tree for "what do I tune", which this page extends with the economics.</li>
+      <li><a class="tag-c" href="../track-c/52-sft.html">L52 &middot; SFT</a> &mdash; data quality and masking; the fine-tune machinery.</li>
+      <li><a class="tag-c" href="../track-b/41-distillation.html">L41 &middot; Distillation</a> &mdash; a fine-tune whose objective is cost, not capability.</li>
+      <li><a class="tag-c" href="../track-c/73-continual-learning.html">L73 &middot; Forgetting</a> &mdash; why a fine-tune needs a forgetting check, not just a target metric.</li>
+      <li><a class="tag-c" href="../resources/papers.html">LoRA &middot; arXiv:2106.09685</a> and <a class="tag-c" href="../resources/papers.html">QLoRA &middot; arXiv:2305.14314</a> &mdash; the parameter-efficient methods that make fine-tuning cheap enough to consider.</li>
+      <li><a class="tag-d" href="85-rag-retrieval.html">L85 &middot; Retrieval</a> and <a class="tag-d" href="97-rag-in-production.html">L97 &middot; RAG in prod</a> &mdash; the freshness mechanism weights lack.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; the pre/post measurement any fine-tune requires.</li>
+      <li><a class="tag-d" href="91-cost-latency.html">L91 &middot; Cost/latency</a> &mdash; caching and routing often beat distillation at the same cost goal.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d98-s7">7 &middot; Self-check <a class="hook" href="#d98-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A product needs per-tenant knowledge, citation, and deletion-on-request. Which lever, and why is the alternative disqualified?</p>
+        <details><summary>Reveal answer</summary><p><strong>RAG.</strong> Three independent disqualifications of fine-tuning: (a) <em>per-tenant</em> &mdash; one model holds all tenants' facts in weights with no filter, so cross-tenant leakage is possible and unfixable by configuration; (b) <em>citation</em> &mdash; weights carry no provenance, so the model cannot say which document supports a claim; (c) <em>deletion</em> &mdash; removing a fact from weights requires retraining, whereas removing it from an index is a row delete. Each of these is a hard requirement that retrieval satisfies by construction, which is why the diagnosis routes to RAG regardless of cost.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Fine-tune cost $1,800, context injection 3,000 tokens at $0.30/1M, volume 400,000 queries/month. Compute the payback period and the decision.</p>
+        <details><summary>Reveal answer</summary><p>Savings per query <code>= 3000 &times; 0.30/1e6 = $0.0009</code>. Monthly savings at full volume <code>= 400,000 &times; 0.0009 = $360</code>. Payback <code>= 1800/360 = 5.0 months</code> &mdash; or equivalently <code>1800/0.0009 = 2,000,000 queries</code>. Decision: at 400k/month that is a 5-month payback on context savings alone, which is not compelling unless the fine-tune also buys something else (a cheaper model, better format compliance). If it does not, RAG or prompt-level context reduction is the better spend; if it also enables a 3&times; cheaper model tier, recompute with the model savings included and the case may flip.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why is a forgetting check mandatory in a fine-tune's eval report?</p>
+        <details><summary>Reveal answer</summary><p>Because training on a new distribution shifts the model's behaviour everywhere, not only on the target task (L73). A report showing only the improved metric cannot distinguish "gained the target capability" from "gained the target capability and lost two others" &mdash; and the lost capabilities are typically the ones nobody thought to test because they were assumed stable. Practically: keep a small regression suite covering the pre-existing capabilities and run it before and after, and report both. The most common surprise is degraded instruction-following or format compliance on out-of-distribution prompts.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: after fine-tuning on your support transcripts, the model answers in the right tone but invents product details. What went wrong and what do you do?</p>
+        <details><summary>Reveal answer</summary><p>The fine-tune taught <em>form</em> (tone, phrasing, structure) from transcripts, but transcripts also contain facts &mdash; so the model learned to produce plausible product details with high confidence and no source (this is the knowledge case being baked in without a refresh path). Fix: keep the behavioural gain and restore factual grounding by combining the fine-tune with <strong>RAG for facts</strong> plus a grounding instruction (&ldquo;state only details present in the provided context; otherwise say you do not have it&rdquo;). Then re-measure faithfulness separately from tone (L87). Training on transcripts is fine for style; it is not a knowledge-injection mechanism, because the facts in the transcripts are already stale by the time you train.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> When is fine-tuning unambiguously the right first choice?</p>
+        <details><summary>Reveal answer</summary><p>When the deficiency is a <em>capability or behaviour</em> that is stable over time and cannot be induced by prompting or retrieval: emitting a specific structured output reliably at scale, a reasoning pattern over a proprietary DSL, a house style requiring many examples, or cost reduction via distillation to a smaller model with high volume. The common thread is that the thing being learned changes slowly or not at all (a grammar, a style, a skill), so the snapshot property of weights is not a defect. The opposing test: if the thing being learned changes weekly, weights are the wrong medium no matter how good the fine-tune is.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="97-rag-in-production.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L97 &middot; RAG in production</span></a>
+    <a class="next" href="99-capstone.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L99 &middot; Capstone: ship an audited agent</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

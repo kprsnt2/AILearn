@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="track-a/index">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Track A - Foundations - AILearn</title>
+<meta name="description" content="The machine underneath. Build every block of a transformer yourself.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .hero { padding: 44px 0 8px; max-width: 92ch; }
+  .hero h1 { font-size: clamp(1.9rem, 4.4vw, 2.9rem); letter-spacing: -1.4px; line-height: 1.1; }
+  .thesis { border-left: 3px solid #38bdf8; padding-left: 20px; margin: 26px 0; font-size: 1.04rem;
+    color: var(--txt-2); line-height: 1.75; max-width: 88ch; }
+  .sec { margin: 46px 0; }
+  .sec h2 { font-size: 1.32rem; letter-spacing: -.5px; margin: 0 0 14px; color: var(--txt); }
+  .lesson-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px,1fr)); gap: 10px; }
+  .L { display: flex; gap: 12px; text-decoration: none; background: var(--card); border: 1px solid var(--line);
+    border-radius: 11px; padding: 12px 14px; transition: .16s; align-items: flex-start; }
+  .L:hover { border-color: #38bdf866; transform: translateY(-2px); background: var(--card-2); }
+  .L .n { font-family: var(--mono); font-size: .72rem; font-weight: 700; color: #38bdf8; min-width: 26px; padding-top: 2px; }
+  .L .t { color: var(--txt); font-size: .89rem; font-weight: 550; line-height: 1.4; }
+  .L .b { color: var(--txt-3); font-size: .74rem; font-family: var(--mono); margin-top: 3px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 14px; }
+  .card h4 { margin: 0 0 7px !important; color: #38bdf8; font-size: .8rem; letter-spacing: .6px;
+    text-transform: uppercase; font-family: var(--mono); }
+  .card p { margin: 0; font-size: .87rem; }
+  ul.check { list-style: none; padding: 0; margin: 0; }
+  ul.check li { position: relative; padding-left: 26px; margin-bottom: 9px; font-size: .9rem; color: var(--txt-2); }
+  ul.check li::before { content: "\2713"; position: absolute; left: 0; color: #38bdf8; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="../agi/index.html">AGI Lab</a>
+      <a href="../tools/index.html">Tools</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="hero">
+  <div class="track-tag" style="color:#38bdf8;border-color:#38bdf855;background:#38bdf814;">TRACK A &middot; FOUNDATIONS</div>
+  <h1>Foundations - 25 lessons</h1>
+  <p class="lede">The machine underneath. Build every block of a transformer yourself.</p>
+  <p class="thesis">You can already orchestrate models. What you cannot yet do is rebuild one. This track closes that gap block by block: tokenizer, embedding, gradient, norm, attention, position, cache, sampler, full training loop. By lesson 25 you will have trained a small transformer from scratch and know exactly where every number in its loss curve came from.</p>
+  <div class="chips">
+    <span class="chip">L01 &rarr; L25</span>
+    <span class="chip">build: A working tiny transformer trained on a corpus</span>
+    <span class="chip">prereq: Python, and a willingness to run things</span>
+  </div>
+</header>
+
+<div class="sec">
+  <h2>Why this track exists</h2>
+  <div class="grid3">
+    <div class="card"><h4>01</h4><h4>Every scaling decision becomes legible</h4><p>You cannot judge MLA vs GQA vs MQA until you have computed a KV cache by hand.</p></div>
+<div class="card"><h4>02</h4><h4>Debugging stops being guessing</h4><p>Most 'the model is broken' bugs are tensor-shape or masking bugs. You will have made all of them yourself in a sandbox.</p></div>
+<div class="card"><h4>03</h4><h4>Cost intuition becomes arithmetic</h4><p>Token counts, cache bytes, FLOPs. You will be able to estimate a serving bill on a napkin.</p></div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>By the end you can</h2>
+  <ul class="check"><li>Explain the variance argument for dividing attention by sqrt(d_k) without notes</li>
+    <li>Compute KV-cache bytes for any config and say which tensor dominates at 128k context</li>
+    <li>Get a clean training run with an LR schedule and no loss spikes</li>
+    <li>Read a model repo (nanoGPT / HF) and know what every line does</li></ul>
+</div>
+
+<div class="sec">
+  <h2>Prerequisites</h2>
+  <p style="color:var(--txt-2);">Python, and a willingness to run things. No deep-learning maths assumed.</p>
+  <p style="color:var(--txt-2);"><strong>The artifact:</strong> A working tiny transformer trained on a corpus, with a hand-written sampler, attention and training loop.</p>
+</div>
+
+<div class="sec">
+  <h2>Lessons</h2>
+  <div class="lesson-list">
+    <a class="L" href="01-tokenization.html"><span class="n">01</span><span><span class="t">Tokenization: the physics of the text interface</span><span class="b">cost meter + tokenizer round-trip</span></span></a>
+    <a class="L" href="02-embeddings.html"><span class="n">02</span><span><span class="t">Embeddings: meaning as geometry</span><span class="b">cosine search over a neighbour table</span></span></a>
+    <a class="L" href="03-backprop-autograd.html"><span class="n">03</span><span><span class="t">Backprop &amp; autograd: credit assignment</span><span class="b">hand-written micro autodiff</span></span></a>
+    <a class="L" href="04-gradient-descent.html"><span class="n">04</span><span><span class="t">Gradient descent, SGD, momentum, AdamW</span><span class="b">1-D optimizer race</span></span></a>
+    <a class="L" href="05-layernorm-rmsnorm.html"><span class="n">05</span><span><span class="t">Normalization: LayerNorm, RMSNorm, residual stream</span><span class="b">train with and without norm</span></span></a>
+    <a class="L" href="06-attention-core.html"><span class="n">06</span><span><span class="t">Self-attention from first principles</span><span class="b">numpy attention with masks</span></span></a>
+    <a class="L" href="07-multihead.html"><span class="n">07</span><span><span class="t">Multi-head and why heads</span><span class="b">head-slicing experiment</span></span></a>
+    <a class="L" href="08-positional.html"><span class="n">08</span><span><span class="t">Positional encoding to RoPE, ALiBi, NoPE</span><span class="b">RoPE rotation check</span></span></a>
+    <a class="L" href="09-kv-cache.html"><span class="n">09</span><span><span class="t">KV cache: the true cost of memory</span><span class="b">prefill vs decode model</span></span></a>
+    <a class="L" href="10-gqa-mqa.html"><span class="n">10</span><span><span class="t">MQA / GQA / MLA: the KV compression wars</span><span class="b">GQA mapper + memory table</span></span></a>
+    <a class="L" href="11-activations.html"><span class="n">11</span><span><span class="t">Activations: ReLU to GeLU to SwiGLU</span><span class="b">ablation on a toy MLP</span></span></a>
+    <a class="L" href="12-init.html"><span class="n">12</span><span><span class="t">Initialization and stability</span><span class="b">activation variance vs depth</span></span></a>
+    <a class="L" href="13-regularization.html"><span class="n">13</span><span><span class="t">Overfitting, dropout, weight decay</span><span class="b">train/val curve lab</span></span></a>
+    <a class="L" href="14-lr-schedules.html"><span class="n">14</span><span><span class="t">Learning-rate schedules and warmup</span><span class="b">cosine vs WSD</span></span></a>
+    <a class="L" href="15-batching-seqpack.html"><span class="n">15</span><span><span class="t">Batching, packing and attention masks</span><span class="b">mask unit tests</span></span></a>
+    <a class="L" href="16-loss-perplexity.html"><span class="n">16</span><span><span class="t">Cross-entropy, perplexity, bits-per-byte</span><span class="b">compute PPL by hand</span></span></a>
+    <a class="L" href="17-samplers.html"><span class="n">17</span><span><span class="t">Sampling: temperature, top-k, top-p, min-p</span><span class="b">sampler playground</span></span></a>
+    <a class="L" href="18-decoding-strategies.html"><span class="n">18</span><span><span class="t">Beam search, speculative, constrained decoding</span><span class="b">speculative decode model</span></span></a>
+    <a class="L" href="19-full-transformer.html"><span class="n">19</span><span><span class="t">The full transformer, assembled</span><span class="b">train a tiny GPT</span></span></a>
+    <a class="L" href="20-training-loop.html"><span class="n">20</span><span><span class="t">Training loop: checkpoints, accumulation, AMP</span><span class="b">resumable harness</span></span></a>
+    <a class="L" href="21-gpus-numerics.html"><span class="n">21</span><span><span class="t">GPUs, numerics, bf16/fp8, memory math</span><span class="b">VRAM estimator</span></span></a>
+    <a class="L" href="22-vector-search.html"><span class="n">22</span><span><span class="t">Cosine to ANN: IVF, HNSW, recall@k</span><span class="b">brute-force vs HNSW recall</span></span></a>
+    <a class="L" href="23-data-corpora.html"><span class="n">23</span><span><span class="t">Crawl, dedup, quality filters, mixtures</span><span class="b">dedup a toy corpus</span></span></a>
+    <a class="L" href="24-reading-code.html"><span class="n">24</span><span><span class="t">Reading a real model repo</span><span class="b">annotated source walkthrough</span></span></a>
+    <a class="L" href="25-foundations-capstone.html"><span class="n">25</span><span><span class="t">Capstone: GPT-2 scale truth check</span><span class="b">reproduce a GPT-2-small curve</span></span></a>
+  </div>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="../index.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">Course overview</span></a>
+  <a class="next" href="../track-b/index.html"><span class="dir">NEXT TRACK &rarr;</span><span class="ttl">Track B &middot; Scaling &amp; Architecture</span></a>
+</nav>
+
+</main>
+
+<footer>AILearn &middot; <a href="../about/calibration.html">level calibration</a> &middot; <a href="../tools/flashcards.html">flashcards</a></footer>
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b39">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L39 · CUDA / Triton / TileLang Kernels in Practice — AILearn</title>
+<meta name="description" content="Kernels are not micro-optimisation: a fused softmax is the difference between 30% and 90% of memory bandwidth, which is the difference between a viable and a non-viable serving cost.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L39</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L39 &middot; CUDA / Triton / TileLang Kernels in Practice</h1>
+  <p class="lede">The same softmax written as three framework ops versus one fused kernel moves 6&times; the bytes and runs 5&times; slower. Below the model there is a layer where the languages are Triton and TileLang, and where a wrong block size costs more than a wrong architecture.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: fused softmax in Triton (or simulated)</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">kernel fusion</span>
+  <span class="pill">Triton block program</span>
+  <span class="pill">TileLang tile language</span>
+  <span class="pill">SRAM staging</span>
+  <span class="pill">launch overhead</span>
+  <span class="pill">coalesced access</span>
+  <span class="pill">memory-bound kernels</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b39-s1">1 &middot; Why it exists <a class="hook" href="#b39-s1">#</a></h2>
+
+    <p>You can write a correct model in PyTorch and still pay 3&ndash;5&times; too much. The reason is that a framework
+    expresses computation as a graph of separate operations, and each operation is a separate kernel launch that writes its
+    output to HBM and reads it back at the next op.</p>
+
+    <p>Take softmax, the simplest non-trivial op, on a tensor of shape 1024 rows &times; 4096 columns in fp32
+    (16 MiB). The framework version is at least four kernels: subtract max, exponentiate, sum, divide. Each writes a 16 MiB
+    intermediate and the next one reads it. Traffic:</p>
+    <ul>
+      <li>read x (16 MiB) + write t1 (16) + read t1 (16) + write t2 (16) + read t2 (16) + write t3 (16) + read t3 (16) + write out (16) = <strong>128 MiB</strong> across four tmp/out-sized buffers (x read plus 3 buffers written and re-read plus the output), for an operation whose arithmetic is 1024 &times; 4096 &times; 4 FLOPs &asymp; 16.8 MFLOP.</li>
+      <li>Intensity is 1.68&times;10<sup>7</sup> / 1.34&times;10<sup>8</sup> = <strong>0.125 FLOP/byte</strong> against a ridge of 295 &mdash; 2,360&times; below it. It runs at 0.04% of peak math and ~100% of memory bandwidth.</li>
+      <li>A fused kernel does one read and one write: <strong>32 MiB</strong>, a 4&times; traffic reduction, and it is limited only by achievable HBM bandwidth.</li>
+    </ul>
+
+    <p>Scaled up, this is the difference between a 40% MFU training run and a 25% one, and between a serving cluster that pays
+    for 8 GPUs and one that pays for 3. Kernel work is where architecture becomes operational cost. The three practical
+    languages in 2026 <span class="asof">state as of 2026-10</span> are <strong>CUDA</strong> (total control, slowest to write), <strong>Triton</strong> (Python DSL,
+    block-level programs, what most research kernels use) and <strong>TileLang</strong> (a tile-oriented DSL that exposes
+    pipeline and layout control more directly than Triton while staying above raw CUDA).</p>
+
+    <div class="callout boss">
+      <p>A correct model is not a fast model. Software that raises effective FLOP/s above the memory bound is worth as much as
+      architecture changes, and it composes with them &mdash; you get both.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b39-s2">2 &middot; The mental model <a class="hook" href="#b39-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a workshop with a workbench (SRAM, ~228 KB per SM) and a warehouse (HBM, tens of
+    GB). A kernel is good when it carries a crate to the workbench once, does all the operations on it there, and carries the
+    result back. A framework graph is a process where each worker walks to the warehouse for every step.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Locality and trips dominate. Fusing two operations removes a
+      whole round trip; that is why fusion beats micro-optimising arithmetic.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>The workbench is tiny and shared by many threads. Fitting a block of data in
+      SRAM constrains the algorithms you can express (that is exactly why flash attention needed an online softmax), so fusion
+      is not free &mdash; it changes what is computable in one pass rather than merely how it is written.</p></div>
+    </div>
+
+    <h3>What a Triton program actually is</h3>
+    <p>Triton's unit of work is a <em>block</em> &mdash; you write one program that operates on a tile, and the compiler
+    launches many instances and manages SRAM/registers, swizzled layouts and vectorisation for you. TileLang exposes a further
+    layer: explicit tiles and copy/compute pipelines so you can express what a CUDA engineer would hand-write, without writing
+    CUDA. Both exist because hand-tuned CUDA kernels for each new attention variant stopped scaling as a strategy.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b39-s3">3 &middot; The mechanism <a class="hook" href="#b39-s3">#</a></h2>
+
+    <h3>The traffic model you must write before the kernel</h3>
+    <div class="formula">
+      bytes<sub>unfused</sub> = &sum;<sub>k</sub> 2 &times; N&thinsp;b &nbsp;&nbsp;vs&nbsp;&nbsp;
+      bytes<sub>fused</sub> = 2 &times; N&thinsp;b &nbsp;&nbsp;&nbsp;
+      speedup<sub>ceiling</sub> = k
+      <span class="note">k = number of fused ops, N = element count, b = bytes per element. Each unfused op pays a read and a write of the whole tensor; the fused version pays one of each regardless of k. So the ceiling on fusion speedup is the op count &mdash; and you get it only if the kernel is actually bandwidth-bound, which for elementwise chains it always is.</span>
+    </div>
+
+    <h3>Worked: softmax on 1024 &times; 4096, fp32</h3>
+    <table class="table">
+      <thead><tr><th>Implementation</th><th>Kernels</th><th>HBM traffic</th><th>Time at 1.5 TB/s achieved</th></tr></thead>
+      <tbody>
+        <tr><td>Framework (max, exp, sum, div)</td><td>4</td><td><strong>80 MiB</strong> (5 &times; 16 MiB, x read once)</td><td>55.9 &micro;s</td></tr>
+        <tr><td>Fused single kernel</td><td>1</td><td>16 + 16 = <strong>32 MiB</strong></td><td>22.4 &micro;s</td></tr>
+        <tr><td>Fused + fp32&rarr;bf16 output</td><td>1</td><td>16 MiB read + 8 MiB write = <strong>24 MiB</strong></td><td>16.8 &micro;s</td></tr>
+      </tbody>
+    </table>
+    <p>Note the arithmetic never changed: 16.8 MFLOP in every row. The 3.6&times; from 80 to 22.4 &micro;s is pure data movement, and the extra row shows
+    <em>the output dtype is a kernel decision too</em> &mdash; writing bf16 from a fused kernel saves another 8 MiB.</p>
+
+    <h3>Why block size matters so much</h3>
+    <p>A Triton softmax over rows of 4096 elements processes each row in tiles. With BLOCK = 1024, four tiles per row and a
+    cross-tile reduction; with BLOCK = 4096, one tile and no cross-tile pass but too much register pressure. To see the effect
+    numerically: the reduction has to carry a running max and sum, and each extra pass over the row is another read of the
+    tile.</p>
+    <table class="table">
+      <thead><tr><th>BLOCK for a 4096-wide row</th><th>Tiles per row</th><th>SRAM per tile, fp32</th><th>Registration pressure</th></tr></thead>
+      <tbody>
+        <tr><td>128</td><td>32</td><td>0.125 KiB</td><td>low, but 32 reduction steps (latency chain)</td></tr>
+        <tr><td>1,024</td><td>4</td><td>16 KiB</td><td>moderate &mdash; the usual choice</td></tr>
+        <tr><td>4,096</td><td>1</td><td>64 KiB</td><td>high; may spill registers and lose more than it saves</td></tr>
+      </tbody>
+    </table>
+    <p>The optimum is an empirical curve, not a law: bigger blocks reduce reduction steps but increase register pressure, and
+    the knee depends on the dtype and the row width. This is why kernel tuning is benchmark-driven and why autotuners exist.</p>
+
+    <h3>What fusion cannot fix</h3>
+    <div class="grid2">
+      <div class="card"><h4>Reductions across the whole tensor</h4><p>A global sum needs every element before it finishes, so it
+      cannot be fused into a producer without a two-pass or atomic scheme. Softmax avoids this by being row-wise.</p></div>
+      <div class="card"><h4>Launch overhead</h4><p>At small tensors, a kernel launch costs ~3&ndash;10 &micro;s of CPU/GPU
+      latency. Fusing 8 ops into 1 saves 7 launches &mdash; for a 100-element tensor that <em>dominates</em>. Your agent's per-request
+      tensors are often that small.</p></div>
+    </div>
+
+    <div class="callout audit">
+      <p>Kernel changes need a falsifiable measurement: achieved bandwidth (GB/s) as a fraction of the device peak, and achieved
+      FLOP/s as a fraction of MFU, logged before and after. Without those two ratios, &ldquo;we optimised the kernel&rdquo; is
+      indistinguishable from a regression that happened to ship with a faster GPU.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b39-s4">4 &middot; Your hands <a class="hook" href="#b39-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; a real Triton fused softmax (needs a GPU and `pip install triton`)</h4>
+      <p>The canonical first kernel: one program per row, whole row in a tile, numerically stable, one read and one write.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> torch, triton, triton.language <span class="kw">as</span> tl
+
+<span class="kw">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">softmax_kernel</span>(x_ptr, out_ptr, n_cols, stride, BLOCK: tl.constexpr):
+    row = tl.program_id(<span class="nm">0</span>)
+    cols = tl.arange(<span class="nm">0</span>, BLOCK)
+    mask = cols &lt; n_cols
+    x = tl.load(x_ptr + row * stride + cols, mask=mask, other=-<span class="fn">float</span>(<span class="st">'inf'</span>))
+    x = x - tl.max(x, axis=<span class="nm">0</span>)                  <span class="cm"># stability: subtract row max</span>
+    num = tl.exp(x)
+    y = num / tl.sum(num, axis=<span class="nm">0</span>)
+    tl.store(out_ptr + row * stride + cols, y, mask=mask)
+
+<span class="kw">def</span> <span class="fn">softmax_fused</span>(x):
+    rows, cols = x.shape
+    out = torch.empty_like(x)
+    BLOCK = triton.next_power_of_2(cols)
+    <span class="fn">softmax_kernel</span>[(rows,)](x, out, cols, x.stride(<span class="nm">0</span>), BLOCK=BLOCK)
+    <span class="kw">return</span> out
+
+x = torch.randn(<span class="nm">1024</span>, <span class="nm">4096</span>, device=<span class="st">'cuda'</span>)
+<span class="kw">print</span>((<span class="fn">softmax_fused</span>(x) - torch.softmax(x, dim=-<span class="nm">1</span>)).abs().max())   <span class="cm"># ~1e-7</span>
+      </div>
+      <p class="expect">Max error around 10<sup>-7</sup> (fp32 rounding, not an approximation). Then time it against
+      <code>torch.softmax</code> with <code>torch.cuda.synchronize()</code> outside the loop. <strong>Falsification of the fusion
+      story:</strong> if the fused kernel is not faster, PyTorch is already fusing this op &mdash; check with a profiler before
+      concluding that hand kernels do not help.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the traffic model, before you write any kernel</h4>
+      <p>Never start with code. Start with the byte count; if the ceiling improvement is not worth the maintenance, stop. This
+      script gives the ceiling.</p>
+      <div class="code" data-lang="bash">
+python -c "
+N=1024*4096
+for name,ops,fb in [('framework softmax',4,4),('fused fp32 out',1,4),('fused bf16 out',1,2)]:
+    rd = N*fb if name!='framework softmax' else N*4*4
+    wr = N*fb
+    total = rd+wr
+    print(f'{name:20s} kernels~{ops}  traffic={total/2**20:7.1f} MiB  at 1.5TB/s = {total/1.5e12*1e6:7.1f} us')
+"
+      </div>
+      <p class="expect">Framework 80.0 MiB / 55.9 &micro;s; fused fp32 32.0 MiB / 22.4 &micro;s; fused bf16 output 24.0 MiB /
+      16.8 &micro;s. Fusing is 2.5&times; on traffic and time; dropping the output to bf16 adds another 1.33&times;. Note that the
+      measured ratio (2.5&times;) is less than the ceiling implied by 4 kernels, because the first read of x is shared and the
+      framework version need not materialise every intermediate &mdash; which is why you measure rather than trust the op count.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; simulate the tiling to feel the reduction cost (no GPU needed)</h4>
+      <p>Model a tiled row-softmax in pure Python and count the reduction steps and tile reads for each block size. This is how
+      you choose BLOCK on a machine you do not have access to.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">tiled_cost</span>(cols, block, dtype_bytes=<span class="nm">4</span>):
+    tiles = -(-cols // block)                 <span class="cm"># ceil division</span>
+    tile_reads = tiles                        <span class="cm"># sequential passes over tiles</span>
+    reduction_steps = tiles                   <span class="cm"># running max + running sum per tile</span>
+    sram = block * dtype_bytes
+    <span class="kw">return</span> tiles, reduction_steps, tile_reads, sram
+
+<span class="kw">print</span>(<span class="st">"cols=4096"</span>)
+<span class="kw">for</span> b <span class="kw">in</span> (<span class="nm">128</span>, <span class="nm">256</span>, <span class="nm">512</span>, <span class="nm">1024</span>, <span class="nm">2048</span>, <span class="nm">4096</span>):
+    t, r, tr, s = <span class="fn">tiled_cost</span>(<span class="nm">4096</span>, b)
+    <span class="fn">print</span>(<span class="st">f"BLOCK={b:5d} tiles={t:3d} reduction_steps={r:3d} SRAM={s/1024:6.1f} KiB"</span>)
+      </div>
+      <p class="expect">BLOCK 128 gives 32 tiles and 32 reduction steps with 0.125 KiB of SRAM per tile; BLOCK 4096 gives
+      one tile and zero cross-tile reductions but 64 KiB per tile and far higher register pressure. The workable region is
+      BLOCK &isin; [256, 1024] in practice: enough tiles to fill the machine, few enough reduction steps to hide latency. That
+      trade is the entire art of writing the kernel.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b39-s5">5 &middot; Failure modes <a class="hook" href="#b39-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Fusing something that was not memory-bound.</strong> Symptom: lots of work, no speedup. Measure intensity first;
+        fusion only pays for bandwidth-bound op chains.</li>
+        <li><strong>Wrong dtype in the fused kernel.</strong> Symptom: correctness is fine but traffic is 2&times; too high, or
+        accumulated sum overflows in fp16. fp32 accumulation over a bf16/fp16 input is usually mandatory for reductions.</li>
+        <li><strong>Uncoalesced access.</strong> Symptom: achieved bandwidth is 20&ndash;40% of peak and no arithmetic fix helps.
+        Check that adjacent threads read adjacent addresses; strided loads are the classic cause.</li>
+        <li><strong>Silent autotune regression.</strong> Symptom: performance changes between runs on the same hardware because the
+        autotuner picked different configs, so A/B comparisons are noise. Pin the config for measurement, then autotune for
+        production.</li>
+        <li><strong>Numerical drift from reordering.</strong> Symptom: reduced-precision kernels produce slightly different outputs
+        run to run, which breaks exact-match determinism tests (L94). If you must reproduce bit-exactly, record the kernel
+        config alongside the seed.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b39-s6">6 &middot; Connects to <a class="hook" href="#b39-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L38 (IO-awareness) and L21 (GPU memory hierarchy). &nbsp;
+    <strong>Unlocks:</strong> L40 (quantization kernels), L44 (serving throughput) and L43 (MFU that is actually achieved).</p>
+    <ul>
+      <li><a class="tag-b" href="38-flash-attention.html">L38 &middot; FlashAttention</a> &mdash; the canonical IO-aware kernel.</li>
+      <li><a class="tag-a" href="../track-a/21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; SRAM, HBM, dtypes.</li>
+      <li><a class="tag-b" href="40-precision-quant.html">L40 &middot; Precision &amp; quantization</a> &mdash; kernels as the delivery mechanism for lower precision.</li>
+      <li><a class="tag-b" href="43-training-cost.html">L43 &middot; Training cost</a> &mdash; MFU is a kernel property.</li>
+      <li><a class="tag-d" href="../track-d/94-determinism.html">L94 &middot; Determinism</a> &mdash; why kernel config belongs in the reproducibility record.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b39-s7">7 &middot; Self-check <a class="hook" href="#b39-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A chain of 6 elementwise ops on a 100 MiB tensor, fp32. What is the traffic for the unfused version versus a fully fused one, and the speedup ceiling?</p>
+        <details><summary>Reveal answer</summary><p>Unfused: each op reads and writes once, so 6 &times; 2 &times; 100 MiB = 1.2 GiB. Fused: one read and one write
+        = 200 MiB. Traffic ratio = 6.14&times; and, being bandwidth-bound, the speedup ceiling is also ~6&times;. Note you cannot exceed the op
+        count &mdash; fusion removes round trips, not arithmetic.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> For a 4096-wide fp32 row-softmax with BLOCK = 256, how many tiles and reduction steps, and how much SRAM per tile?</p>
+        <details><summary>Reveal answer</summary><p>Tiles = ceil(4096/256) = 16. Reduction steps = 16 (running max and running sum per tile). SRAM per tile
+        = 256 &times; 4 B = 1 KiB. Against a 228 KB shared-memory budget that leaves enormous headroom &mdash; the constraint is not
+        SRAM but the latency chain of 16 dependent reduction steps, which is why you would raise BLOCK until register pressure or
+        the step count stops improving.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a fused kernel matches the reference numerically but is no faster than the framework chain. Two likely causes.</p>
+        <details><summary>Reveal answer</summary><p>(a) The framework was already fusing or using a fused backend (check with a profiler whether it launches 1
+        kernel or 4). (b) Your kernel is not bandwidth-limited but latency- or occupancy-limited: too few blocks to fill the SMs, or a
+        long dependent reduction chain. Also possible: memory access is uncoalesced, capping achieved bandwidth well below peak.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why does the fused-kernel speedup ceiling equal the op count only for bandwidth-bound chains?</p>
+        <details><summary>Reveal answer</summary><p>Fusion removes the read/write round trips, so it reduces bytes by a factor of k while leaving FLOPs unchanged. If the
+        original is bandwidth-bound that maps directly to time. If it is compute-bound, bytes were not the limiter &mdash; removing them
+        changes nothing and the ceiling is 1. That is why you compute intensity before writing a kernel.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> A vendor claims their kernel gives a 4&times; inference speedup. What four measurements do you request?</p>
+        <details><summary>Reveal answer</summary><p>(1) Achieved bandwidth as a % of device peak, before and after. (2) Achieved MFU/FLOP utilisation, before and after.
+        (3) The workload shape (batch size, sequence length, dtype) &mdash; kernel wins are shape-specific. (4) Whether the baseline was
+        the framework default or a fair tuned baseline. Without these, the 4&times; may be a comparison against a deliberately
+        slow path.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="38-flash-attention.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L38 &middot; FlashAttention and IO-awareness</span></a>
+    <a class="next" href="40-precision-quant.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L40 &middot; Precision &amp; quantization</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

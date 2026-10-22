@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c71">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L71 &middot; Agentic RL: credit assignment over long-horizon trajectories &mdash; AILearn</title>
+<meta name="description" content="Four credit estimators compared on one trajectory, the p^n success cliff for 40-step episodes, and the per-step signals you can actually verify.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L71</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L71 &middot; Agentic RL: credit assignment over long-horizon trajectories</h1>
+  <p class="lede">One terminal reward over forty tool calls, spread equally across every action: that is the default and it is wrong. This page swaps credit estimators on the same trajectory and shows exactly which step each one can and cannot see.</p>
+  <div class="chips">
+    <span class="chip">~27 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: multi-step credit assignment sim</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">credit assignment</span>
+  <span class="pill">trajectory advantage</span>
+  <span class="pill">discount horizon</span>
+  <span class="pill">value-based advantage</span>
+  <span class="pill">step-verified reward</span>
+  <span class="pill">sparse success</span>
+  <span class="pill">first-wrong step</span>
+  <span class="pill">episode budget</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c71-s1">1 &middot; Why it exists <a class="hook" href="#c71-s1">#</a></h2>
+
+    <p>A single-turn reasoning model gets a reward at the end of 500 tokens. An agent gets a reward at the
+    end of perhaps forty tool calls, and the failure this lesson exists to address is that
+    <strong>the same scalar credit is applied to every action in that trajectory</strong>. In GRPO the
+    advantage of a whole trajectory is one number, spread over every token of every call. A step that saved
+    the task and a step that recovered from a blunder get identical credit.</p>
+
+    <p>Worse, the arithmetic of long horizons amplifies it. If each step has probability p of being the right
+    move, a trajectory of n steps succeeds with roughly p<sup>n</sup> (lesson 60's reliability law, in the agent
+    setting). At p = 0.95 and n = 40, success is about 13%. The reward signal is therefore <em>sparse at the
+    trajectory level and abundant at the step level</em> &mdash; the exact inverse of what the optimiser needs.</p>
+
+    <div class="callout boss">
+      <p>Agentic RL is the credit-assignment problem from lesson 59 applied to trajectories that are long,
+      partly tool-determined and partly stochastic. Every practical method &mdash; step-level verifiers, process
+      rewards, discounted returns, hierarchical credit &mdash; is an attempt to convert one terminal scalar
+      into per-step signal without inventing a reward that lies.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c71-s2">2 &middot; The mental model <a class="hook" href="#c71-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> a trajectory is a sequence of (observation, action, reward) with the
+    only real reward at the end. Credit assignment asks: for each action, how much of the final outcome was
+    caused by it? Three estimators with different assumptions:</p>
+
+    <table class="table">
+      <thead><tr><th>Estimator</th><th>Per-step signal</th><th>Assumption</th><th>Fails when</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Trajectory advantage</strong> (GRPO default)</td><td>the same scalar for every step</td><td>All steps are equally responsible</td><td>Any long trajectory: good and bad steps get identical credit</td></tr>
+        <tr><td><strong>Discounted return</strong></td><td>&gamma;<sup>t</sup> &middot; R, so early steps count less</td><td>Earlier actions matter less</td><td>Often false &mdash; the first plan is the most consequential action in the whole episode</td></tr>
+        <tr><td><strong>Value-based advantage</strong></td><td>&gamma;V(s<sub>t+1</sub>) &minus; V(s<sub>t</sub>)</td><td>A value model that generalises across states</td><td>The value model is wrong exactly where the agent has never been</td></tr>
+        <tr><td><strong>Step-verified reward</strong></td><td>a checkable result per step (did the file change, did the test pass)</td><td>You can write per-step checks</td><td>Checks are missing or the task's value is in the whole, not the parts</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "long horizon" gets right</h4><p>It explains why agent runs need hundreds or
+      thousands of episodes per prompt and why the pass rate is the bottleneck: a 13% success rate with G = 8
+      samples leaves most groups with zero successes, which is the zero-variance failure of lesson 56 in its
+      most expensive form.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Agents are not Markov: the same tool call means different things
+      depending on what was learned earlier in the episode. A state value function over the transcript is a
+      massive extrapolation, and its errors are correlated with the policy's own unusual states.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c71-s3">3 &middot; The mechanism <a class="hook" href="#c71-s3">#</a></h2>
+
+    <p>Write the credit estimator so it can be swapped and compared, which is the only way to know whether it
+    is earning its complexity:</p>
+
+    <div class="formula">
+      A&#770;<sub>t</sub><sup>traj</sup> = R &nbsp;&nbsp;|&nbsp;&nbsp; A&#770;<sub>t</sub><sup>disc</sup> = &gamma;<sup>t</sup>R &nbsp;&nbsp;|&nbsp;&nbsp; A&#770;<sub>t</sub><sup>value</sup> = &gamma;V(s<sub>t+1</sub>) &minus; V(s<sub>t</sub>) &nbsp;&nbsp;|&nbsp;&nbsp; A&#770;<sub>t</sub><sup>step</sup> = r<sub>t</sub><sup>verified</sup> + &lambda;&middot;R
+      <span class="note">R is the episode outcome (0/1 or graded). r_t is any per-step verified signal. &lambda; keeps an episode-level term so step rewards cannot fully decouple from the task.</span>
+    </div>
+
+    <p>The lab builds a toy agent &mdash; a three-stage task with a recoverable failure &mdash; and compares how each
+    estimator allocates credit. The point is not which wins on the toy; it is to see the trajectory
+    estimator hand identical credit to a decisive first action and a wasted one.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L71: four credit estimators over the same agent trajectory. Pure stdlib.</span>
+<span class="cm"># A three-stage task: plan -&gt; act -&gt; verify. Stage 2 contains a recoverable blunder.</span>
+STEPS = [
+    (<span class="st">"s0"</span>, <span class="st">"read the task and write the plan"</span>,            <span class="st">"decisive"</span>,  +<span class="nm">1</span>),
+    (<span class="st">"s1"</span>, <span class="st">"call search_api with a wrong query"</span>,           <span class="st">"blunder"</span>,   -<span class="nm">1</span>),
+    (<span class="st">"s2"</span>, <span class="st">"read the error and retry with a fixed query"</span>,  <span class="st">"recovery"</span>,  +<span class="nm">1</span>),
+    (<span class="st">"s3"</span>, <span class="st">"parse the result and write the file"</span>,           <span class="st">"decisive"</span>,  +<span class="nm">1</span>),
+    (<span class="st">"s4"</span>, <span class="st">"verify the file parses"</span>,                        <span class="st">"neutral"</span>,    <span class="nm">0</span>),
+]
+R = <span class="nm">1.0</span>          <span class="cm"># episode succeeded</span>
+GAMMA = <span class="nm">0.9</span>
+<span class="cm"># a value model fit on this task family: V(s) = estimated success probability from that state</span>
+V = [<span class="nm">0.62</span>, <span class="nm">0.55</span>, <span class="nm">0.58</span>, <span class="nm">0.88</span>, <span class="nm">0.95</span>, <span class="nm">1.00</span>]
+<span class="cm"># per-step verified checks: did this step leave the state valid?</span>
+R_STEP = [<span class="nm">1</span>, <span class="nm">0</span>, <span class="nm">1</span>, <span class="nm">1</span>, <span class="nm">1</span>]          <span class="cm"># step 1 broke the state; step 2 repaired it</span>
+
+estimators = {
+    <span class="st">"trajectory (GRPO default)"</span>: [R <span class="kw">for</span> _ <span class="kw">in</span> STEPS],
+    <span class="st">"discounted 0.9"</span>:            [GAMMA ** t * R <span class="kw">for</span> t <span class="kw">in</span> range(len(STEPS))],
+    <span class="st">"value-based"</span>:               [V[t + <span class="nm">1</span>] - V[t] <span class="kw">for</span> t <span class="kw">in</span> range(len(STEPS))],
+    <span class="st">"step-verified (+0.3*R)"</span>:    [R_STEP[t] + <span class="nm">0.3</span> * R <span class="kw">for</span> t <span class="kw">in</span> range(len(STEPS))],
+}
+
+<span class="kw">print</span>(f<span class="st">"{'step':&lt;4}{'kind':&lt;10}{'what happened':&lt;38}"</span> + <span class="st">""</span>.join(f<span class="st">"{k[:11]:&gt;13}"</span> <span class="kw">for</span> k <span class="kw">in</span> estimators))
+<span class="kw">for</span> t, (sid, what, kind, intended) <span class="kw">in</span> enumerate(STEPS):
+    row = f<span class="st">"{sid:&lt;4}{kind:&lt;10}{what[:36]:&lt;38}"</span>
+    <span class="kw">for</span> k, vals <span class="kw">in</span> estimators.items():
+        row += f<span class="st">"{vals[t]:&gt;13.2f}"</span>
+    <span class="kw">print</span>(row)
+
+<span class="kw">print</span>(<span class="st">"\nintended credit (hand-assigned): "</span> + <span class="st">"  "</span>.join(
+    f<span class="st">"{sid}:{intended:+.0f}"</span> <span class="kw">for</span> sid, _, _, intended <span class="kw">in</span> STEPS))
+<span class="kw">print</span>(<span class="st">"\nread the trajectory row: every step gets +1.00, including the blunder."</span>)
+<span class="kw">print</span>(<span class="st">"read the discounted row: credit decays 0.9^t, so the plan -- the most consequential"</span>)
+<span class="kw">print</span>(<span class="st">"  action -- gets the LEAST credit."</span>)
+<span class="kw">print</span>(<span class="st">"read the value row: the plan is penalised and the recovery gets the most positive credit --"</span>)
+<span class="kw">print</span>(<span class="st">"  a value model fit on this family CAN see the blunder, which is why PPO returns for agents."</span>)
+</div><div class="code out-block" data-lang="output">
+stepkind      what happened                           trajectory   discounted   value-based  step-verifi
+s0  decisive  read the task and write the plan               1.00         1.00        -0.07         1.30
+s1  blunder   call search_api with a wrong query             1.00         0.90         0.03         0.30
+s2  recovery  read the error and retry with a fixe           1.00         0.81         0.30         1.30
+s3  decisive  parse the result and write the file            1.00         0.73         0.07         1.30
+s4  neutral   verify the file parses                         1.00         0.66         0.05         1.30
+
+intended credit (hand-assigned): s0:+1  s1:-1  s2:+1  s3:+1  s4:+0
+
+read the trajectory row: every step gets +1.00, including the blunder.
+read the discounted row: credit decays 0.9^t, so the plan -- the most consequential
+  action -- gets the LEAST credit.
+read the value row: the plan is penalised and the recovery gets the most positive credit --
+  a value model fit on this family CAN see the blunder, which is why PPO returns for agents.
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c71-s4">4 &middot; Your hands <a class="hook" href="#c71-s4">#</a></h2>
+
+    <p>Three labs: compare credit estimators on one trajectory, see the success-rate cliff as horizon grows, and
+    budget episodes for a target signal-to-noise ratio.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; four estimators on the same trajectory</h4>
+      <p>Five steps: a decisive plan, a blunder, a recovery, a decisive write, a neutral check. The episode succeeded. The table gives the credit each estimator assigns to each step, beside the hand-assigned intended credit.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L71: four credit estimators over the same agent trajectory. Pure stdlib.</span>
+<span class="cm"># A three-stage task: plan -&gt; act -&gt; verify. Stage 2 contains a recoverable blunder.</span>
+STEPS = [
+    (<span class="st">"s0"</span>, <span class="st">"read the task and write the plan"</span>,            <span class="st">"decisive"</span>,  +<span class="nm">1</span>),
+    (<span class="st">"s1"</span>, <span class="st">"call search_api with a wrong query"</span>,           <span class="st">"blunder"</span>,   -<span class="nm">1</span>),
+    (<span class="st">"s2"</span>, <span class="st">"read the error and retry with a fixed query"</span>,  <span class="st">"recovery"</span>,  +<span class="nm">1</span>),
+    (<span class="st">"s3"</span>, <span class="st">"parse the result and write the file"</span>,           <span class="st">"decisive"</span>,  +<span class="nm">1</span>),
+    (<span class="st">"s4"</span>, <span class="st">"verify the file parses"</span>,                        <span class="st">"neutral"</span>,    <span class="nm">0</span>),
+]
+R = <span class="nm">1.0</span>          <span class="cm"># episode succeeded</span>
+GAMMA = <span class="nm">0.9</span>
+<span class="cm"># a value model fit on this task family: V(s) = estimated success probability from that state</span>
+V = [<span class="nm">0.62</span>, <span class="nm">0.55</span>, <span class="nm">0.58</span>, <span class="nm">0.88</span>, <span class="nm">0.95</span>, <span class="nm">1.00</span>]
+<span class="cm"># per-step verified checks: did this step leave the state valid?</span>
+R_STEP = [<span class="nm">1</span>, <span class="nm">0</span>, <span class="nm">1</span>, <span class="nm">1</span>, <span class="nm">1</span>]          <span class="cm"># step 1 broke the state; step 2 repaired it</span>
+
+estimators = {
+    <span class="st">"trajectory (GRPO default)"</span>: [R <span class="kw">for</span> _ <span class="kw">in</span> STEPS],
+    <span class="st">"discounted 0.9"</span>:            [GAMMA ** t * R <span class="kw">for</span> t <span class="kw">in</span> range(len(STEPS))],
+    <span class="st">"value-based"</span>:               [V[t + <span class="nm">1</span>] - V[t] <span class="kw">for</span> t <span class="kw">in</span> range(len(STEPS))],
+    <span class="st">"step-verified (+0.3*R)"</span>:    [R_STEP[t] + <span class="nm">0.3</span> * R <span class="kw">for</span> t <span class="kw">in</span> range(len(STEPS))],
+}
+
+<span class="kw">print</span>(f<span class="st">"{'step':&lt;4}{'kind':&lt;10}{'what happened':&lt;38}"</span> + <span class="st">""</span>.join(f<span class="st">"{k[:11]:&gt;13}"</span> <span class="kw">for</span> k <span class="kw">in</span> estimators))
+<span class="kw">for</span> t, (sid, what, kind, intended) <span class="kw">in</span> enumerate(STEPS):
+    row = f<span class="st">"{sid:&lt;4}{kind:&lt;10}{what[:36]:&lt;38}"</span>
+    <span class="kw">for</span> k, vals <span class="kw">in</span> estimators.items():
+        row += f<span class="st">"{vals[t]:&gt;13.2f}"</span>
+    <span class="kw">print</span>(row)
+
+<span class="kw">print</span>(<span class="st">"\nintended credit (hand-assigned): "</span> + <span class="st">"  "</span>.join(
+    f<span class="st">"{sid}:{intended:+.0f}"</span> <span class="kw">for</span> sid, _, _, intended <span class="kw">in</span> STEPS))
+<span class="kw">print</span>(<span class="st">"\nread the trajectory row: every step gets +1.00, including the blunder."</span>)
+<span class="kw">print</span>(<span class="st">"read the discounted row: credit decays 0.9^t, so the plan -- the most consequential"</span>)
+<span class="kw">print</span>(<span class="st">"  action -- gets the LEAST credit."</span>)
+<span class="kw">print</span>(<span class="st">"read the value row: the plan is penalised and the recovery gets the most positive credit --"</span>)
+<span class="kw">print</span>(<span class="st">"  a value model fit on this family CAN see the blunder, which is why PPO returns for agents."</span>)
+</div><div class="code out-block" data-lang="output">
+stepkind      what happened                           trajectory   discounted   value-based  step-verifi
+s0  decisive  read the task and write the plan               1.00         1.00        -0.07         1.30
+s1  blunder   call search_api with a wrong query             1.00         0.90         0.03         0.30
+s2  recovery  read the error and retry with a fixe           1.00         0.81         0.30         1.30
+s3  decisive  parse the result and write the file            1.00         0.73         0.07         1.30
+s4  neutral   verify the file parses                         1.00         0.66         0.05         1.30
+
+intended credit (hand-assigned): s0:+1  s1:-1  s2:+1  s3:+1  s4:+0
+
+read the trajectory row: every step gets +1.00, including the blunder.
+read the discounted row: credit decays 0.9^t, so the plan -- the most consequential
+  action -- gets the LEAST credit.
+read the value row: the plan is penalised and the recovery gets the most positive credit --
+  a value model fit on this family CAN see the blunder, which is why PPO returns for agents.
+</div>
+      <p class="expect">The trajectory row hands +1.00 to every step, including the blunder. The discounted row gives the plan the least credit because it came first. The value-based row penalises the plan and rewards the recovery: a value model fit on this family can see the structure, which is why PPO-style methods still matter for agents. The step-verified row separates every step, at the price of a check you have to write.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the sparse-success cliff</h4>
+      <p>Trajectory success is p<sup>n</sup>, and a group is only useful if at least one of its G samples succeeds. This script tabulates both, plus the effective discount horizon.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L71: the sparse-success cliff. Trajectory success is p^n, so what fraction of groups</span>
+<span class="cm"># carry ANY gradient at all? Pure stdlib.</span>
+GAMMA_HORIZON = (<span class="nm">0.9</span>, <span class="nm">0.99</span>)
+
+
+<span class="kw">def</span> p_traj(p_step, n):
+    <span class="kw">return</span> p_step ** n
+
+
+<span class="kw">print</span>(f<span class="st">"{'steps n':&gt;8}"</span> + <span class="st">""</span>.join(f<span class="st">"{'p=' + str(p):&gt;10}"</span> <span class="kw">for</span> p <span class="kw">in</span> (<span class="nm">0.99</span>, <span class="nm">0.97</span>, <span class="nm">0.95</span>, <span class="nm">0.90</span>)))
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>, <span class="nm">40</span>, <span class="nm">80</span>):
+    <span class="kw">print</span>(f<span class="st">"{n:&gt;8}"</span> + <span class="st">""</span>.join(f<span class="st">"{p_traj(p, n):&gt;10.3f}"</span> <span class="kw">for</span> p <span class="kw">in</span> (<span class="nm">0.99</span>, <span class="nm">0.97</span>, <span class="nm">0.95</span>, <span class="nm">0.90</span>)))
+
+<span class="kw">print</span>(<span class="st">"\nfraction of GROUPS with at least one success, for G samples (non-zero advantage possible):"</span>)
+<span class="kw">print</span>(f<span class="st">"{'steps n':&gt;8}{'p=0.95, G=8':&gt;14}{'p=0.95, G=32':&gt;14}{'p=0.97, G=8':&gt;14}"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">5</span>, <span class="nm">10</span>, <span class="nm">20</span>, <span class="nm">40</span>, <span class="nm">80</span>):
+    row = <span class="st">""</span>
+    <span class="kw">for</span> p, G <span class="kw">in</span> ((<span class="nm">0.95</span>, <span class="nm">8</span>), (<span class="nm">0.95</span>, <span class="nm">32</span>), (<span class="nm">0.97</span>, <span class="nm">8</span>)):
+        s = p_traj(p, n)
+        row += f<span class="st">"{1 - (1 - s) ** G:&gt;14.3f}"</span>
+    <span class="kw">print</span>(f<span class="st">"{n:&gt;8}{row}"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nthe same number as 'expected groups per useful gradient':"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">10</span>, <span class="nm">20</span>, <span class="nm">40</span>):
+    s = <span class="nm">0.95</span> ** n
+    <span class="kw">print</span>(f<span class="st">"  n={n:&gt;2}: per-group signal probability {1 - (1 - s) ** 8:.3f} -&gt; "</span>
+          f<span class="st">"{1 / (1 - (1 - s) ** 8):.1f} groups needed per one that teaches anything"</span>)
+
+<span class="kw">print</span>(<span class="st">"\ndiscount horizon: 1/(1-gamma) steps of effective memory"</span>)
+<span class="kw">for</span> g <span class="kw">in</span> GAMMA_HORIZON:
+    <span class="kw">print</span>(f<span class="st">"  gamma={g}: effective horizon {1 / (1 - g):.1f} steps"</span>)
+</div><div class="code out-block" data-lang="output">
+ steps n    p=0.99    p=0.97    p=0.95     p=0.9
+       1     0.990     0.970     0.950     0.900
+       5     0.951     0.859     0.774     0.590
+      10     0.904     0.737     0.599     0.349
+      20     0.818     0.544     0.358     0.122
+      40     0.669     0.296     0.129     0.015
+      80     0.448     0.087     0.017     0.000
+
+fraction of GROUPS with at least one success, for G samples (non-zero advantage possible):
+ steps n   p=0.95, G=8  p=0.95, G=32   p=0.97, G=8
+       5         1.000         1.000         1.000
+      10         0.999         1.000         1.000
+      20         0.971         1.000         0.998
+      40         0.667         0.988         0.939
+      80         0.125         0.413         0.519
+
+the same number as 'expected groups per useful gradient':
+  n=10: per-group signal probability 0.999 -&gt; 1.0 groups needed per one that teaches anything
+  n=20: per-group signal probability 0.971 -&gt; 1.0 groups needed per one that teaches anything
+  n=40: per-group signal probability 0.667 -&gt; 1.5 groups needed per one that teaches anything
+
+discount horizon: 1/(1-gamma) steps of effective memory
+  gamma=0.9: effective horizon 10.0 steps
+  gamma=0.99: effective horizon 100.0 steps
+</div>
+      <p class="expect">At p = 0.95 and n = 40, trajectory success is 0.129 and only 67% of G=8 groups contain a success; at n = 80 it is 0.017 and 12.5%. That is the quantitative reason agent RL needs high per-step reliability before it starts &mdash; and why a discount of 0.9, with an effective horizon of 10 steps, is measuring something much shorter than the episode you are training.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; first-wrong-step against credit sign</h4>
+      <p>The audit table for an agent run. One row per failed episode; read down the last column.</p>
+      <div class="code" data-lang="text">
+episode | steps | first step that went wrong | kind (plan/exec/verify) | credit sign there
+    104 |    12 | s2 wrong tool selected        | plan                    | +
+    105 |    31 | s17 schema-invalid argument  | exec                    | +
+    106 |     8 | s1 misread the instruction   | plan                    | +
+    107 |    26 | s19 ignored the tool result  | verify                  | +
+      </div>
+      <p class="expect">Positive credit at every first-wrong step means the estimator cannot see failure at all: the run is training"
+      " behaviour that happens to precede success, not behaviour that causes it. An hour of review per hundred episodes produces the only"
+      " direct evidence about credit assignment you can get.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c71-s5">5 &middot; Failure modes <a class="hook" href="#c71-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Credit smearing.</strong> Symptom: training reward and final success both rise slowly, and error analysis shows the policy repeating a bad middle step that is never penalised; the trajectory estimator cannot isolate it.</li>
+        <li><strong>Sparse success.</strong> Symptom: most groups have no successful episode; zero-variance fraction above 50% and cost per useful gradient explodes.</li>
+        <li><strong>Reward from tool side effects.</strong> Symptom: the agent learns to trigger state changes the verifier checks rather than to complete the task; check that the verifier asserts the end state you intended, not an intermediate one.</li>
+        <li><strong>Episode budget gaming.</strong> Symptom: agents that terminate early with partial work score as well as complete ones because the verifier is a prefix check.</li>
+        <li><strong>Environment flakiness.</strong> Symptom: identical seeds give different outcomes; reward noise from the environment is indistinguishable from learning noise. Seed everything.</li>
+        <li><strong>Discount misuse.</strong> Symptom: with &gamma; = 0.9 over 40 steps the effective horizon is about 10, so the agent optimises the last ten actions and ignores the plan that determined everything.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Log per episode: steps, outcome, which step first went wrong (human or checker), and the credit each
+      step received. A table of "first-wrong step" against "credit sign" shows immediately whether your
+      estimator can see the failure at all &mdash; and that table is the evidence a reviewer should ask for.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c71-s6">6 &middot; Connects to <a class="hook" href="#c71-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="59-process-reward.html">L59 &middot; Process rewards</a>,
+    <a class="tag-c" href="70-tool-use-training.html">L70 &middot; Tool-use training</a>,
+    <a class="tag-c" href="56-grpo.html">L56 &middot; GRPO</a>.</p>
+    <p><strong>Unlocks:</strong> long-horizon agent training and the production agent track.</p>
+
+    <ul>
+      <li><a class="tag-c" href="67-data-synthesis.html">L67 &middot; Environment synthesis</a> &mdash; where the environments come from.</li>
+      <li><a class="tag-d" href="../track-d/82-long-horizon.html">L82 &middot; Long-horizon autonomy</a> &mdash; the same compounding arithmetic in production.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; longer horizons mean more surface.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c71-s7">7 &middot; Self-check <a class="hook" href="#c71-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does a discount factor of 0.9 over a 40-step episode effectively blind the optimiser to the plan?</p>
+        <details><summary>Reveal answer</summary><p>The weight on step t is &gamma;<sup>t</sup>, so the effective horizon is about 1/(1&minus;&gamma;) = 10 steps: step 30 carries 0.9<sup>30</sup>&asymp; 0.04 of the credit of step 0, and the first few decisions &mdash; which determine the whole trajectory &mdash; receive almost none of thesignal. Discounting is a modelling choice that assumes rewards arrive soon; in agents they often arrive only at the end, and theassumption is exactly backwards.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: 40-step episodes, per-step success probability 0.95, G=8 samples per task. What fraction of groups contain at least one success, and what does that imply?</p>
+        <details><summary>Reveal answer</summary><p>Trajectory success &asymp; 0.95<sup>40</sup> &asymp; 0.129. P(at least one of 8 succeeds) = 1 &minus; (1&minus;0.129)<sup>8</sup> &asymp; 0.67. Soabout a third of groups contain no success at all and contribute no gradient. The implication is that agent RL needs either higherper-step reliability (better SFT before RL), shorter horizons, or more samples &mdash; and that the cost per useful gradient risesquickly as horizon grows.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Name two per-step signals you can verify cheaply in an agent that writes code to disk, and one you cannot.</p>
+        <details><summary>Reveal answer</summary><p>Verifiable cheaply: (1) the file exists and parses as the expected language; (2) the targeted test passes after the edit.Not verifiable cheaply: whether the design is the one a maintainer would want &mdash; that is a judgement, so it belongs to alearned critic with all the correlated-error problems of lesson 68.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: training reward climbs, final success is flat, and the episode length grows. What is the likely estimator defect and the first check?</p>
+        <details><summary>Reveal answer</summary><p>The estimator rewards intermediate activity &mdash; step checks that pass regardless of the final state, or a reward that pays for toolcalls. First check: recompute the reward with the final-state term only and compare trajectories. If the ranking changes, theintermediate terms dominate and the optimiser is maximising them.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is 'first-wrong-step' analysis more informative than final accuracy for an agent?</p>
+        <details><summary>Reveal answer</summary><p>Final accuracy is one bit per episode; the first-wrong step localises where the policy fails, which is the information needed todecide between a plan defect (early), an execution defect (middle), and a verification defect (late). Training changes that targetone category are invisible in aggregate accuracy until they dominate.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="70-tool-use-training.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L70 &middot; Training tool use: format, execution feedback, recovery</span></a>
+    <a class="next" href="72-constitutional.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L72 &middot; Constitutional AI and rubric-based judging</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

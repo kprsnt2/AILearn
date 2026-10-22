@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d94">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L94 · Determinism &amp; reproducibility at temperature≠0 — AILearn</title>
+<meta name="description" content="Temperature 0 is not deterministic. A 0.01 logit gap flips 36% of the time under 0.02 numerical noise. Ten sources of variance, a five-step seed audit, and the manifest that makes a run replayable.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L94</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L94 &middot; Determinism &amp; reproducibility at temperature&ne;0</h1>
+  <p class="lede">Temperature 0 does not give you determinism &mdash; it gives you determinism <em>up to numerical noise</em>. A logit gap of 0.01 under noise of &sigma;=0.02 flips the greedy choice <strong>36%</strong> of the time. Ten sources of variance, and a seed audit that tells you which ones are live in your stack.</p>
+  <div class="chips">
+    <span class="chip">~40 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: seed-audit protocol + reproducibility manifest</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">greedy is not deterministic</span>
+  <span class="pill">numerical noise vs logit gap</span>
+  <span class="pill">batching / reduction order</span>
+  <span class="pill">kernel selection</span>
+  <span class="pill">MoE routing nondeterminism</span>
+  <span class="pill">per-token flip rate</span>
+  <span class="pill">divergence amplification</span>
+  <span class="pill">reproducibility manifest</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d94-s1">1 &middot; Why it exists <a class="hook" href="#d94-s1">#</a></h2>
+
+    <p>The failure: <strong>you cannot reproduce your own bug.</strong> A run produced a wrong answer. You rerun with the same
+    prompt, the same model id, temperature 0, and the same seed &mdash; and get a different answer, so the bug is gone. You rerun
+    again and it comes back. Every claim you make about the system is now conditional on a run you cannot re-enter, and the
+    segment of your work that depends on "this specific bad output" is unreviewable.</p>
+
+    <p>The root cause is a belief that temperature 0 means deterministic. It does not. Temperature 0 means <em>argmax</em> &mdash; and
+    argmax is a discontinuous function of the logits. If two candidate tokens have logits within the noise floor of the
+    computation, an epsilon change in floating-point accumulation order flips the winner, and the rest of the sequence
+    diverges. The noise floor is not small: differing batch composition, a different fused kernel, a different fp8 scaling
+    path, a different GPU reduction order, and MoE routing decisions all move logits by amounts comparable to a near-tie.</p>
+
+    <p>The second failure is measurement: <strong>a nondeterministic system makes every eval noisy in a way that is not sampling
+    noise.</strong> Two runs of the identical eval on the identical golden set give different pass rates, and <code>pass^k</code>
+    (L88) becomes uninterpretable because it assumes independent runs. If runs are correlated because most tokens are
+    stable, the effective variance is lower than independence predicts; if a single flip cascades, it is higher.</p>
+
+    <div class="callout boss">
+      <p>Determinism is a <strong>property you declare and bound, not one you assume.</strong> Either you pin every source of
+      variance and verify byte-identical output, or you accept nondeterminism and report a <em>tolerance</em>: which outputs are
+      stable, at what rate they flip, and what that implies for your typical sequence length. A run without a manifest is not
+      reproducible &mdash; it is remembered.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d94-s2">2 &middot; The mental model <a class="hook" href="#d94-s2">#</a></h2>
+
+    <p>Nondeterminism enters at <strong>ten distinct layers</strong>. They are not interchangeable: each needs a different instrument
+    to detect and a different pin to remove.</p>
+
+    <table class="table">
+      <thead><tr><th>Layer</th><th>Source</th><th>Active when</th><th>Pin / bound by</th></tr></thead>
+      <tbody>
+        <tr><td>Sampling</td><td>temperature, top-p, top-k, seed</td><td><code>temperature &gt; 0</code>, or seed not honored</td><td>greedy + explicit seed; verify the seed is accepted</td></tr>
+        <tr><td>Sampling</td><td>seed ignored by the server</td><td>always, on providers that do not implement it</td><td>measure: same seed, 10 runs, count distinct hashes</td></tr>
+        <tr><td><strong>Batching</strong></td><td>batch composition changes reduction order</td><td>continuous batching, variable concurrency</td><td>fixed batch shape, or record batch id and compare within-batch</td></tr>
+        <tr><td><strong>Numerics</strong></td><td>fp16 / bf16 / fp8 accumulation order</td><td>mixed precision, quantized weights</td><td>fixed precision + kernel; tolerant comparison on logits</td></tr>
+        <tr><td><strong>Kernels</strong></td><td>different fused kernels for the same math</td><td>library or driver upgrade; sequence-length switches</td><td>pin library, CUDA/driver, GPU model</td></tr>
+        <tr><td><strong>MoE routing</strong></td><td>router top-k ties, capacity overflow, token dropping</td><td>sparse models under load</td><td>record a routing hash; pin expert capacity</td></tr>
+        <tr><td>Serving</td><td>model revision, quantization variant, context variant</td><td>provider deploys behind a stable name</td><td>pin and record the revision hash</td></tr>
+        <tr><td>Serving</td><td>prefix-cache hit / eviction</td><td>caching enabled (L45)</td><td>record cache hit per turn; test with caching off</td></tr>
+        <tr><td>Infra</td><td>multi-GPU reduce order (TP / EP topology)</td><td>tensor or expert parallelism</td><td>pin topology; pin replica count</td></tr>
+        <tr><td><strong>Inputs</strong></td><td>wall-clock time, tool result ordering, dict iteration</td><td>almost always</td><td>inject a clock; sort deterministically; freeze the corpus index</td></tr>
+      </tbody>
+    </table>
+
+    <p>The last row is the one people miss, and it is entirely under your control: an agent that pastes a timestamp into its
+    system prompt, or iterates a dict whose order depends on insertion history, produces different prompts for identical
+    logical inputs. That is nondeterminism you can delete with a code change.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a physical measurement with a noise floor</h4><p>Temperature 0 gives you the same <em>answer</em> unless the top-two logits are within the instrument's noise floor &mdash; then it is a coin flip. A measurement instrument does not become deterministic because you set its dial to a fixed value; it has a resolution, and readings closer than that resolution are not reproducible.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>An instrument's noise is random and averaging fixes it. Model noise is <em>systematic per configuration</em>: the same batch shape gives the same result every time, so two people with different batch sizes get stable-but-different outputs and each believes their run is reproducible. Averaging across runs does not converge to a canonical answer, because there is no canonical answer &mdash; there is a distribution over configurations. This is why you must record the configuration, not repeat the run.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d94-s3">3 &middot; The mechanism <a class="hook" href="#d94-s3">#</a></h2>
+
+    <p>Greedy decoding selects <code>argmax</code>, so a flip requires only that the noise exceed the logit gap. With Gaussian
+    noise of scale <code>&sigma;</code> on each logit and a gap <code>g</code>, the probability the lower-logit token wins is:</p>
+
+    <div class="formula">
+      P(flip) = &Phi;( &minus;g / (&sigma;&radic;2) )
+      <span class="note"><code>&Phi;</code> = standard normal CDF. At <code>g=0.01, &sigma;=0.02</code>: <code>&Phi;(&minus;0.354) = 0.362</code> &mdash; the wrong token wins <strong>36%</strong> of the time. At <code>g=0.1</code>: <code>&Phi;(&minus;3.54) = 0.0002</code>. The practical rule: <strong>a greedy decision is only stable when the gap exceeds roughly 4&sigma;</strong>.</span>
+    </div>
+
+    <p>One flip is not one bad token &mdash; it is a different continuation. If the per-token flip probability is <code>f</code>, a
+    sequence of <code>n</code> tokens diverges with probability:</p>
+
+    <div class="formula">
+      P(diverge) = 1 &minus; (1&minus;f)<sup>n</sup>
+      <span class="note">At <code>f = 10<sup>&minus;4</sup></code>: 100 tokens &rarr; 1.0%, 500 &rarr; 4.9%, 2,000 &rarr; <strong>18.1%</strong>. At <code>f = 10<sup>&minus;3</sup></code>: 500 &rarr; 39.4%, 2,000 &rarr; 86.5%. A per-token instability that sounds negligible (one in ten thousand) becomes a one-in-five chance of a different answer at agent-scale output length.</span>
+    </div>
+
+    <p>The seed audit. Five steps, each producing a recorded artifact.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json
+
+<span class="cm"># ---- STEP 1: capture. The manifest is the artifact; omitting a field</span>
+<span class="cm"># ---- makes the run unreplayable no matter what else you logged.</span>
+<span class="kw">def</span> <span class="fn">manifest</span>(model_id, revision, tokenizer_hash, temperature, top_p,
+             seed, max_tokens, sys_hash, tools_hash, libs, endpoint):
+    <span class="kw">return</span> {
+        <span class="st">"model_id"</span>: model_id, <span class="st">"model_revision_hash"</span>: revision,
+        <span class="st">"tokenizer_hash"</span>: tokenizer_hash,
+        <span class="st">"temperature"</span>: temperature, <span class="st">"top_p"</span>: top_p, <span class="st">"seed"</span>: seed,
+        <span class="st">"max_tokens"</span>: max_tokens,
+        <span class="st">"system_prompt_hash"</span>: sys_hash, <span class="st">"tools_schema_hash"</span>: tools_hash,
+        <span class="st">"lib_versions"</span>: libs, <span class="st">"serving_endpoint"</span>: endpoint,
+    }
+
+<span class="kw">def</span> <span class="fn">mhash</span>(m):
+    <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(json.<span class="fn">dumps</span>(m, sort_keys=<span class="kw">True</span>).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()
+
+<span class="cm"># ---- STEP 2: repeat. Same manifest, N identical requests.</span>
+<span class="kw">def</span> <span class="fn">repeat_audit</span>(call_fn, m, n=<span class="nm">10</span>):
+    outs = [<span class="fn">call_fn</span>(m) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(n)]
+    hashes = {hashlib.<span class="fn">sha256</span>(o.<span class="fn">encode</span>()).<span class="fn">hexdigest</span>() <span class="kw">for</span> o <span class="kw">in</span> outs}
+    <span class="kw">return</span> {<span class="st">"n"</span>: n, <span class="st">"distinct"</span>: <span class="fn">len</span>(hashes),
+            <span class="st">"deterministic"</span>: <span class="fn">len</span>(hashes) == <span class="nm">1</span>,
+            <span class="st">"hashes"</span>: <span class="fn">sorted</span>(hashes)}
+
+<span class="cm"># ---- STEP 4: bound. Estimate the per-token flip rate from divergent pairs,</span>
+<span class="cm"># ---- then compute divergence probability at YOUR typical output length.</span>
+<span class="kw">def</span> <span class="fn">expected_divergence</span>(f_token, n_tokens):
+    <span class="kw">return</span> <span class="nm">1</span> - (<span class="nm">1</span> - f_token) ** n_tokens
+
+<span class="kw">def</span> <span class="fn">flip_rate_from_pairs</span>(pairs):
+    <span class="cm"># pairs: [(tokens_a, tokens_b)] aligned by position; count first divergence</span>
+    first_diffs = []
+    <span class="kw">for</span> a, b <span class="kw">in</span> pairs:
+        d = <span class="fn">next</span>((i <span class="kw">for</span> i, (x, y) <span class="kw">in</span> <span class="fn">enumerate</span>(<span class="fn">zip</span>(a, b)) <span class="kw">if</span> x != y), <span class="kw">None</span>)
+        <span class="kw">if</span> d <span class="kw">is</span> <span class="kw">not</span> <span class="kw">None</span>:
+            first_diffs.<span class="fn">append</span>(d)
+    <span class="kw">if</span> <span class="kw">not</span> first_diffs:
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="cm"># crude but honest: geometric fit on the first-divergence positions</span>
+    <span class="kw">return</span> <span class="nm">1.0</span> / (<span class="fn">sum</span>(first_diffs) / <span class="fn">len</span>(first_diffs) + <span class="nm">1</span>)
+
+<span class="cm"># ---- STEP 5: gate. Declare the reproducibility class.</span>
+<span class="kw">def</span> <span class="fn">gate</span>(audit, f_token, typical_len=<span class="nm">800</span>, tol=<span class="nm">0.01</span>):
+    <span class="kw">if</span> audit[<span class="st">"deterministic"</span>]:
+        <span class="kw">return</span> <span class="st">"BYTE_REPRODUCIBLE"</span>
+    div = <span class="fn">expected_divergence</span>(f_token, typical_len)
+    <span class="kw">if</span> div &lt;= tol:
+        <span class="kw">return</span> <span class="st">f"TOLERANT_REPRODUCIBLE (divergence {div:.4f} &lt;= {tol})"</span>
+    <span class="kw">return</span> <span class="st">f"NOT_REPRODUCIBLE (divergence {div:.4f})"</span>
+    </div>
+
+    <p>Three things in that code are the protocol. <strong>(1) The manifest contains hashes of everything the model saw</strong> &mdash;
+    system prompt, tool schemas, tokenizer &mdash; because a change in any of them invalidates a rerun and none of them appears in
+    a provider's model id. <strong>(2) <code>repeat_audit</code> returns the distinct hash count, not a boolean pass</strong>: knowing
+    "3 distinct outputs in 10 runs" tells you the flip rate; "failed" does not. <strong>(3) The gate declares a class</strong> &mdash;
+    byte-reproducible, tolerant-reproducible within a bound, or not reproducible &mdash; and records which. An honest
+    "not reproducible, divergence 18% at our length" is more useful than a false claim of determinism.</p>
+
+    <div class="callout audit">
+      <p>The audit artifact is a <strong>reproducibility manifest attached to every run</strong>, plus the audit result for that
+      manifest. With it, a reviewer can attempt a replay and know in advance whether a mismatch means a bug or the noise floor.
+      Without it, "it worked on my run" is unfalsifiable, and an incident review cannot distinguish a model change from a batch
+      boundary.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d94-s4">4 &middot; Your hands <a class="hook" href="#d94-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Greedy flips when the gap is inside the noise floor</h4>
+      <p>Two candidate tokens with logit gap <code>g</code> and Gaussian computational noise <code>&sigma;</code>. Sweep the gap.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> random
+
+<span class="kw">def</span> <span class="fn">flip_rate</span>(gap, sigma=<span class="nm">0.02</span>, trials=<span class="nm">20000</span>, seed=<span class="nm">0</span>):
+    rng = random.<span class="fn">Random</span>(seed)
+    flips = <span class="nm">0</span>
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(trials):
+        a = <span class="nm">10.0</span> + rng.<span class="fn">gauss</span>(<span class="nm">0</span>, sigma)
+        b = (<span class="nm">10.0</span> - gap) + rng.<span class="fn">gauss</span>(<span class="nm">0</span>, sigma)
+        flips += (b &gt; a)                 <span class="cm"># greedy picks b when noise beats the gap</span>
+    <span class="kw">return</span> flips / trials
+
+<span class="kw">for</span> gap <span class="kw">in</span> (<span class="nm">0.0</span>, <span class="nm">0.001</span>, <span class="nm">0.01</span>, <span class="nm">0.02</span>, <span class="nm">0.05</span>, <span class="nm">0.1</span>, <span class="nm">1.0</span>):
+    print(<span class="st">f"gap={gap:5.3f} sigma=0.02 -&gt; wrong token wins {flip_rate(gap):7.3%}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>gap=0.000 &rarr; 50.4%</code> &middot; <code>0.001 &rarr; 48.9%</code> &middot;
+      <code>0.010 &rarr; 36.2%</code> &middot; <code>0.100 &rarr; 0.045%</code> &middot; <code>1.000 &rarr; 0.000%</code>.
+      The cliff is between <code>g=0.01</code> and <code>g=0.1</code> &mdash; roughly <code>g &asymp; 4&sigma;</code>. <strong>A 0.01 logit gap
+      is not "almost decided"; it is a coin flip with a bias.</strong> And near-ties in a language model are not rare: high-frequency
+      tokens, adjacent word choices, and formatting tokens routinely sit within a few hundredths of each other.
+      <strong>Falsifier:</strong> if your repeated temp-0 runs are always identical, either every decision in your outputs has a
+      gap far above the noise floor (possible for short, formulaic outputs) or your sampling path is pinned harder than you think
+      &mdash; test with a prompt that forces near-ties (e.g. "pick a number between 1 and 10") and see whether run-to-run
+      variation appears.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; A tiny per-token flip becomes a large divergence probability</h4>
+      <p>If any token in a sequence flips, the continuation changes. Sweep the per-token rate against output length.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">diverge</span>(f_token, n_tokens):
+    <span class="kw">return</span> <span class="nm">1</span> - (<span class="nm">1</span> - f_token) ** n_tokens
+
+print(<span class="st">"f_token    n=100    n=500    n=2000"</span>)
+<span class="kw">for</span> f <span class="kw">in</span> (<span class="nm">1e-6</span>, <span class="nm">1e-5</span>, <span class="nm">1e-4</span>, <span class="nm">1e-3</span>):
+    print(<span class="st">f"{f:.0e}   " + "  ".join(f"{diverge(f,n):7.4f}" for n in (100,500,2000)))</span>
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>1e-06 &rarr; 0.0001 0.0005 0.0020</code> &middot;
+      <code>1e-05 &rarr; 0.0010 0.0050 0.0198</code> &middot; <code>1e-04 &rarr; 0.0100 0.0488 0.1813</code> &middot;
+      <code>1e-03 &rarr; 0.0952 0.3936 0.8648</code>.
+      A per-token flip rate of <code>10<sup>&minus;4</sup></code> sounds like a rounding error and produces an <strong>18.1% chance of a
+      different 2,000-token completion</strong>. At <code>10<sup>&minus;3</sup></code> it is 86.5%. So the right question is not
+      "is it deterministic" but "what is my per-token flip rate, and what output length makes that unacceptable".
+      <strong>Falsifier:</strong> if your measured first-divergence positions are clustered rather than geometrically distributed,
+      the nondeterminism has a specific cause (a near-tie at a particular position) rather than uniform noise &mdash; chase that position,
+      it is usually a formatting token.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; The manifest catches silent configuration drift (copy-paste)</h4>
+      <p>Two runs that "used the same model". Only the manifest shows the difference.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json
+
+<span class="kw">def</span> <span class="fn">mhash</span>(m):
+    <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(json.<span class="fn">dumps</span>(m, sort_keys=<span class="kw">True</span>).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">12</span>]
+
+base = {<span class="st">"model_id"</span>: <span class="st">"deepseek-flash"</span>, <span class="st">"revision"</span>: <span class="st">"v4.1-1017"</span>,
+        <span class="st">"temperature"</span>: <span class="nm">0.0</span>, <span class="st">"seed"</span>: <span class="nm">42</span>, <span class="st">"top_p"</span>: <span class="nm">1.0</span>,
+        <span class="st">"sys_hash"</span>: <span class="st">"a1b2"</span>, <span class="st">"tools_hash"</span>: <span class="st">"c3d4"</span>}
+
+variants = {
+    <span class="st">"identical"</span>:        {},
+    <span class="st">"temp 1e-4"</span>:        {<span class="st">"temperature"</span>: <span class="nm">0.0001</span>},
+    <span class="st">"tools reordered"</span>:   {<span class="st">"tools_hash"</span>: <span class="st">"e5f6"</span>},
+    <span class="st">"system whitespace"</span>: {<span class="st">"sys_hash"</span>: <span class="st">"a1b3"</span>},
+    <span class="st">"seed unchanged"</span>:    {<span class="st">"seed"</span>: <span class="nm">42</span>},
+}
+<span class="kw">for</span> name, delta <span class="kw">in</span> variants.<span class="fn">items</span>():
+    m = <span class="fn">dict</span>(base, **delta)
+    print(<span class="st">f"  {name:18s} hash={mhash(m)}  {'SAME' if mhash(m)==mhash(base) else 'DIFFERENT'}"</span>)
+      </div>
+      <p class="expect">The manifest hash is sensitive to everything that matters and insensitive to nothing: a
+      <code>temperature</code> change of 0.0001, a reordered tools list, or a whitespace edit in the system prompt each produce a
+      different hash. That is the point &mdash; <strong>all three invalidate a rerun</strong>, and none of them is visible in a "model id"
+      field. Record the manifest hash with every run's trace (L90) and the reproducibility question becomes a hash comparison
+      instead of an argument.
+      <strong>Falsifier:</strong> if two runs with the same manifest hash and same seed still differ, the variance is below your
+      control at the sampling or numerics layer &mdash; that is the case for a declared tolerance, not a pin.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d94-s5">5 &middot; Failure modes <a class="hook" href="#d94-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>"Temperature 0 is deterministic."</strong> Symptom: repeated identical requests produce different outputs; the team blames caching or the provider.</li>
+        <li><strong>Seed not honored.</strong> The provider accepts a seed parameter but does not use it. Symptom: distinct output hashes across runs with the same seed; verified by the repeat audit (10 runs).</li>
+        <li><strong>Batch-dependent output.</strong> Identical requests in different batch shapes differ. Symptom: reproducibility is concurrency-dependent &mdash; it works in isolation and fails under load.</li>
+        <li><strong>Kernel/driver drift.</strong> A library upgrade changes a fused kernel. Symptom: a step change in output distribution at a deploy that did not touch your code; the manifest's <code>lib_versions</code> is the only evidence.</li>
+        <li><strong>MoE routing instability.</strong> Under load, expert capacity overflows and tokens are dropped or rerouted. Symptom: quality degrades with concurrency, not with input difficulty.</li>
+        <li><strong>Timestamp in the prompt.</strong> Symptom: every request has a unique prompt hash; prefix cache hit rate near zero; "the agent behaves differently at night".</li>
+        <li><strong>Unordered tool results.</strong> Parallel tool calls return in completion order. Symptom: the agent's answer depends on network jitter; nondeterminism that disappears on a fast machine.</li>
+        <li><strong>Unversioned index.</strong> RAG corpus changes between runs (L97). Symptom: "same prompt, different evidence"; retrieval traces show different chunk ids.</li>
+        <li><strong>False reproducibility claim in a report.</strong> An eval says "reran, confirmed". Symptom: nobody kept the manifest, so confirmation means "looked similar".</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d94-s6">6 &middot; Connects to <a class="hook" href="#d94-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="../track-a/17-samplers.html">L17 &middot; Samplers</a>,
+    <a class="tag-a" href="../track-a/21-gpus-numerics.html">L21 &middot; Numerics</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a>,
+    <a class="tag-d" href="99-capstone.html">L99 &middot; Capstone</a>.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/17-samplers.html">L17 &middot; Samplers</a> &mdash; what temperature and top-p actually do to the distribution; the mechanism behind the sampling layer.</li>
+      <li><a class="tag-a" href="../track-a/21-gpus-numerics.html">L21 &middot; Numerics</a> &mdash; bf16/fp8 accumulation and why reduction order changes results.</li>
+      <li><a class="tag-b" href="../track-b/30-moe.html">L30 &middot; MoE</a> and <a class="tag-b" href="../track-b/31-moe-routing.html">L31 &middot; Routing</a> &mdash; the routing layer that makes sparse models less reproducible than dense ones.</li>
+      <li><a class="tag-b" href="../track-b/39-kernels.html">L39 &middot; Kernels</a> &mdash; kernel selection as a hidden input to the output.</li>
+      <li><a class="tag-b" href="../track-b/44-inference-serving.html">L44 &middot; Serving</a> &mdash; continuous batching makes batch composition a runtime variable you do not control.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; <code>pass^k</code> assumes independent runs; nondeterminism sets whether that is true.</li>
+      <li><a class="tag-d" href="90-observability.html">L90 &middot; Traces</a> &mdash; the manifest hash belongs in every span; <code>input_hash</code> is the determinism audit primitive.</li>
+      <li><a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a> &mdash; the harness's promotion gate requires a declared reproducibility class.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d94-s7">7 &middot; Self-check <a class="hook" href="#d94-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Noise scale is <code>&sigma;=0.03</code>. How large must a logit gap be for the greedy choice to flip less than 1% of the time?</p>
+        <details><summary>Reveal answer</summary><p>Solve <code>&Phi;(&minus;g/(&sigma;&radic;2)) = 0.01</code>. The 1% quantile of the standard normal is <code>&minus;2.326</code>, so <code>g/(0.03&times;1.4142) = 2.326</code> &rarr; <code>g = 2.326 &times; 0.04243 = 0.0987</code>. So the gap must exceed about <strong>0.099</strong> &mdash; roughly <code>3.3&sigma;</code>. The rule of thumb "4&sigma; for stability" is a slightly more conservative version of this calculation; at <code>4&sigma; = 0.12</code> the flip rate is <code>&Phi;(&minus;2.83) = 0.23%</code>.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Your audit shows 3 distinct outputs in 10 runs at temperature 0. Estimate the per-token flip rate if your outputs are ~200 tokens, and compute the divergence probability at 1,000 tokens.</p>
+        <details><summary>Reveal answer</summary><p>3 distinct in 10 runs means roughly 7 of 9 adjacent pairs differ, so the pairwise divergence probability is about <code>p_pair &asymp; 0.78</code> at 200 tokens. Then <code>1 &minus; (1&minus;f)<sup>200</sup> = 0.78</code> gives <code>f = 1 &minus; 0.22<sup>1/200</sup> = 1 &minus; e<sup>ln(0.22)/200</sup> = 1 &minus; e<sup>&minus;0.00757</sup> = 0.00754</code>. At 1,000 tokens: <code>1 &minus; (0.99246)<sup>1000</sup> = 1 &minus; 0.00051 = 0.99949</code>. So 1,000-token outputs are effectively certain to differ. Conclusion: this configuration is <strong>not reproducible</strong> for your use case, and the honest declaration is a tolerance on the <em>semantic</em> result (same verdict, same structured fields), not on the text.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Which layer of nondeterminism is entirely within your control, and how do you eliminate it?</p>
+        <details><summary>Reveal answer</summary><p>The <strong>inputs</strong> layer: wall-clock time in the prompt, non-deterministic ordering of tool results or dictionary iteration, and an unversioned retrieval index. These are not properties of the model or the serving stack &mdash; they are properties of your code. Eliminate them by (a) injecting a clock value from outside rather than calling <code>now()</code> inside prompt construction, (b) sorting every collection deterministically before it enters the prompt, (c) recording the index version and pinning it during an eval. This layer is worth eliminating first because it is free and it is often the actual cause of "the model is inconsistent" reports.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: reproducibility works when you run requests one at a time but fails under production load. What is the most likely cause?</p>
+        <details><summary>Reveal answer</summary><p><strong>Batch composition</strong> &mdash; continuous batching means the arithmetic reduction order (and sometimes the kernel path) depends on who else is in the batch, so an isolated request takes a different numeric path than a request batched with 30 others. Related candidates: MoE expert capacity overflow at high concurrency (tokens dropped or rerouted) and prefix-cache eviction differing under memory pressure. Confirm by recording the batch id / concurrency per request in the trace and grouping reproducibility results by it. The fix is not to demand determinism under load but to <em>declare</em> load-dependent nondeterminism and run your reproducibility audits at a pinned concurrency.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why record a manifest hash in every trace span rather than just the model id and temperature?</p>
+        <details><summary>Reveal answer</summary><p>Because the things that invalidate a rerun are mostly <em>not</em> in the model id or temperature: a whitespace edit to the system prompt, a reordered tools array (which changes the token sequence), a tokenizer version bump, a library upgrade that changes a kernel, a different serving endpoint behind the same model name. A manifest hash collapses all of them into one comparable token, so "did this run see the same configuration" becomes a hash equality check rather than an investigation. It is also tamper-evident when included in the hash chain (L90): you cannot retroactively claim a run used a configuration it did not.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="93-safety-alignment.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L93 &middot; Safety &amp; containment</span></a>
+    <a class="next" href="95-rake-reporting-harness.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L95 &middot; The RAKE reporting harness</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

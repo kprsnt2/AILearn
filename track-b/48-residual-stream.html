@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b48">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L48 · The Residual Stream as Shared Memory — AILearn</title>
+<meta name="description" content="Every layer in a transformer reads from and writes to one width-d vector per token. That shared bus explains superposition, why fine-tuning can be surgical, and how a logit lens reads intermediate predictions.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L48</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L48 &middot; The Residual Stream as Shared Memory (Mechanistic View)</h1>
+  <p class="lede">Every attention block and MLP reads a width-4096 vector and adds back to it. Nothing else is shared between layers. Once you see the model as 61 modules reading and writing one communication channel, superposition, prompt sensitivity and surgical fine-tuning stop being mysterious.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: logit lens on a tiny model</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">residual stream</span>
+  <span class="pill">read / write subspaces</span>
+  <span class="pill">superposition</span>
+  <span class="pill">logit lens</span>
+  <span class="pill">virtual weights</span>
+  <span class="pill">feature directions</span>
+  <span class="pill">layer-by-layer composition</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b48-s1">1 &middot; Why it exists <a class="hook" href="#b48-s1">#</a></h2>
+
+    <p>You have shipped models and been surprised by them: a one-word prompt change flips a classification, a fine-tune on
+    a narrow task degrades an unrelated one, a checkpoint that scores well on evals writes a subtly different code style. The
+    residual stream is the structural fact that explains most of this.</p>
+
+    <p>The failure it addresses is <em>interpretability of a stack</em>. In a plain feed-forward network, layer 3's output is
+    transformed by layer 4, so information is repeatedly rewritten and there is no stable place to look. Residual connections
+    change that: each block computes an update &Delta; and <strong>adds</strong> it to a vector that persists from the embedding
+    to the output. Nothing is overwritten. Every layer can, in principle, read anything an earlier layer wrote.</p>
+
+    <p>That gives you the single view that makes modern interpretability tractable: the transformer as a set of independent
+    modules &mdash; attention heads and MLPs &mdash; all reading from and writing to one shared memory of width
+    d<sub>model</sub> = 4096 per token. The residual stream is 4096 &times; 4 bytes = 16,384 bytes per token in fp32, and it is
+    the only communication channel in the model.</p>
+
+    <div class="callout boss">
+      <p>Layers do not pass hidden states to each other; they take turns using a shared bus. Everything about prompts,
+      fine-tuning and reliability follows from the properties of that bus &mdash; especially that it is far too narrow for the
+      number of features the model needs.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b48-s2">2 &middot; The mental model <a class="hook" href="#b48-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a whiteboard shared by a team, where each specialist walks up, reads whatever they
+    need, and erases nothing &mdash; they add. The board is not subdivided into sections; the first write and the last write
+    exist simultaneously, in the same space.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Additive composition, no overwriting, concurrent writers. It also
+      gets the key constraint right: the board has finite area, so writers must share space.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A whiteboard is unambiguous to a human reader because handwriting and
+      position differ. There is no reader &mdash; only learned linear maps. So two features written into overlapping directions
+      interfere numerically unless the model's read vectors are close enough to orthogonal. That interference is the real cost,
+      and it is what superposition formalises.</p></div>
+    </div>
+
+    <h3>The one-line architecture</h3>
+    <div class="formula">
+      x<sub>0</sub> = Embed(token) &nbsp;;&nbsp; x<sub>l</sub> = x<sub>l&minus;1</sub> + Attn<sub>l</sub>(x<sub>l&minus;1</sub>) + MLP<sub>l</sub>(&middot;) &nbsp;;&nbsp; logits = W<sub>U</sub>&thinsp;x<sub>L</sub>
+      <span class="note">Two additions per layer. Attn reads x, computes an update, adds it back; MLP does the same. The output projection W<sub>U</sub> reads the final stream. Every module's "input" and "output" live in the same 4096-dim space, which is what makes the stream a bus rather than a pipeline.</span>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b48-s3">3 &middot; The mechanism <a class="hook" href="#b48-s3">#</a></h2>
+
+    <h3>Read and write subspaces</h3>
+    <p>An attention head is <em>not</em> a monolithic operator on the stream. It is a pair of linear maps:</p>
+    <ul>
+      <li>A <strong>read</strong> matrix W<sub>Q</sub>W<sub>in</sub> (plus W<sub>K</sub>, W<sub>V</sub>) that projects the stream
+      onto a low-dimensional subspace &mdash; what this head is looking for.</li>
+      <li>A <strong>write</strong> matrix W<sub>out</sub>W<sub>V</sub> that projects the head's output back into the stream &mdash;
+      what this head adds.</li>
+    </ul>
+    <p>The head's actual contribution is the <em>virtual weight</em> W<sub>out</sub>W<sub>V</sub>W<sub>Q</sub>W<sub>in</sub>,
+    a rank-&le;d<sub>head</sub> matrix on the stream. With d<sub>head</sub> = 128 and d<sub>model</sub> = 4096, each head can
+    only read and write a 128-dimensional slice of a 4096-dimensional bus &mdash; 3.1% of the space. The model's
+    expressiveness comes from composing many such low-rank read/write pairs.</p>
+
+    <h3>Superposition: why 4096 dimensions is not enough</h3>
+    <p>A model may need to represent thousands of distinct features. If each needed its own dimension, 4096 dimensions would cap
+    the feature count &mdash; and empirical work on sparse coding of activations finds far more features than dimensions. The
+    resolution is that features are represented as <em>directions</em>, not axes, and directions can be nearly-orthogonal in
+    high dimensions.</p>
+    <div class="formula">
+      interference &asymp; |c<sub>i</sub>&thinsp;c<sub>j</sub>|&thinsp;&thinsp;(f<sub>&theta;i</sub> &middot; f<sub>&theta;j</sub>)
+      <span class="note">c<sub>i</sub> = feature activation magnitude, &theta; = direction. In n dimensions there are exponent-ially many directions with small mutual inner product, so more than n features fit with small accuracy loss. Superposition is the deliberate trade of exactness for count &mdash; and the cost shows up as interference errors on unusual inputs.</span>
+    </div>
+    <p>In 4096 dimensions, random pairs of unit vectors have expected absolute inner product near 1/&radic;4096 = 0.0156; the
+    <em>sampled</em> mean over many pairs is &asymp;0.0125 (the root-mean-square is 0.0156 &mdash; the half-normal mean is
+    smaller than its scale parameter), i.e. about 1.25% interference. That small number is why hundreds of features can share the space &mdash; and why precision
+    quantisation (L40) hurts more than the byte count suggests: it adds noise to a signal that is deliberately riding close
+    to others.</p>
+
+    <h3>Logit lens: reading the stream before the end</h3>
+    <p>Because W<sub>U</sub> is just a linear read of the stream, you can apply it <em>early</em>. For each layer l, compute
+     softmax(W<sub>U</sub>x<sub>l</sub>) and see what the model would predict if it stopped there. This is the logit lens, and it
+    is the cheapest useful interpretability tool available.</p>
+    <p>What it reveals <span class="asof">state as of 2026-10</span>: predictions converge gradually. In a well-trained model the top-1 token often becomes correct by the
+    middle layers and only grows in confidence. When it does <em>not</em> &mdash; when the model is confident-and-wrong at
+    layer 20 and corrects itself at layer 30 &mdash; you are looking at a competing feature being overridden, which is a concrete
+    bug (or safety) signal rather than a vague &ldquo;the model got it wrong.&rdquo;</p>
+
+    <h3>Why surgical fine-tuning works</h3>
+    <p>If modules are readers and writers on a shared bus, then training on a narrow task primarily moves the read/write
+    directions of the modules that implement that task. That is why LoRA on attention projections can steer style and format
+    without changing underlying knowledge: it edits a low-rank subspace of the bus, and the rest of the bus is untouched
+    <em>numerically</em>. The failure mode is that the edited subspace overlaps features you did not intend to change, which is
+    why narrow fine-tunes produce unexpected side-effects.</p>
+
+    <div class="callout audit">
+      <p>The audit artifact is a <strong>layer-wise prediction trace</strong>: for a fixed input, the top-1 token and its
+      probability at every layer, plus the residual norm per layer. Cheap to compute, easy to diff between checkpoints, and it
+      catches regressions that aggregate benchmarks average away. Log it for your golden set at every model change.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b48-s4">4 &middot; Your hands <a class="hook" href="#b48-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; interference in high dimensions, measured</h4>
+      <p>Before believing the superposition story, verify the geometry it rests on. This is the whole argument in fifteen lines.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">48</span>)
+
+<span class="kw">def</span> <span class="fn">interference</span>(n_dim, n_features):
+    F = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (n_features, n_dim))
+    F /= np.linalg.norm(F, axis=<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+    G = np.abs(F @ F.T); np.fill_diagonal(G, <span class="nm">0</span>)
+    <span class="kw">return</span> G.max(), G.mean()
+
+<span class="kw">for</span> d <span class="kw">in</span> (<span class="nm">64</span>, <span class="nm">1024</span>, <span class="nm">4096</span>):
+    <span class="kw">for</span> nf <span class="kw">in</span> (<span class="nm">100</span>, <span class="nm">1000</span>, <span class="nm">4000</span>):
+        mx, mean = <span class="fn">interference</span>(d, nf)
+        <span class="fn">print</span>(<span class="st">f"d={d:5d} features={nf:5d}: mean |cos|={mean:.4f}  max |cos|={mx:.4f}"</span>)
+      </div>
+      <p class="expect">Measured mean |cos|: at d = 64 it is 0.1001 (0.125 is 1/&radic;64 &mdash; the sampled mean is lower); at
+      d = 1024, 0.0244&ndash;0.0249; at d = 4096, 0.0124&ndash;0.0125. Crucially the mean is <strong>flat in the number of
+      features</strong> (100, 1,000 or 4,000 all give the same mean), while the maximum rises (0.0651 &rarr; 0.0705 &rarr; 0.0907
+      at d = 4096) as packing tightens. That is exactly the superposition trade: <strong>many features fit at small average interference, and
+      the model pays in a few near-collisions whose severity grows with packing</strong>. Falsification: if mean interference scales with feature count at fixed d,
+      the vectors are not centred and you are measuring a mean offset, not interference.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; a logit lens on a toy residual stack</h4>
+      <p>Reproduce the logit-lens mechanic with no transformer: a residual stack of random-but-decaying updates and a decoder
+      matrix. Watch the prediction converge layer by layer, and watch what a mid-layer override looks like.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">480</span>)
+d, V, L = <span class="nm">64</span>, <span class="nm">10</span>, <span class="nm">12</span>
+Wu = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (V, d)) / np.sqrt(d)
+target = <span class="nm">7</span>
+x = rng.normal(<span class="nm">0</span>, <span class="nm">0.5</span>, d)
+
+<span class="kw">def</span> <span class="fn">top1</span>(x):
+    z = Wu @ x; p = np.exp(z - z.max()); p /= p.sum()
+    <span class="kw">return</span> <span class="fn">int</span>(p.argmax()), <span class="fn">float</span>(p.max())
+
+<span class="kw">for</span> layer <span class="kw">in</span> <span class="fn">range</span>(L):
+    <span class="cm"># each "layer" adds a small update aligned with the target's read direction</span>
+    delta = rng.normal(<span class="nm">0</span>, <span class="nm">0.35</span>, d) + <span class="nm">0.5</span> * Wu[target]
+    x = x + delta
+    <span class="fn">print</span>(<span class="st">f"layer {layer+1:2d}: top1={<span class="fn">top1</span>(x)[0]} p={<span class="fn">top1</span>(x)[1]:.3f} |x|={np.linalg.norm(x):.2f}"</span>)
+      </div>
+      <p class="expect">Measured: top-1 is a <em>different</em> token (3) for layers 1&ndash;4 with probability rising 0.196 &rarr;
+      0.397, then flips to the target (7) at layer 5 and rises monotonically to 0.806 by layer 12. The residual norm grows
+      linearly (5.51 &rarr; 11.04) &mdash; both signatures to look for in a real logit lens. Note the early layers are genuinely
+      confident about the <em>wrong</em> answer: that is a mid-stack override in miniature, and in a real model it is where prompt
+      sensitivity comes from. <strong>Note the norm growth:</strong> residual norms typically increase with
+      depth, which is why LayerNorm/RMSNorm placement (L05) matters.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; why two prompt variants can diverge</h4>
+      <p>Model the stream as a sum of feature contributions and show that a small change to an <em>early</em> write has a larger
+      downstream effect than the same change late &mdash; because every later module reads it.</p>
+      <div class="code" data-lang="bash">
+python -c "
+import numpy as np
+rng=np.random.default_rng(4)
+d=256; d_read=16
+reads=[rng.normal(0,1,d) for _ in range(8)]     # 8 downstream modules' read directions
+reads=[r/np.linalg.norm(r) for r in reads]
+def effect(edit_layer, delta):
+    contrib=np.zeros(3)
+    for i,r in enumerate(reads):
+        if i>=edit_layer: contrib[0]+=abs(r@delta)
+    return contrib[0]/len(reads)
+base=rng.normal(0,1,d)
+for l in (0,2,4,6):
+    dl=np.zeros(d); dl[:]=rng.normal(0,0.05,d)
+    print(f'edit at module {l}: mean downstream |projection| = {effect(l,dl):.4f}')
+"
+      </div>
+      <p class="expect">An edit at module 0 is read by all 8 downstream modules; an edit at module 6 by only 2. The mean
+      downstream projection therefore falls with the edit's depth. That is why early-token and early-layer perturbations
+      (a changed system prompt at position 0, a different first word) can matter more than a change buried in a long context
+      &mdash; and why prompt position, not prompt length, drives variance.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b48-s5">5 &middot; Failure modes <a class="hook" href="#b48-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Superposition interference.</strong> Symptom: the model is reliable on frequent feature combinations and flaky on
+        rare ones, with errors that look like conflating two related concepts. That is characteristic of near-colliding directions.</li>
+        <li><strong>Fine-tune collateral damage.</strong> Symptom: a narrow LoRA improves its target task and degrades an unrelated
+        capability by a few points. The edited subspace overlaps a feature it should not have touched; reduce rank, or restrict which
+        modules are adapted.</li>
+        <li><strong>Prompt-position sensitivity.</strong> Symptom: two prompts with identical content in different order produce
+        materially different outputs. Early content is read by more modules; put invariant instructions first (which also happens to
+        maximise prefix-cache hits, L45).</li>
+        <li><strong>Logit lens used as ground truth.</strong> Symptom: you conclude &ldquo;the model knows X at layer 12&rdquo; and it
+        does not, because W<sub>U</sub> is only trained to read the <em>final</em> stream; early layers may use a different basis.
+        Treat logit-lens outputs as a diagnostic, not a readout of belief.</li>
+        <li><strong>Residual norm blowup.</strong> Symptom: layer norms grow with depth in the trace, final outputs are
+        over-confident, and long sequences degrade more than short ones. Often a sign of a stability problem (L12) rather than an
+        interpretability finding.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b48-s6">6 &middot; Connects to <a class="hook" href="#b48-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L05 (normalisation and the residual stream) and L07 (heads). &nbsp;
+    <strong>Unlocks:</strong> L49 (circuits), LoRA intuition, and any reliability work that needs to look inside.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/05-layernorm-rmsnorm.html">L05 &middot; Normalisation &amp; the residual stream</a> &mdash; the mechanics this lesson interprets.</li>
+      <li><a class="tag-a" href="../track-a/07-multihead.html">L07 &middot; Multi-head &amp; why heads</a> &mdash; heads as read/write pairs.</li>
+      <li><a class="tag-b" href="49-components-circuits.html">L49 &middot; Induction heads &amp; circuits</a> &mdash; compositions across the bus.</li>
+      <li><a class="tag-b" href="50-conditioning.html">L50 &middot; Conditioning &amp; in-context learning</a> &mdash; how prompts write into the stream.</li>
+      <li><a class="tag-a" href="../track-a/10-gqa-mqa.html">L10 &middot; GQA / MLA</a> &mdash; compressing what heads read from the cache.</li>
+      <li><a class="tag-c" href="../track-c/73-continual-learning.html">L73 &middot; Continual learning &amp; forgetting</a> &mdash; edits to the shared bus that interfere.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b48-s7">7 &middot; Self-check <a class="hook" href="#b48-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A head has d<sub>head</sub> = 128 on a d<sub>model</sub> = 4096 stream. What fraction of the stream's space can it read and write, and what is the rank of its virtual weight?</p>
+        <details><summary>Reveal answer</summary><p>128/4096 = <strong>3.125%</strong> of the dimensions. Its virtual weight W<sub>out</sub>W<sub>V</sub>W<sub>Q</sub>W<sub>in</sub>
+        has rank at most 128 &mdash; it is a rank-&le;128 linear map on a 4096-dimensional space. That is why heads are compositional: each is a small,
+        interpretable projection, and capability comes from many of them layered on the same bus.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Expected |cosine| between two random directions in 64, 1024, and 4096 dimensions. What does that imply for how many features fit at ~1% interference?</p>
+        <details><summary>Reveal answer</summary><p>1/&radic;d: 0.125, 0.031, 0.0156. So at 4096 dimensions the <em>typical</em> pair has 1.56% interference before
+        accounting for learned (non-random) directions, which is why thousands of features can share the space. At 64 dimensions a typical
+        pair already interferes 12.5% by the 1/&radic;d scale (0.100 measured) &mdash; an order of magnitude worse than at 4096, which
+        is why small models are markedly more prone to conflating concepts.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: the logit lens shows the correct answer with high probability at layer 20, an incorrect one at layer 28, and the correct one again at layer 40. What does this pattern indicate, and what would you do about it?</p>
+        <details><summary>Reveal answer</summary><p>A mid-stack override: some feature written between layers 20 and 28 is suppressing the correct prediction, and a later module
+        repairs it. Practically it means the output is fragile &mdash; inputs that disable the later correction will produce the wrong answer
+        confidently. Investigate by diffing the stream at the override layers, and test inputs that sit near that boundary; expect prompt
+        sensitivity on exactly those.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why might 4-bit weight quantisation degrade quality more than the 4&times;-fewer-bits suggests, in residual-stream terms?</p>
+        <details><summary>Reveal answer</summary><p>Because features are already packed at small mutual interference (order 1.6% for random pairs, and learned directions
+        can be closer). Quantisation adds noise to every read and write matrix, so it raises interference between features that the model
+        deliberately kept close &mdash; a small perturbation matters more when the signal margin is small. This is why outlier-aware methods
+        (AWQ, GPTQ, L40) and keeping first/last layers at higher precision recover most of the loss.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Two fine-tuning plans: (A) LoRA rank 8 on the attention output projections, (B) full fine-tune of all layers, both on a narrow formatting task. Predict the side-effect profiles and why they differ.</p>
+        <details><summary>Reveal answer</summary><p>A edits an 8-dimensional subspace per adapted matrix &mdash; it can change the formatting behaviour while leaving most of
+        the stream untouched, so collateral damage is small but the task might be under-fit if it needs more capacity. B can move
+        every read/write direction, so it fits the task fully and also risks overwriting features unrelated to the task (the classic
+        forgetting failure, L73) because there is nothing constraining the edit to the intended subspace.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="47-multimodal.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L47 &middot; Native multimodal: vision into the token stream</span></a>
+    <a class="next" href="49-components-circuits.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L49 &middot; Induction heads, circuits &amp; reliability</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

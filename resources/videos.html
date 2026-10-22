@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="videos">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Videos &amp; Courses — AILearn</title>
+<meta name="description" content="25 talks, series and courses that feed specific lessons — foundations, build-it-yourself, paper walkthroughs, systems, and agent/course material. Channels and course pages only, no guessed video IDs.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .rl-card { background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:16px 20px; margin:14px 0; }
+  .rl-card h3 { margin:0 0 2px !important; font-size:1.02rem; }
+  .rl-card h3 a { border-bottom:0; }
+  .rl-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:4px 0 8px; }
+  .commit { font-family:var(--mono); font-size:.66rem; color:var(--cyan); border:1px solid rgba(56,189,248,.3); background:rgba(56,189,248,.08); padding:2px 8px; border-radius:99px; }
+  .lesson { font-family:var(--mono); font-size:.66rem; color:var(--violet); border:1px solid rgba(139,92,246,.3); background:rgba(139,92,246,.08); padding:2px 8px; border-radius:99px; }
+  .lesson a { color:var(--violet) !important; border-bottom:0 !important; }
+  .get { font-size:.93rem; margin:6px 0 0; }
+  .honest { font-size:.9rem; color:var(--txt-2); }
+  .count { color:var(--amber); font-family:var(--mono); font-size:.92em; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../track-a/index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <span>Resources</span> <span>/</span> <span>Videos</span></div>
+  <div class="track-tag">RESOURCES &middot; VIDEO &amp; COURSES</div>
+  <h1>Videos &amp; Courses &mdash; 25 things to watch with a keyboard open</h1>
+  <p class="lede">Video is the only medium that shows you the debugging &mdash; the wrong shape, the loss that
+  spikes, the fix. It is also the easiest medium to consume passively for six hours and retain nothing. Every
+  entry here names the AILearn lesson it feeds, so you watch it in the week it is relevant and not before.</p>
+  <div class="chips">
+    <span class="chip">25 entries</span>
+    <span class="chip">5 groups</span>
+    <span class="chip">channels &amp; course pages only</span>
+    <span class="chip">links verified 2026-10</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">from scratch</span>
+  <span class="pill">paper walkthrough</span>
+  <span class="pill">GPU systems</span>
+  <span class="pill">serving</span>
+  <span class="pill">short courses</span>
+  <span class="pill">prerequisite-aware</span>
+</div>
+
+<p class="honest"><strong>Link policy.</strong> No guessed video IDs. Every entry links a <em>channel</em>, a
+<em>playlist index</em>, a <em>course page</em>, or a <em>repository</em> &mdash; the stable artifact &mdash; and
+names the series inside it. Every link here returned HTTP 200 at build time (Oct 2026). The
+&ldquo;commitment&rdquo; figure is the honest total, not the runtime of one episode: you will pause, type, and
+re-run.</p>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Foundations">
+    <h2 id="videos-s1">1 &middot; Foundations <a class="hook" href="#videos-s1">#</a></h2>
+
+    <p>The mathematically honest versions &mdash; gradients, backprop, attention &mdash; taught by people who can
+    derive them on camera. Watch these <em>once</em>, properly, early; everything later is a variation.
+    <span class="count">Six entries.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://www.youtube.com/@3blue1brown">3Blue1Brown &mdash; Neural Network series</a></h3>
+      <div class="rl-meta"><span class="commit">~2 h series, 2&ndash;3 evenings</span><span class="lesson">feeds <a href="../track-a/03-backprop-autograd.html">L03</a> &middot; <a href="../track-a/04-gradient-descent.html">L04</a></span></div>
+      <p class="get"><strong>What you get:</strong> the visual intuition for what a gradient <em>is</em> &mdash;
+      the four-episode neural-network series builds backprop as a chain of local nudges with animations you cannot
+      reproduce in text. The later attention episodes are the best available pre-reading for attention before you
+      see the matrix form.</p>
+      <p class="get"><strong>Prerequisite:</strong> none. Watch before <a href="../track-a/03-backprop-autograd.html">L03</a>,
+      then re-watch the backprop episode after you have written your own autodiff &mdash; the second viewing is
+      the one that lands.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://introtodeeplearning.com/">MIT 6.S191 &mdash; Introduction to Deep Learning</a></h3>
+      <div class="rl-meta"><span class="commit">~1 weekend of lectures + labs</span><span class="lesson">feeds <a href="../track-a/index.html">Track A</a> broadly</span></div>
+      <p class="get"><strong>What you get:</strong> a compact, annually refreshed tour of the whole field with
+      runnable labs &mdash; the fastest legitimate way to fill gaps in depth without a semester. The lecture on
+      sequence modelling is a good first pass at attention before <a href="../track-a/06-attention-core.html">L06</a>.</p>
+      <p class="get"><strong>Prerequisite:</strong> you can already write Python; that is all it assumes.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://web.stanford.edu/class/cs224n/">Stanford CS224N &mdash; NLP with Deep Learning</a> &middot; <a href="https://www.youtube.com/@stanfordonline">YouTube</a></h3>
+      <div class="rl-meta"><span class="commit">~20 h lectures + problem sets</span><span class="lesson">feeds <a href="../track-a/01-tokenization.html">L01</a> &middot; <a href="../track-a/06-attention-core.html">L06</a> &middot; <a href="../track-a/08-positional.html">L08</a></span></div>
+      <p class="get"><strong>What you get:</strong> the academic-grade treatment of tokenization, embeddings,
+      self-attention, and transformer architecture, with assignments that force you to implement them. Use the
+      <em>lectures</em> selectively &mdash; the ones on attention and subword tokenization &mdash; rather than
+      watching the whole course.</p>
+      <p class="get"><strong>Prerequisite:</strong> linear algebra and PyTorch. Watch the attention lecture
+      immediately before <a href="../track-a/06-attention-core.html">L06</a>; skip the sections on legacy recurrent
+      models unless you need them for a codebase you maintain.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://cs231n.stanford.edu/">Stanford CS231N &mdash; Convolutional Neural Networks</a></h3>
+      <div class="rl-meta"><span class="commit">~15 h selective</span><span class="lesson">feeds <a href="../track-b/47-multimodal.html">L47</a></span></div>
+      <p class="get"><strong>What you get:</strong> backprop and optimisation taught with the discipline of having
+      to implement them, plus the visual-model foundations you need to reason about how an image actually becomes
+      tokens in a multimodal model. Watch the backprop/optimisation lectures even if you never touch a conv net.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-a/03-backprop-autograd.html">L03</a>. Read
+      the patchification material in <a href="../track-b/47-multimodal.html">L47</a> straight after.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://cs229.stanford.edu/">Stanford CS229 &mdash; Machine Learning</a></h3>
+      <div class="rl-meta"><span class="commit">~15 h selective (or full course)</span><span class="lesson">feeds <a href="../track-a/04-gradient-descent.html">L04</a> &middot; <a href="../track-a/13-regularization.html">L13</a></span></div>
+      <p class="get"><strong>What you get:</strong> the derivations behind SGD, regularisation, generalisation, and
+      the probabilistic view of losses &mdash; the material that makes &ldquo;why does weight decay work&rdquo; a
+      sentence you can answer rather than repeat.</p>
+      <p class="get"><strong>Prerequisite:</strong> the most mathematical entry here; bring real linear algebra.
+      Watch the optimisation and regularisation lectures before <a href="../track-a/13-regularization.html">L13</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://d2l.ai/">Dive into Deep Learning (d2l.ai)</a></h3>
+      <div class="rl-meta"><span class="commit">book + notebooks, use as reference</span><span class="lesson">feeds <a href="../track-a/index.html">Track A</a>, <a href="../track-b/index.html">Track B</a></span></div>
+      <p class="get"><strong>What you get:</strong> a free interactive book where every concept has an executable
+      notebook &mdash; the closest thing to a lab manual for this course. Its attention and transformer chapters map
+      almost one to one onto Track A, and its optimisation chapter is a useful second opinion on L04.</p>
+      <p class="get"><strong>Prerequisite:</strong> none, but do not read it front to back; open the chapter that
+      matches the lesson you are on. Use it as the reference you reach for when a lesson&rsquo;s math needs a second
+      presentation.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; Build-it-yourself">
+    <h2 id="videos-s2">2 &middot; Build-it-yourself <a class="hook" href="#videos-s2">#</a></h2>
+
+    <p>Code typed on camera, from an empty file. The only genre of video that changes what you can do, because you
+    can pause it, write the line yourself, and get the same error. <span class="count">Six entries.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/karpathy/nn-zero-to-hero">Karpathy &mdash; Neural Networks: Zero to Hero</a> &middot; <a href="https://www.youtube.com/@AndrejKarpathy">YouTube</a></h3>
+      <div class="rl-meta"><span class="commit">~12 h video, 30&ndash;40 h to actually keep up</span><span class="lesson">feeds <a href="../track-a/03-backprop-autograd.html">L03</a> &rarr; <a href="../track-a/19-full-transformer.html">L19</a></span></div>
+      <p class="get"><strong>What you get:</strong> the single most efficient path from &ldquo;I can use PyTorch&rdquo;
+      to &ldquo;I understand what PyTorch is doing&rdquo;. Builds micrograd (a scalar autograd engine), then makemore,
+      then a character-level GPT &mdash; the same path Track A takes, with the debugging visible.</p>
+      <p class="get"><strong>Prerequisite:</strong> Python fluency. This is the recommended spine for
+      <a href="../track-a/01-tokenization.html">L01</a> through <a href="../track-a/19-full-transformer.html">L19</a>;
+      do not watch episode N+1 until the code from episode N runs and you can explain each line.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3>&ldquo;Let&rsquo;s build GPT: from scratch, in code&rdquo; &mdash; Karpathy</h3>
+      <div class="rl-meta"><span class="commit">~2 h video, ~6 h to reimplement</span><span class="lesson">feeds <a href="../track-a/19-full-transformer.html">L19</a></span></div>
+      <p class="get"><strong>What you get:</strong> a decoder-only transformer built and trained end to end in one
+      sitting &mdash; tokenizer, attention, residual stream, the training loop, then sampling. The companion repo
+      is <a href="https://github.com/karpathy/ng-video-lecture">github.com/karpathy/ng-video-lecture</a>.</p>
+      <p class="get"><strong>Prerequisite:</strong> finish the zero-to-hero episodes on micrograd and makemore
+      first. Watch it <em>before</em> <a href="../track-a/19-full-transformer.html">L19</a> and treat L19&rsquo;s
+      build as your own reimplementation, not a copy.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/karpathy/nanoGPT">nanoGPT</a> &middot; <a href="https://github.com/karpathy/build-nanogpt">build-nanogpt</a></h3>
+      <div class="rl-meta"><span class="commit">~4 h video series + 1 week of reading the repo</span><span class="lesson">feeds <a href="../track-a/24-reading-code.html">L24</a> &middot; <a href="../track-a/25-foundations-capstone.html">L25</a></span></div>
+      <p class="get"><strong>What you get:</strong> the reference minimal GPT training codebase, plus a video series
+      that builds it while reimplementing the GPT-2 paper&rsquo;s claims &mdash; a worked example of exactly the
+      &ldquo;reproduce the paper&rdquo; discipline this course grades. It is the codebase to have read before you
+      read any production training stack.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-a/19-full-transformer.html">L19</a>. Annotate
+      every file and produce one diagram of the data flow for <a href="../track-a/24-reading-code.html">L24</a>
+      &mdash; that annotation is the deliverable, not the watching.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/karpathy/llm.c">llm.c</a></h3>
+      <div class="rl-meta"><span class="commit">~1 week, optional</span><span class="lesson">feeds <a href="../track-a/21-gpus-numerics.html">L21</a> &middot; <a href="../track-b/39-kernels.html">L39</a></span></div>
+      <p class="get"><strong>What you get:</strong> GPT-2 training in plain C/CUDA with no framework &mdash; the
+      clearest demonstration that the machine in <a href="../track-a/21-gpus-numerics.html">L21</a> is all there
+      is. Reading the forward and backward passes here makes every framework abstraction feel thin.</p>
+      <p class="get"><strong>Prerequisite:</strong> comfortable with C and pointers. Do this <em>after</em>
+      nanoGPT, never before, or you will learn C and transformers simultaneously and learn neither.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/karpathy/minGPT">minGPT</a> &middot; <a href="https://github.com/karpathy/micrograd">micrograd</a></h3>
+      <div class="rl-meta"><span class="commit">2&ndash;3 evenings</span><span class="lesson">feeds <a href="../track-a/03-backprop-autograd.html">L03</a></span></div>
+      <p class="get"><strong>What you get:</strong> the two smallest readable artifacts in the field &mdash; a
+      ~100-line autograd engine and a ~300-line GPT. Implement micrograd yourself from the video, then diff against
+      the repo; the diff is your lesson plan.</p>
+      <p class="get"><strong>Prerequisite:</strong> none. This is the correct first day of the course.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/rasbt/LLMs-from-scratch">LLMs from Scratch &mdash; book code &amp; notebooks</a></h3>
+      <div class="rl-meta"><span class="commit">~20 h, chapter-parallel to Track A</span><span class="lesson">feeds <a href="../track-a/11-activations.html">L11</a> &middot; <a href="../track-a/17-samplers.html">L17</a></span></div>
+      <p class="get"><strong>What you get:</strong> a chapter-by-chapter implementation path with a book attached
+      &mdash; attention, normalisation, activation (GELU/SwiGLU), the training loop, then fine-tuning and sampling.
+      It complements Karpathy&rsquo;s videos by being written rather than spoken, which is better for going back to
+      check a detail.</p>
+      <p class="get"><strong>Prerequisite:</strong> PyTorch basics. Use it as the second source for any Track A
+      lesson where the math did not land the first time.</p>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; Paper walkthroughs">
+    <h2 id="videos-s3">3 &middot; Paper walkthroughs <a class="hook" href="#videos-s3">#</a></h2>
+
+    <p>A person reading the actual paper, out loud, and stopping where the notation is bad. Use these when a
+    paper&rsquo;s central section resists you after two attempts &mdash; not as a substitute for attempt one.
+    <span class="count">Four entries.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://www.youtube.com/@YannicKilcher">Yannic Kilcher &mdash; paper readings</a></h3>
+      <div class="rl-meta"><span class="commit">60&ndash;90 min per paper</span><span class="lesson">feeds <a href="papers.html">every entry on the papers page</a></span></div>
+      <p class="get"><strong>What you get:</strong> the longest-running and most critical paper-reading channel
+      &mdash; he reads the figures, questions the experiments, and names the ablations that are missing. His
+      readings of the foundational transformer and scaling papers are a functional replacement for a reading
+      group, and he is reliably willing to say a famous paper is not convincing.</p>
+      <p class="get"><strong>Prerequisite:</strong> read the abstract and figures yourself first. Watch with the
+      PDF open and pause to verify a claim &mdash; the value is in the disagreement, not the summary.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://mlsys.stanford.edu/">Stanford MLSys Seminar</a></h3>
+      <div class="rl-meta"><span class="commit">~1 h per talk, 2&ndash;3 per month</span><span class="lesson">feeds <a href="../track-b/44-inference-serving.html">L44</a> &middot; <a href="../track-b/42-parallelism.html">L42</a> &middot; <a href="../track-b/43-training-cost.html">L43</a></span></div>
+      <p class="get"><strong>What you get:</strong> the speakers are the people who built the systems &mdash;
+      serving stacks, distributed training, kernels, agent infrastructure &mdash; and the format is technical with
+      audience questions included. This is the closest available approximation of sitting in the room where the
+      cost models in Track B were argued.</p>
+      <p class="get"><strong>Prerequisite:</strong> Track B through about <a href="../track-b/44-inference-serving.html">L44</a>.
+      The seminar assumes you know what a KV cache is and will not define it.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://www.youtube.com/@MachineLearningStreetTalk">Machine Learning Street Talk</a></h3>
+      <div class="rl-meta"><span class="commit">2&ndash;3 h per episode, selective</span><span class="lesson">feeds <a href="../track-b/48-residual-stream.html">L48</a> &middot; <a href="../track-b/49-components-circuits.html">L49</a></span></div>
+      <p class="get"><strong>What you get:</strong> long adversarial interviews with researchers, often about
+      interpretability and the limits of current methods. It is the one long-form channel that reliably pushes
+      back on a guest&rsquo;s claims &mdash; useful training for how you should be questioning your own agent results.</p>
+      <p class="get"><strong>Prerequisite:</strong> none technically, but it only pays off once you have opinions
+      to defend. Watch the interpretability and RL episodes after <a href="../track-b/49-components-circuits.html">L49</a>.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://www.youtube.com/@TwoMinutePapers">Two Minute Papers</a></h3>
+      <div class="rl-meta"><span class="commit">~5 min per video, background only</span><span class="lesson">feeds discovery, no specific lesson</span></div>
+      <p class="get"><strong>What you get:</strong> fast, enthusiastic summaries of recent papers &mdash; genuinely
+      useful as a discovery layer for <em>which</em> papers exist, and explicitly not as an explanation of any of
+      them. Treat every claim as a pointer to a PDF, never as a finding.</p>
+      <p class="get"><strong>Prerequisite:</strong> none. Cap it at a few minutes a week; this is the entry on the
+      page most likely to turn into passive consumption.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Systems &mdash; GPU, kernels, serving">
+    <h2 id="videos-s4">4 &middot; Systems &mdash; GPU, kernels, serving <a class="hook" href="#videos-s4">#</a></h2>
+
+    <p>The layer where the money and the latency are. These are performance-engineering lectures, not ML lectures
+    &mdash; they assume you have already accepted that the bottleneck is memory traffic. <span class="count">Four entries.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/gpu-mode/lectures">GPU MODE &mdash; lecture series</a></h3>
+      <div class="rl-meta"><span class="commit">~1&ndash;2 h per lecture, 8&ndash;10 lectures</span><span class="lesson">feeds <a href="../track-a/21-gpus-numerics.html">L21</a> &middot; <a href="../track-b/38-flash-attention.html">L38</a> &middot; <a href="../track-b/39-kernels.html">L39</a></span></div>
+      <p class="get"><strong>What you get:</strong> the community&rsquo;s kernel-engineering curriculum &mdash; CUDA
+      memory hierarchy, tiling, profiling, then attention kernels &mdash; with assignments and recorded sessions
+      from practitioners at the labs that write these kernels. This is the highest-value video material on this
+      page for the systems half of the course.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-a/21-gpus-numerics.html">L21</a>, and access
+      to a GPU. Do not start before you can state the bytes of a KV cache for a given model on paper.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://triton-lang.org/main/getting-started/tutorials/index.html">Triton &mdash; tutorials</a></h3>
+      <div class="rl-meta"><span class="commit">~4 h to do the fused-attention tutorial properly</span><span class="lesson">feeds <a href="../track-b/39-kernels.html">L39</a> &middot; <a href="../track-b/38-flash-attention.html">L38</a></span></div>
+      <p class="get"><strong>What you get:</strong> the tutorial sequence from vector add to fused softmax to
+      flash attention, in Python-level syntax &mdash; the shortest route to writing a real kernel yourself. The
+      step where you fuse softmax and see the memory traffic drop is the actual lesson of
+      <a href="../track-b/38-flash-attention.html">L38</a>.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-b/38-flash-attention.html">L38</a> read
+      first. If you only do one item from this page&rsquo;s systems group, do this one.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://blog.vllm.ai/">vLLM &mdash; blog &amp; design posts</a> &middot; <a href="https://docs.vllm.ai/">docs</a></h3>
+      <div class="rl-meta"><span class="commit">~3 h reading + 1 deployment experiment</span><span class="lesson">feeds <a href="../track-b/44-inference-serving.html">L44</a> &middot; <a href="../track-b/45-caching.html">L45</a></span></div>
+      <p class="get"><strong>What you get:</strong> the design rationale for paged attention, continuous batching,
+      and prefix caching, written by the team that shipped them &mdash; plus documentation authoritative enough to
+      size a deployment from. Read a design post, then reproduce the throughput claim on your own machine.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-a/09-kv-cache.html">L09</a> and
+      <a href="../track-b/44-inference-serving.html">L44</a>. If you can explain why prefill and decode have
+      different bottlenecks, you are ready.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://www.youtube.com/@pytorch">PyTorch &mdash; channel (tutorials &amp; conference talks)</a></h3>
+      <div class="rl-meta"><span class="commit">selective, 1&ndash;2 h</span><span class="lesson">feeds <a href="../track-b/42-parallelism.html">L42</a> &middot; <a href="../track-a/20-training-loop.html">L20</a></span></div>
+      <p class="get"><strong>What you get:</strong> the authoritative walkthroughs for the framework you will
+      actually use &mdash; FSDP/distributed sharding, compile, mixed precision, and the performance-tuning talks
+      from their conferences. When the docs are ambiguous about a numerics or sharding behaviour, the talk
+      usually is not.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-a/20-training-loop.html">L20</a>. Search
+      the channel for the distributed-training and compile sessions specifically.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Agent &amp; course material">
+    <h2 id="videos-s5">5 &middot; Agent &amp; course material <a class="hook" href="#videos-s5">#</a></h2>
+
+    <p>Structured courses for the parts of practice that are better taught than discovered &mdash; evaluation,
+    orchestration, retrieval. Short courses are the highest-density format here, precisely because they are
+    forced to be concrete. <span class="count">Five entries.</span></p>
+
+    <div class="rl-card">
+      <h3><a href="https://www.deeplearning.ai/short-courses/">DeepLearning.AI &mdash; short courses</a></h3>
+      <div class="rl-meta"><span class="commit">1&ndash;2 h each, pick three</span><span class="lesson">feeds <a href="../track-d/77-tool-calling.html">L77</a> &middot; <a href="../track-d/89-llm-as-judge.html">L89</a></div>
+      <p class="get"><strong>What you get:</strong> short, tool-specific courses built with the vendors &mdash; agent
+      patterns, tool calling, evaluation, RAG, and judging. The value is the working notebook at the end, not the
+      lecture. Be aware they are vendor co-branded, so they teach one implementation of each pattern; cross-check
+      against the pattern papers on the <a href="papers.html">papers page</a>.</p>
+      <p class="get"><strong>Prerequisite:</strong> after <a href="../track-d/76-agents.html">L76</a>. Prioritise
+      the evaluation and orchestration courses over the &ldquo;intro to prompting&rdquo; ones &mdash; you are past
+      that layer.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://huggingface.co/learn">Hugging Face &mdash; course hub</a></h3>
+      <div class="rl-meta"><span class="commit">~8 h for the NLP course; smol-course ~4 h</span><span class="lesson">feeds <a href="../track-c/52-sft.html">L52</a> &middot; <a href="../track-c/55-dpo.html">L55</a></div>
+      <p class="get"><strong>What you get:</strong> the practical transformers curriculum plus the smol-course
+      &mdash; their hands-on post-training material covering instruction tuning and preference tuning end to end.
+      This is the fastest legitimate route from &ldquo;I have read about DPO&rdquo; to &ldquo;I have trained
+      with it&rdquo;.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-a/24-reading-code.html">L24</a> for the
+      transformers library. Do the smol-course in the same week as <a href="../track-c/55-dpo.html">L55</a>, and
+      log the loss curves &mdash; that log is your artifact.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://github.com/huggingface/smol-course">smol-course &mdash; repository</a></h3>
+      <div class="rl-meta"><span class="commit">~4&ndash;6 h + compute</span><span class="lesson">feeds <a href="../track-c/51-post-training.html">L51</a> &middot; <a href="../track-c/66-distilling-reasoning.html">L66</a></div>
+      <p class="get"><strong>What you get:</strong> the notebooks behind the course, organised by post-training
+      stage &mdash; instruction tuning, preference alignment, evaluation. Because it is a repo you can fork it,
+      break it, and measure what breaks, which is the whole point.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-c/52-sft.html">L52</a>. Start with the
+      instruction-tuning notebook and compare its masking decisions against the spec you wrote in L52.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://mlsysbook.ai/">Machine Learning Systems &mdash; open book</a></h3>
+      <div class="rl-meta"><span class="commit">reference, ~6 h targeted reading</span><span class="lesson">feeds <a href="../track-b/44-inference-serving.html">L44</a> &middot; <a href="../track-b/43-training-cost.html">L43</a></span></div>
+      <p class="get"><strong>What you get:</strong> a structured treatment of the systems stack &mdash; data
+      engineering, model compression, hardware, serving &mdash; that matches Track B&rsquo;s framing almost exactly.
+      Use its chapters as the third opinion when a Track B lesson&rsquo;s cost model needs checking.</p>
+      <p class="get"><strong>Prerequisite:</strong> none, but read it alongside <a href="../track-b/43-training-cost.html">L43</a>
+      and <a href="../track-b/44-inference-serving.html">L44</a>, not before.</p>
+    </div>
+
+    <div class="rl-card">
+      <h3><a href="https://jax-ml.github.io/scaling-book/">How to Scale Your Model &mdash; JAX/TPU scaling book</a></h3>
+      <div class="rl-meta"><span class="commit">~8 h, the best single resource on parallelism</span><span class="lesson">feeds <a href="../track-b/42-parallelism.html">L42</a> &middot; <a href="../track-b/43-training-cost.html">L43</a></span></div>
+      <p class="get"><strong>What you get:</strong> the arithmetic of distributed training laid out properly
+      &mdash; rooflines, communication cost, sharding, and how to choose a parallel configuration for a given job.
+      It targets JAX/TPU but the math is hardware-agnostic, and it is the reference behind
+      <a href="../track-b/42-parallelism.html">L42</a>&rsquo;s config-selection exercise.</p>
+      <p class="get"><strong>Prerequisite:</strong> <a href="../track-b/43-training-cost.html">L43</a>&rsquo;s FLOPs
+      and MFU material. If you cannot compute MFU by hand, read that lesson first.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; How to consume this">
+    <h2 id="videos-s6">6 &middot; How to consume this <a class="hook" href="#videos-s6">#</a></h2>
+
+    <p>This block is identical on all three resource pages, deliberately. The cadence is the same whether you are
+    reading a paper, a blog post, or watching a talk, because the failure is the same &mdash; and it is worse in
+    video, because video is the most comfortable form of not working.</p>
+
+    <div class="grid2">
+      <div class="card">
+        <h4>The 30-minutes-a-day cadence</h4>
+        <p><strong>00&ndash;05 &mdash; orient.</strong> For video: read the description and the chapter list, then
+        write one sentence on the claim. For a paper or post: abstract, figures, last paragraph.</p>
+        <p><strong>05&ndash;25 &mdash; the load-bearing part.</strong> One section, one derivation, one build step.
+        Never a whole course in one sitting. Pause at every code line and type it yourself.</p>
+        <p><strong>25&ndash;30 &mdash; the tag.</strong> One line in a log: claim &middot; evidence &middot; what I
+        would have to build to check it. A talk you cannot summarise in one sentence was background music.</p>
+      </div>
+      <div class="card">
+        <h4>The skim-versus-read rule</h4>
+        <p><strong>Read deeply only if you will implement something from it within two weeks.</strong> That is the
+        whole rule, and it applies harder to video: watch at 1x only when you are typing along.</p>
+        <p>About to write a kernel &rarr; watch the GPU-MODE and Triton material slowly, with a GPU open. About to
+        pick a serving stack &rarr; read the design posts, skip the conference talk. About to &ldquo;learn about
+        agents generally&rdquo; &rarr; you are already past it; go build the harness.</p>
+        <p>If the two-week window is imaginary, it is a skim. Mark it as one and do not feel bad about 2x speed.</p>
+      </div>
+    </div>
+
+    <div class="callout boss">
+      <p><strong>Reading without a build is entertainment.</strong> Watching without a build is worse, because it
+      feels more like learning. The only defence is a hard gate: a source earns a place in your log when a number
+      in a repo you own moved because of it &mdash; a latency, a memory line, a loss curve, a pass rate. If
+      nothing moved, you were watching.</p>
+    </div>
+
+    <p class="honest">Back to <a href="papers.html">the paper canon</a> or
+    <a href="blogs.html">blogs and newsletters</a>.</p>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="blogs.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">Blogs &amp; newsletters</span></a>
+    <a class="next" href="../index.html"><span class="dir">COURSE &rarr;</span><span class="ttl">AILearn &middot; 100 lessons</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

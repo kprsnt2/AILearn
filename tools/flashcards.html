@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="tools/flashcards">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flashcards — spaced repetition for AI concepts</title>
+<meta name="description" content="A real SM-2 spaced repetition trainer over the core concepts of the AILearn curriculum. Stored locally in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .head { padding: 36px 0 4px; max-width: 880px; }
+  .head h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); letter-spacing: -1.2px; }
+  .grid { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 20px; align-items: start; }
+  @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+
+  .stage { min-height: 340px; display: flex; flex-direction: column; }
+  .cardbox {
+    background: linear-gradient(180deg, rgba(99,102,241,.06), rgba(13,18,29,.9));
+    border: 1px solid var(--line); border-radius: 16px; padding: 34px 34px;
+    flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 260px;
+    position: relative; transition: .2s;
+  }
+  .cardbox:hover { border-color: rgba(99,102,241,.3); }
+  .meta { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .65rem;
+    color: var(--txt-3); letter-spacing: 1px; margin-bottom: 20px; text-transform: uppercase; }
+  .meta .due { color: var(--cyan); }
+  .q { font-size: 1.22rem; line-height: 1.55; color: var(--txt); font-weight: 550; }
+  .a {
+    margin-top: 24px; padding-top: 24px; border-top: 1px dashed var(--line);
+    font-size: .98rem; line-height: 1.72; color: var(--txt-2); display: none;
+  }
+  .a.show { display: block; animation: fade .25s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+  .a code { font-family: var(--mono); font-size: .86em; background: rgba(99,102,241,.13);
+    color: #c7d2fe; padding: 1.5px 6px; border-radius: 5px; }
+  .lesson-ref { display: inline-block; margin-top: 14px; font-family: var(--mono); font-size: .68rem;
+    color: var(--cyan); border: 1px solid rgba(56,189,248,.3); background: rgba(56,189,248,.07);
+    padding: 2px 9px; border-radius: 99px; text-decoration: none; }
+  .lesson-ref:hover { background: rgba(56,189,248,.14); }
+
+  .controls { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .grade {
+    flex: 1 1 110px; padding: 13px 10px; border-radius: 11px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card-2); color: var(--txt);
+    font-family: var(--sans); font-weight: 600; font-size: .85rem; transition: .16s;
+  }
+  .grade:hover { transform: translateY(-2px); }
+  .grade small { display: block; font-weight: 400; font-size: .68rem; color: var(--txt-3);
+    font-family: var(--mono); margin-top: 3px; }
+  .g0 { border-color: rgba(239,68,68,.35); } .g0:hover { background: rgba(239,68,68,.1); }
+  .g1 { border-color: rgba(245,158,11,.35); } .g1:hover { background: rgba(245,158,11,.1); }
+  .g2 { border-color: rgba(56,189,248,.35); } .g2:hover { background: rgba(56,189,248,.1); }
+  .g3 { border-color: rgba(16,185,129,.35); } .g3:hover { background: rgba(16,185,129,.1); }
+  .reveal-btn {
+    width: 100%; padding: 15px; border-radius: 11px; cursor: pointer; font-weight: 650;
+    font-size: .95rem; font-family: var(--sans); border: 0; background: var(--grad); color: #fff;
+    transition: .18s;
+  }
+  .reveal-btn:hover { filter: brightness(1.12); transform: translateY(-1px); }
+
+  .side { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 20px; }
+  .side h3 { margin: 0 0 14px !important; font-size: .7rem; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--txt-3); font-family: var(--mono); }
+  .statline { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .78rem;
+    padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+  .statline:last-child { border-bottom: 0; }
+  .statline span:first-child { color: var(--txt-3); }
+  .statline span:last-child { color: var(--txt); }
+  .filterrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .fbtn { font-family: var(--mono); font-size: .67rem; padding: 4px 9px; border-radius: 99px;
+    border: 1px solid var(--line); background: transparent; color: var(--txt-3); cursor: pointer; }
+  .fbtn.on { background: rgba(56,189,248,.12); color: var(--cyan); border-color: rgba(56,189,248,.45); }
+  .empty { text-align: center; padding: 50px 20px; color: var(--txt-3); }
+  .empty .big { font-size: 2rem; margin-bottom: 10px; }
+  .kbdhint { text-align: center; font-family: var(--mono); font-size: .68rem; color: var(--txt-3); margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="index.html">Tools</a>
+      <a href="../agi/index.html">AGI Lab</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="head">
+  <div class="track-tag">TOOL · SPACED REPETITION</div>
+  <h1>Recall the mechanism, not the vibe.</h1>
+  <p class="lede">
+    Every card tests whether you can <em>reconstruct</em> a mechanism, not whether you recognise a term.
+    Grading uses SM-2: your interval grows when you can explain it and collapses when you cannot.
+    Everything stays in this browser — no account, no server, nothing leaves the machine.
+  </p>
+</header>
+
+<div class="grid" style="margin-top:26px;">
+  <div class="stage">
+    <div class="cardbox" id="cardbox">
+      <div id="card-content"></div>
+    </div>
+    <div class="controls" id="controls"></div>
+    <div class="kbdhint"><kbd>Space</kbd> reveal · <kbd>1</kbd>–<kbd>4</kbd> grade · <kbd>s</kbd> suspend</div>
+  </div>
+
+  <aside>
+    <div class="side">
+      <h3>Deck status</h3>
+      <div class="statline"><span>cards in deck</span><span id="s-total">0</span></div>
+      <div class="statline"><span>due now</span><span id="s-due" style="color:#38bdf8">0</span></div>
+      <div class="statline"><span>learning</span><span id="s-learn">0</span></div>
+      <div class="statline"><span>young (&lt;21d)</span><span id="s-young">0</span></div>
+      <div class="statline"><span>mature (&ge;21d)</span><span id="s-mature" style="color:#10b981">0</span></div>
+      <div class="statline"><span>streak today</span><span id="s-streak">0</span></div>
+    </div>
+
+    <div class="side" style="margin-top:14px;">
+      <h3>Filter</h3>
+      <div class="filterrow" id="filters"></div>
+      <p style="font-size:.74rem;color:var(--txt-3);margin:12px 0 0;line-height:1.5;">
+        Filtering changes which cards are eligible this session. Grades still persist.
+      </p>
+    </div>
+
+    <div class="side" style="margin-top:14px;">
+      <h3>Danger zone</h3>
+      <button class="fbtn" id="reset" style="width:100%;padding:8px;">reset all scheduling</button>
+    </div>
+  </aside>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="index.html"><span class="dir">← BACK</span><span class="ttl">Tools</span></a>
+  <a class="next" href="concept-lab.html"><span class="dir">NEXT →</span><span class="ttl">Concept lab</span></a>
+</nav>
+</main>
+
+<footer>AILearn · Tools · SM-2 scheduling, stored in localStorage</footer>
+<script src="../_shell.js"></script>
+<script src="cards.js"></script>
+<script>
+(function () {
+  'use strict';
+  var CARDS = window.AILearnCards || [];
+  var KEY = 'AILearn::srs';
+  var settingsKey = 'AILearn::srs-filter';
+
+  function load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
+  function save(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {} }
+  function today() { var d = new Date(); return d.toISOString().slice(0, 10); }
+  function days(n) { var d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+
+  var srs = load();
+  var filter = 'all';
+  try { filter = localStorage.getItem(settingsKey) || 'all'; } catch (e) {}
+
+  function cardState(id) {
+    return srs[id] || { ef: 2.5, interval: 0, reps: 0, due: today(), lapses: 0 };
+  }
+  function eligible(c) {
+    var st = cardState(c.id);
+    if (filter !== 'all' && c.track !== filter) return false;
+    return true;
+  }
+  function isDue(c) { var st = cardState(c.id); return st.due <= today(); }
+
+  function queue() {
+    var due = CARDS.filter(function (c) { return eligible(c) && isDue(c); });
+    var fresh = due.filter(function (c) { return cardState(c.id).reps === 0; });
+    var review = due.filter(function (c) { return cardState(c.id).reps > 0; });
+    /* new cards first, then reviews, shuffled a little */
+    var mixed = fresh.slice(0, 12).concat(review);
+    return mixed;
+  }
+
+  var current = null, revealed = false;
+
+  function nextCard() {
+    var q = queue();
+    if (!q.length) { current = null; revealed = false; renderEmpty(); renderStats(); return; }
+    current = q[0]; revealed = false;
+    renderCard(); renderStats();
+  }
+
+  function renderEmpty() {
+    document.getElementById('card-content').innerHTML =
+      '<div class="empty"><div class="big">✓</div>' +
+      '<div style="font-size:1.05rem;color:var(--txt-2);">Nothing due in this filter.</div>' +
+      '<p style="font-size:.84rem;margin-top:10px;">Come back tomorrow, or switch the filter to review another track early.</p></div>';
+    document.getElementById('controls').innerHTML = '';
+  }
+
+  function renderCard() {
+    var c = current, st = cardState(c.id);
+    var trackName = { a: 'FOUNDATIONS', b: 'SCALING', c: 'POST-TRAINING', d: 'AGENTS & PRODUCTION' }[c.track] || '';
+    var html = '<div class="meta"><span>' + trackName + ' · ' + c.id.toUpperCase() + '</span>' +
+      '<span class="due">' + (st.reps ? 'due ' + st.due : 'new card') + '</span></div>' +
+      '<div class="q">' + c.q + '</div>';
+    if (revealed) {
+      html += '<div class="a show">' + c.a +
+        '<div><a class="lesson-ref" href="../' + c.link + '">→ open L' + c.lesson + '</a></div></div>';
+    }
+    document.getElementById('card-content').innerHTML = html;
+
+    var ctl = document.getElementById('controls');
+    if (!revealed) {
+      ctl.innerHTML = '<button class="reveal-btn" id="rv">Show answer</button>';
+      document.getElementById('rv').addEventListener('click', function () { revealed = true; renderCard(); });
+    } else {
+      ctl.innerHTML =
+        '<button class="grade g0" data-g="0">Again<small>&lt;1 min</small></button>' +
+        '<button class="grade g1" data-g="1">Hard<small>&lt;10 min</small></button>' +
+        '<button class="grade g2" data-g="2">Good<small>normal</small></button>' +
+        '<button class="grade g3" data-g="3">Easy<small>long</small></button>';
+      [].slice.call(ctl.querySelectorAll('.grade')).forEach(function (b) {
+        b.addEventListener('click', function () { grade(parseInt(b.getAttribute('data-g'), 10)); });
+      });
+    }
+  }
+
+  /* SM-2 */
+  function grade(g) {
+    if (!current) return;
+    var st = cardState(current.id);
+    if (g === 0) {
+      st.reps = 0;
+      st.interval = 0;
+      st.lapses = (st.lapses || 0) + 1;
+      st.ef = Math.max(1.3, st.ef - 0.2);
+      st.due = days(0);
+    } else {
+      st.reps += 1;
+      if (st.reps === 1) st.interval = 1;
+      else if (st.reps === 2) st.interval = 6;
+      else st.interval = Math.round(st.interval * st.ef * (g === 1 ? 0.7 : g === 3 ? 1.3 : 1));
+      st.ef = Math.max(1.3, st.ef + (0.1 - (3 - g) * (0.08 + (3 - g) * 0.02)));
+      st.due = days(Math.max(1, st.interval));
+    }
+    srs[current.id] = st;
+    save(srs);
+    bumpStreak();
+    nextCard();
+  }
+
+  var streakKey = 'AILearn::srs-streak';
+  function bumpStreak() {
+    var s = { d: '', n: 0 };
+    try { s = JSON.parse(localStorage.getItem(streakKey)) || s; } catch (e) {}
+    var t = today();
+    if (s.d !== t) { s = { d: t, n: 0 }; }
+    s.n += 1;
+    try { localStorage.setItem(streakKey, JSON.stringify(s)); } catch (e) {}
+  }
+  function getStreak() {
+    try { var s = JSON.parse(localStorage.getItem(streakKey)); return s && s.d === today() ? s.n : 0; } catch (e) { return 0; }
+  }
+
+  function renderStats() {
+    var due = 0, learn = 0, young = 0, mature = 0;
+    CARDS.forEach(function (c) {
+      var st = cardState(c.id);
+      if (st.due <= today()) due++;
+      if (st.reps === 0) learn++;
+      else if (st.interval < 21) young++;
+      else mature++;
+    });
+    document.getElementById('s-total').textContent = CARDS.length;
+    document.getElementById('s-due').textContent = due;
+    document.getElementById('s-learn').textContent = learn;
+    document.getElementById('s-young').textContent = young;
+    document.getElementById('s-mature').textContent = mature;
+    document.getElementById('s-streak').textContent = getStreak();
+    var mini = document.getElementById('progress-mini');
+    if (mini) mini.textContent = mature + ' mastered';
+  }
+
+  /* filters */
+  var F = [['all', 'all'], ['a', 'A·foundations'], ['b', 'B·scaling'], ['c', 'C·post-training'], ['d', 'D·agents']];
+  var fh = document.getElementById('filters');
+  fh.innerHTML = F.map(function (f) {
+    return '<button class="fbtn' + (filter === f[0] ? ' on' : '') + '" data-f="' + f[0] + '">' + f[1] + '</button>';
+  }).join('');
+  [].slice.call(fh.querySelectorAll('.fbtn')).forEach(function (b) {
+    b.addEventListener('click', function () {
+      filter = b.getAttribute('data-f');
+      try { localStorage.setItem(settingsKey, filter); } catch (e) {}
+      [].slice.call(fh.querySelectorAll('.fbtn')).forEach(function (x) { x.classList.toggle('on', x === b); });
+      nextCard();
+    });
+  });
+
+  document.getElementById('reset').addEventListener('click', function () {
+    if (confirm('Reset all spaced-repetition scheduling?')) {
+      srs = {}; save(srs); nextCard();
+    }
+  });
+
+  /* keyboard */
+  document.addEventListener('keydown', function (e) {
+    if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+    if (e.code === 'Space') { e.preventDefault(); if (!current) return; if (!revealed) { revealed = true; renderCard(); } return; }
+    if (revealed && ['1', '2', '3', '4'].indexOf(e.key) > -1) { grade(parseInt(e.key, 10) - 1); }
+  });
+
+  nextCard();
+})();
+</script>
+</body>
+</html>

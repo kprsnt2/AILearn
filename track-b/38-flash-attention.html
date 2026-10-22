@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b38">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L38 · FlashAttention and IO-Awareness — AILearn</title>
+<meta name="description" content="Attention's bottleneck is not FLOPs, it is HBM round-trips. FlashAttention never materialises the L&times;L score matrix; a worked arithmetic-intensity model of why that is a 10&times; speedup.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L38</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L38 &middot; FlashAttention and IO-Awareness</h1>
+  <p class="lede">A naive attention layer writes the L&times;L score matrix to HBM and reads it back several times &mdash; for 4k tokens that is 134 MB of traffic per head to do 4.3 GFLOP of work. FlashAttention reorders the computation so the matrix never exists in memory, and the honest reason it is faster is that the GPU was never FLOP-bound.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: memory-bandwidth model of attention</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">HBM round-trips</span>
+  <span class="pill">SRAM tiling</span>
+  <span class="pill">arithmetic intensity</span>
+  <span class="pill">online softmax</span>
+  <span class="pill">roofline</span>
+  <span class="pill">no L&times;L materialisation</span>
+  <span class="pill">recompute over store</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b38-s1">1 &middot; Why it exists <a class="hook" href="#b38-s1">#</a></h2>
+
+    <p>Attention looks compute-heavy: every token compares with every other token. On paper, a 4k-token sequence with one head of dim 128 costs 2&times;128&times;4096&sup2; = 4.295&times;10<sup>9</sup>
+    FLOPs &mdash; 10.9 &micro;s at peak on an H800, and 27 &micro;s at 40% MFU. Across 32 heads that is 1.37&times;10<sup>11</sup>
+    FLOPs. That sounds trivial. In 2019 it was not, and the reason was not FLOPs.</p>
+
+    <p>A standard implementation is a chain of separate kernels: QK<sup>T</sup> writes the L&times;L score matrix to HBM; the
+    softmax kernel reads it, computes row maxima and denominators, writes probabilities; the AV kernel reads those probabilities
+    back. For L = 4096 in fp16, that matrix is 4096&sup2; &times; 2 bytes = <strong>32 MiB per head</strong>. The naive flow
+    touches it roughly four times (write, read, read, plus intermediate max/sum arrays), giving 134.2 MB of HBM traffic per head
+    to support 4.295 GFLOP &mdash; and 134.2 MB at 3.35 TB/s is 40 &micro;s, longer than the 27 &micro;s of math even at 40%
+    MFU.</p>
+
+    <p>That is an arithmetic intensity of 4.295&times;10<sup>9</sup> / 1.342&times;10<sup>8</sup> = <strong>32.0 FLOP/byte</strong>.
+    An H800 can deliver ~989 TFLOP/s of bf16 math against ~3.35 TB/s of HBM bandwidth, so its ridge point &mdash; the intensity at
+    which math and memory balance &mdash; is 989/3.35 &asymp; <strong>295 FLOP/byte</strong>. At 32, the kernel is nine times below
+    the ridge: it is <em>memory-bound by a factor of nine</em>, so it runs at ~11% of peak FLOPs no matter how good the math is.</p>
+
+    <p>The failure, then: pre-2022 attention left 89% of the GPU idle, and context length was limited by memory pressure more
+    than by compute. FlashAttention <span class="asof">arXiv:2205.14135</span> and FlashAttention-2
+    <span class="asof">arXiv:2307.08691</span> fixed the <em>data movement</em>, not the algorithm.</p>
+
+    <div class="callout boss">
+      <p>Modern attention is a memory-traffic problem disguised as a math problem. FlashAttention does exactly the same FLOPs
+      as naive attention &mdash; it just stops paying to round-trip a huge intermediate through slow memory. That is why it is
+      called IO-aware rather than faster math.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b38-s2">2 &middot; The mental model <a class="hook" href="#b38-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> cooking from a cookbook stored in a warehouse. Reading the whole book onto your
+    kitchen counter once and cooking everything from it (tiling) beats fetching one page at a time, walking back, and
+    re-fetching pages you already read (naive attention). The recipe does not change; the number of warehouse trips does.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Hierarchy of memory sizes: kitchen counter = SRAM/registers (the
+      H100-class has ~228 KB of shared memory per SM), warehouse = HBM (tens of GB). Bottleneck is round-trips, and locality is
+      the whole game.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>You cannot simply &ldquo;keep the book&rdquo; because the L&times;L matrix does
+      not fit &mdash; at 128k tokens it is 32 GiB per head. FlashAttention does not avoid the intermediate; it never
+      <em>materialises</em> it, recomputing the needed pieces inside a tile and carrying forward a running softmax
+      correction.</p></div>
+    </div>
+
+    <h3>Online softmax, in one sentence</h3>
+    <p>Softmax needs a global maximum and denominator. The trick is that both can be accumulated block by block: keep a running
+    max m and running normaliser &ell;, and when a new block raises the max, rescale the accumulated output by
+    exp(m<sub>old</sub> &minus; m<sub>new</sub>) before adding the new block's contribution. The result is exactly the same as
+    computing the full softmax at once &mdash; no approximation &mdash; and it is why a single pass over K/V tiles is
+    sufficient.</p>
+
+    <div class="formula">
+      m<sup>(j)</sup> = max(m<sup>(j&minus;1)</sup>, max<sub>i&isin;block j</sub> s<sub>i</sub>) &nbsp;;&nbsp;
+      &ell;<sup>(j)</sup> = e<sup>m<sup>(j&minus;1)</sup>&minus;m<sup>(j)</sup></sup>&ell;<sup>(j&minus;1)</sup> + &sum;<sub>i&isin;block j</sub> e<sup>s<sub>i</sub>&minus;m<sup>(j)</sup></sup><br>
+      o<sup>(j)</sup> = e<sup>m<sup>(j&minus;1)</sup>&minus;m<sup>(j)</sup></sup>o<sup>(j&minus;1)</sup> + (e<sup>s&minus;m<sup>(j)</sup></sup>/&ell;<sup>(j)</sup>)&thinsp;V<sub>block</sub>
+      <span class="note">m = running row max, &ell; = running denominator, o = running output. The rescaling factors are what make the tiled computation exact. Only O(L&middot;d) state (o, m, &ell;) is kept in SRAM; the O(L&sup2;) matrix exists only as a tile of size (block&times;block) at a time.</span>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b38-s3">3 &middot; The mechanism <a class="hook" href="#b38-s3">#</a></h2>
+
+    <h3>The roofline, computed</h3>
+    <p>Arithmetic intensity &mdash; FLOPs per byte moved &mdash; decides whether a kernel is compute-bound or memory-bound. A
+    device's ridge point separates the regimes:</p>
+    <table class="table">
+      <thead><tr><th>Quantity</th><th>H800-class value</th></tr></thead>
+      <tbody>
+        <tr><td>Peak bf16 tensor math</td><td>989 TFLOP/s</td></tr>
+        <tr><td>HBM bandwidth</td><td>~3.35 TB/s</td></tr>
+        <tr><td>Ridge point</td><td>989&times;10<sup>12</sup> / 3.35&times;10<sup>12</sup> = <strong>295 FLOP/byte</strong></td></tr>
+        <tr><td>Shared memory per SM</td><td>~228 KB</td></tr>
+        <tr><td>fp16 tile, 128&times;128</td><td>128 &times; 128 &times; 2 = <strong>32 KB</strong></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Why tiling wins: the traffic arithmetic</h3>
+    <p>For one head, L = 4096, d = 128, fp16:</p>
+    <ul>
+      <li><strong>Naive:</strong> the L&times;L matrix is 32 MiB. Writing it, reading it for the row max, reading it for the
+      denominator, and reading it for the AV product is roughly <strong>4 &times; 32 MiB = 134.2 MB</strong> of HBM traffic per
+      head, plus Q, K, V (each 4096 &times; 128 &times; 2 = 1 MiB).</li>
+      <li><strong>FlashAttention:</strong> Q stays in SRAM. K and V are streamed in tiles of 128 rows; with block size 128 you
+      make L/128 = 32 passes over the K/V tiles, each pass reading L &times; d &times; 2 = 1 MiB per matrix. Traffic is
+      approximately 2 &times; 32 &times; 1 MiB = <strong>64 MB per head</strong> including Q (naive is 134.2 MB per head).</li>
+      <li>The real asymptotic win is different: FlashAttention's traffic is <strong>O(L&middot;d)</strong> rather than
+      <strong>O(L&sup2;)</strong>. At L = 4096 the constant factor is only ~2&times; because 32 passes is a lot; at L = 32,768 it is
+      256 passes over 8 MiB tiles versus a naive matrix of 32,768&sup2; &times; 2 = 2 GiB touched four times = 8.59 GB &mdash;
+      and because the tiled traffic grows linearly while the naive traffic grows as L&sup2;, the gap widens exactly where you need
+      it.</li>
+    </ul>
+
+    <h3>The real payoff: memory capacity</h3>
+    <p>The traffic numbers above are modest at 4k. The decisive benefit is that the L&times;L matrix never has to exist:</p>
+    <table class="table">
+      <thead><tr><th>Sequence length</th><th>Score matrix, 1 head, fp16</th><th>Score matrix, 32 heads</th><th>Practical naive-attention requirement</th></tr></thead>
+      <tbody>
+        <tr><td>4,096</td><td>32 MiB</td><td>1 GiB</td><td>fits, but adds 1 GiB of peak memory</td></tr>
+        <tr><td>32,768</td><td>2 GiB</td><td>64 GiB</td><td>exceeds one accelerator</td></tr>
+        <tr><td>131,072</td><td>32 GiB</td><td>2 TiB</td><td>impossible without sharding the sequence</td></tr>
+      </tbody>
+    </table>
+    <p>So FlashAttention's primary contribution is <strong>capacity</strong>, not raw speed: it makes 32k&ndash;128k context
+    fit in a fixed memory budget, and the speed follows because a memory-bound kernel stops being memory-bound. That is also how
+    it paved the way for long-context training runs, which is why it precedes every long-context result in this track.</p>
+
+    <h3>The design pattern you should generalise</h3>
+    <div class="grid2">
+      <div class="card"><h4>Recompute over store</h4><p>Cheaper to recompute a tile than to persist a giant intermediate and read
+      it back. This is the same decision as gradient checkpointing (L20), applied at kernel level.</p></div>
+      <div class="card"><h4>Fuse the chain</h4><p>Naive attention is 3 kernels (QK, softmax, AV) with 2+ HBM round trips between
+      them. FlashAttention is 1 kernel with no round trips. The entire speedup is the fusion.</p></div>
+    </div>
+
+    <div class="callout audit">
+      <p>To audit a kernel claim, ask for three numbers: achieved FLOP/s, bytes read from HBM per unit of work, and peak
+      memory. A kernel can be correct, mathematically identical, and 5&times; slower purely by losing locality. Your BugAgents
+      &ldquo;4-point promotion gate&rdquo; should include a bandwidth measurement for any kernel-level change, or the speed
+      claim is not falsifiable.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b38-s4">4 &middot; Your hands <a class="hook" href="#b38-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the arithmetic-intensity calculator</h4>
+      <p>The model that predicts whether attention will run fast. Slower than 1/ridge means memory-bound; the fraction of peak
+      you can expect is intensity/ridge.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">intensity</span>(L, d, bytes_el=<span class="nm">2</span>, touches=<span class="nm">4</span>):
+    flops = <span class="nm">2</span> * L * L * d            <span class="cm"># QK^T plus AV, per head</span>
+    traffic = touches * L * L * bytes_el          <span class="cm"># naive: L x L intermediate, multiple round trips</span>
+    <span class="kw">return</span> flops, traffic, flops / traffic
+
+RIDGE = <span class="nm">989e12</span> / <span class="nm">3.35e12</span>
+<span class="kw">print</span>(<span class="st">f"ridge point = {RIDGE:.1f} FLOP/byte"</span>)
+<span class="kw">for</span> L <span class="kw">in</span> (<span class="nm">1024</span>, <span class="nm">4096</span>, <span class="nm">16384</span>, <span class="nm">131072</span>):
+    f, t, i = <span class="fn">intensity</span>(L, <span class="nm">128</span>)
+    <span class="fn">print</span>(<span class="st">f"L={L:>7,}  FLOPs={f:.3e}  bytes={t:.3e}  intensity={i:8.2f}  % of peak&asymp;{100*min(1,i/RIDGE):5.1f}%"</span>)
+      </div>
+      <p class="expect">Ridge is 295.2 FLOP/byte. For naive attention the intensity is <em>independent of L</em> &mdash;
+      it is 2&middot;d/(touches&middot;bytes_el) = 2&middot;128/(4&middot;2) = 32.0 FLOP/byte at every length, so naive
+      attention is capped near 32/295.2 = <strong>10.8% of peak</strong> forever. That constant is the punchline: the quadratic
+      FLOPs are not the problem, the quadratic <em>traffic per FLOP</em> is.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; prove the traffic bound with a real timing shape</h4>
+      <p>Predict wall-clock for a naive-attention kernel from bytes alone and from FLOPs. The ratio tells you how much of a
+      memory penalty you are paying at each length.</p>
+      <div class="code" data-lang="bash">
+python -c "
+bw=3.35e12; fl=989e12*0.40
+for L in (4096,16384,65536):
+    flops=2*L*L*128; bytes_=4*L*L*2
+    print(f'L={L:>6,}: by FLOPs {flops/fl*1000:7.3f} ms   by bytes {bytes_/bw*1000:7.3f} ms   -> limited by {\"memory\" if bytes_/bw>flops/fl else \"compute\"}')
+"
+      </div>
+      <p class="expect">Measured ratio bytes/FLOPs = 3.69 at every length (4096: 0.040 ms vs 0.011 ms; 65,536: 10.26 ms vs
+      2.78 ms) &mdash; constant, which is itself diagnostic: naive attention's intensity does not improve with L. Note this uses
+      40% MFU for the FLOP estimate, so it understates the pure roofline gap; against a compute-bound kernel at 40% of peak, the
+      memory penalty is 3.69&times; and the ceiling on achievable FLOP efficiency is 40%/3.69 &asymp; 10.8%, matching the roofline. This is the falsifiable prediction: if your
+      measured naive-attention time matches the FLOPs number rather than the bytes number, your &ldquo;naive&rdquo;
+      implementation is already tiled.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the online-softmax equivalence test</h4>
+      <p>The whole method depends on the tiled softmax being <em>exactly</em> equal to the full one. Verify it numerically; this
+      is a 20-line proof you can run.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">38</span>)
+L, d, B = <span class="nm">512</span>, <span class="nm">64</span>, <span class="nm">64</span>
+q, K, V = rng.normal(size=(<span class="nm">1</span>, d)), rng.normal(size=(L, d)), rng.normal(size=(L, d))
+
+<span class="cm"># exact</span>
+s = (q @ K.T) / np.sqrt(d); p = np.exp(s - s.max(<span class="nm">1</span>, keepdims=<span class="kw">True</span>)); p /= p.sum(<span class="nm">1</span>, keepdims=<span class="kw">True</span>)
+exact = p @ V
+
+<span class="cm"># tiled, online softmax</span>
+m = np.full((<span class="nm">1</span>,), -np.inf); l = np.zeros((<span class="nm">1</span>,)); o = np.zeros((<span class="nm">1</span>, d))
+<span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">0</span>, L, B):
+    sb = (q @ K[j:j+B].T) / np.sqrt(d)
+    m_new = np.maximum(m, sb.max(<span class="nm">1</span>))
+    scale = np.exp(m - m_new)
+    pb = np.exp(sb - m_new[:, <span class="kw">None</span>])
+    l = l * scale + pb.sum(<span class="nm">1</span>)
+    o = o * scale[:, <span class="kw">None</span>] + pb @ V[j:j+B]
+    m = m_new
+tiled = o / l[:, <span class="kw">None</span>]
+<span class="fn">print</span>(<span class="st">"max abs diff:", np.abs(exact - tiled).max())   <span class="cm"># ~1e-16</span>
+      </div>
+      <p class="expect">Measured max absolute difference: 1.67&times;10<sup>-16</sup> &mdash; floating-point noise, i.e. the tiled
+      computation is exact,
+      not an approximation. That is the property that makes FlashAttention safe to use as a drop-in replacement rather than a
+      quality trade &mdash; and the property your <em>falsification</em> should target: if you see a diff around 10<sup>-3</sup>,
+      the rescaling factor uses m<sub>new</sub> where it should use m<sub>old</sub>.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b38-s5">5 &middot; Failure modes <a class="hook" href="#b38-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Assuming FlashAttention reduces FLOPs.</strong> Symptom: your capacity model predicts a speedup that does not
+        appear, or a scaling-law extrapolation assumes cheaper attention. It computes the same FLOPs; it changes traffic and
+        memory. Only sparsity changes the FLOPs.</li>
+        <li><strong>Falling back silently.</strong> Symptom: long-context throughput drops on sequences longer than a threshold
+        (often multiples of the block size) because the kernel hit an unsupported shape and used a slower path. Check kernel
+        selection counters, and benchmark exactly your production sequence lengths including odd ones.</li>
+        <li><strong>Masking cost.</strong> Symptom: attention slows by 20&ndash;40% when a custom mask is added, because the fast
+        path handles only a few mask patterns and falls back. Arbitrary attention bias is a common cause.</li>
+        <li><strong>Numerical differences in long chains.</strong> Symptom: outputs drift slightly against a reference
+        implementation and a test comparing exact floats fails. This is expected fp accumulation order, not a bug &mdash; compare
+        with a tolerance and check that error does not grow with depth.</li>
+        <li><strong>Ignoring the KV traffic at decode.</strong> Symptom: prefill gets faster and decode does not, because decode
+        is bandwidth-bound by the <em>cache</em> (L33), not by the attention score matrix. FlashAttention optimises the wrong term
+        for decode throughput; cache compression is the lever there.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b38-s6">6 &middot; Connects to <a class="hook" href="#b38-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L06 (attention) and L21 (GPU numerics). &nbsp; <strong>Unlocks:</strong> L39 (writing
+    kernels), L34 (sparse attention) and every long-context result.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/06-attention-core.html">L06 &middot; Self-attention</a> &mdash; the computation being reordered.</li>
+      <li><a class="tag-a" href="../track-a/21-gpus-numerics.html">L21 &middot; GPUs, numerics, memory math</a> &mdash; HBM vs SRAM hierarchy.</li>
+      <li><a class="tag-b" href="39-kernels.html">L39 &middot; CUDA / Triton kernels</a> &mdash; writing the fused kernel yourself.</li>
+      <li><a class="tag-b" href="34-dsa.html">L34 &middot; DSA</a> &mdash; changing the FLOPs, not just the traffic.</li>
+      <li><a class="tag-b" href="35-long-context.html">L35 &middot; Long context</a> &mdash; the four-bill model that depends on kernel efficiency.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b38-s7">7 &middot; Self-check <a class="hook" href="#b38-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> An H800 runs 989 TFLOP/s bf16 with 3.35 TB/s of HBM. What is its ridge point, and what fraction of peak can a kernel with intensity 32 FLOP/byte reach?</p>
+        <details><summary>Reveal answer</summary><p>Ridge = 989&times;10<sup>12</sup>/3.35&times;10<sup>12</sup> = 295.2 FLOP/byte. At intensity 32, achievable
+        = 32/295.2 = 10.8% of peak &asymp; 107 TFLOP/s. That is the theoretical ceiling for naive attention regardless of how well written
+        the math is &mdash; and it is why FlashAttention (~60% of peak on real kernels) was such a large practical win.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> For L = 4096, one head of d = 128 fp16, what is the size of the score matrix, and how much HBM traffic does touching it four times imply?</p>
+        <details><summary>Reveal answer</summary><p>4096&sup2; &times; 2 bytes = 33,554,432 B = 32 MiB. Four touches = 134,217,728 B = 134.2 MB. At
+        3.35 TB/s that is 40.1 &micro;s of pure transfer, versus 4.34 &micro;s of math at full peak (10.9 &micro;s at 40% of
+        peak) &mdash; so the traffic alone is 3.7&times; the math time. That gap is exactly the 32/295.2 = 10.8% efficiency ceiling,
+        and it is why a naive kernel cannot be rescued by writing better arithmetic.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why is the online-softmax rescaling needed, and what breaks if you forget it?</p>
+        <details><summary>Reveal answer</summary><p>Each new block may raise the row maximum, which changes the exponent shift used for all previously
+        accumulated terms. Without rescaling the running output and denominator by exp(m_old &minus; m_new), contributions from earlier
+        blocks are computed under a different normalisation and the result is wrong &mdash; not merely imprecise, but inconsistent. The
+        symptom is an error of order 10<sup>-2</sup>&ndash;10<sup>-1</sup> that grows with block count.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> At 131,072 tokens with 1 head fp16, how large is the naive score matrix, and what does that imply for naive attention at long context?</p>
+        <details><summary>Reveal answer</summary><p>131,072&sup2; &times; 2 = 3.44&times;10<sup>10</sup> B = 32 GiB for a single head. With 32 heads it is 1 TiB,
+        and even for a single head it exceeds the memory of one accelerator plus its headroom. So naive attention is not merely slow at
+        128k, it is infeasible without sequence sharding &mdash; which is the capacity argument for FlashAttention, and why every
+        long-context training run in this track assumes it.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Diagnostic: prefill got 3&times; faster after enabling a fused attention kernel but generation throughput is unchanged. Why, and what should you optimise instead?</p>
+        <details><summary>Reveal answer</summary><p>Decode is bound by the KV cache read, not by the attention score matrix: at batch 1 and long context,
+        every step streams the whole cache, and the score-matrix traffic is trivial by comparison (one query against L keys). So a
+        kernel that removes intermediate traffic does not help decode. Optimise the cache instead: MLA/GQA (L33), token-wise
+        compression (L34), KV quantization (L40) and batching to amortise weight reads (L44).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="37-encoder-decoder.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L37 &middot; Encoder&ndash;decoder &amp; the V4.1 asymmetric split</span></a>
+    <a class="next" href="39-kernels.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L39 &middot; CUDA / Triton / TileLang kernels in practice</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

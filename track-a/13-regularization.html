@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a13">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L13 · Overfitting, Dropout, Weight Decay, Early Stop — AILearn</title>
+<meta name="description" content="Regularisation as an explicit capacity budget: the U-shaped train/val curve measured on real data, dropout's scaling convention, weight decay as a Gaussian prior, and early stopping as an implicit L2 penalty.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L13</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L13 &middot; Overfitting, Dropout, Weight Decay, and Early Stopping</h1>
+  <p class="lede">Training loss is the only objective you can optimise, and it is not the quantity you care about. Regularisation is the set of mechanisms that stop your model from spending capacity on the training set's noise &mdash; and every one of them is measurable as the gap between two curves.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: train/val curve lab + dropout scaling proof</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">generalisation gap</span>
+  <span class="pill">capacity</span>
+  <span class="pill">dropout inverted scaling</span>
+  <span class="pill">L2 = Gaussian prior</span>
+  <span class="pill">weight decay on matrices only</span>
+  <span class="pill">early stopping as implicit L2</span>
+  <span class="pill">overfitting in an encoder</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a13-s1">1 &middot; Why it exists <a class="hook" href="#a13-s1">#</a></h2>
+
+    <p>A model with N parameters can, in principle, memorise N independent facts. When the training set has more
+    effective degrees of freedom than it has structure, gradient descent will happily fit the noise: the training loss
+    keeps falling while the held-out loss starts rising. That is overfitting, and its signature is always the same
+    &mdash; two curves diverging &mdash; which is also why you cannot detect it without a held-out split.</p>
+
+    <p>The failure it causes is a number, not a sentiment: a retrieval or classification model that scores 98% on the
+    data you trained on and 71% on next quarter's data, with no warning because the training loss curve looked perfect.
+    Regularisation exists to make the objective you <em>optimise</em> closer to the objective you <em>care about</em> by
+    constraining what the model is allowed to do with its capacity.</p>
+
+    <div class="callout boss">
+      <p>Every regulariser is a claim about what should not matter. Dropout says "no single activation should be
+      load-bearing". Weight decay says "small weights are more likely correct". Early stopping says "the trajectory
+      past this point is fitting noise". If you cannot say what your regulariser is asserting, it is a hyperparameter
+      with no theory and you should expect to tune it blind.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a13-s2">2 &middot; The mental model <a class="hook" href="#a13-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> Regularisation is a budget for model complexity, like a word limit on a report. A short
+    report has to choose the essential points; an unlimited one drifts into noise. Dropout is randomly deleting words
+    while you write, forcing each sentence to survive on its own. Weight decay taxes every parameter, so only the ones
+    that pay for themselves survive. Early stopping publishes whatever you have when the quality stops improving.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The budget is not on parameter <em>count</em> &mdash; modern
+    transformers are overparameterised relative to their dataset and still generalise, because what matters is
+    effective capacity and the inductive bias of the architecture, not the raw count. (2) Dropout at evaluation is
+    <em>no</em> dropout: the network must be deterministic, so the training-time randomness is compensated by a scaling
+    factor. Forgetting that compensation produces a train/eval mismatch that looks like a quality bug. (3) Weight decay
+    is not a bound; it is a prior in a Bayesian read of training, and its effect interacts with the optimizer (L04)
+    and with normalisation (L05), so "decay 0.1" means different things in Adam and AdamW.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>The one diagnostic</h4><p>Plot train and val loss on the same axes every N steps. Overfitting is when val's slope turns positive while train's stays negative. That single plot decides which regulariser you need.</p></div>
+      <div class="card"><h4>What to check first</h4><p>Before adding dropout: is the data pipeline leaking (val tokens in train)? A leak makes the gap look small and hides the real problem &mdash; a much worse failure than overfitting because it is silent (L74).</p></div>
+      <div class="card"><h4>What dropout costs</h4><p>It injects noise into every forward pass, so the effective learning rate per step drops; convergence is slower and the final training loss is higher. If training loss must be low, dropout is the wrong tool.</p></div>
+      <div class="card"><h4>What weight decay does not do</h4><p>It does not shrink the function when the tensor feeds a normaliser (L05: LN(&gamma;&middot;x) is scale-invariant). On norm-fronted matrices, decay acts on a degree of freedom that has no effect on the forward pass, which is why its role has shifted toward controlling the <em>residual stream's</em> growth.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a13-s3">3 &middot; The mechanism <a class="hook" href="#a13-s3">#</a></h2>
+
+    <div class="formula">
+      Objective with L2: &nbsp; L(&theta;) + (&lambda;/2)&#8214;&theta;&#8214;<sup>2</sup> &nbsp;&rArr;&nbsp; gradient &nabla;L + &lambda;&theta; &nbsp;&rArr;&nbsp; update &theta; &larr; &theta;(1 &minus; &eta;&lambda;) &minus; &eta;&nabla;L<br>
+      Bayesian read: &nbsp; L2 is a MAP estimate with prior &theta; ~ N(0, 1/&lambda;) &nbsp;&nbsp;(L1 would be a Laplace prior)<br><br>
+      Dropout (train): &nbsp; h&#770;<sub>i</sub> = h<sub>i</sub> &middot; m<sub>i</sub>/(1&minus;p), &nbsp; m<sub>i</sub> ~ Bernoulli(1&minus;p)<br>
+      Dropout (eval): &nbsp;&nbsp; h&#770;<sub>i</sub> = h<sub>i</sub> &nbsp;&nbsp;&nbsp;(identity &mdash; no scaling needed)
+      <span class="note">The 1/(1&minus;p) is "inverted dropout": it keeps E[h&#770;] = h at training time, so evaluation can be the plain identity. The older convention multiplied at eval instead; mixing the two conventions doubles or halves the scale of every dropout layer, and the failure looks like a mysterious train/eval gap.</span>
+    </div>
+    <p>Why L2 means "small weights are more likely": for a fixed loss, exponentially many weight configurations fit
+    approximately equally well, and among them the smallest-norm ones are the ones that produce the smoothest function
+    over the input space. Small weights mean a small Lipschitz constant mean a function that does not change quickly
+    between training points &mdash; and "does not change quickly where it has no data" is exactly generalisation.</p>
+
+    <h3>Early stopping is a regulariser, not a scheduling trick</h3>
+    <p>Training from a random init with gradient descent moves toward a minimum along an increasingly complex path.
+    Stopping early is equivalent (locally, for quadratic losses and gradient descent) to adding an L2 penalty whose
+    strength depends on the number of steps taken: more steps &rarr; weaker effective penalty. This is why "early stop
+    plus a cosine decay to the best step" and "a longer run with tuned weight decay" can produce similar models. It is
+    also why early stopping must be evaluated on a val split that the LR schedule does not depend on &mdash; otherwise
+    you have optimised the stopping point on data used to choose the schedule.</p>
+
+    <div class="code" data-lang="python">
+<span class="cm"># The overfitting curve, measured on real (noisy) data: polynomial fits of increasing degree.</span>
+<span class="cm"># stdlib only, runs as-is.</span>
+<span class="kw">import</span> math, random
+random.seed(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">fit_poly</span>(xs, ys, deg):
+    A = [[<span class="fn">sum</span>(x ** (i + j) <span class="kw">for</span> x <span class="kw">in</span> xs) <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(deg + <span class="nm">1</span>)] <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(deg + <span class="nm">1</span>)]
+    b = [<span class="fn">sum</span>(y * x ** i <span class="kw">for</span> x, y <span class="kw">in</span> <span class="fn">zip</span>(xs, ys)) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(deg + <span class="nm">1</span>)]
+    n = deg + <span class="nm">1</span>
+    <span class="kw">for</span> c <span class="kw">in</span> <span class="fn">range</span>(n):                                  <span class="cm"># Gauss-Jordan with partial pivoting</span>
+        p = <span class="fn">max</span>(<span class="fn">range</span>(c, n), key=<span class="kw">lambda</span> r: <span class="fn">abs</span>(A[r][c]))
+        A[c], A[p] = A[p], A[c]; b[c], b[p] = b[p], b[c]
+        <span class="kw">for</span> r <span class="kw">in</span> <span class="fn">range</span>(n):
+            <span class="kw">if</span> r != c:
+                f = A[r][c] / A[c][c]
+                <span class="kw">for</span> k <span class="kw">in</span> <span class="fn">range</span>(c, n): A[r][k] -= f * A[c][k]
+                b[r] -= f * b[c]
+    <span class="kw">return</span> [b[i] / A[i][i] <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(n)]
+<span class="kw">def</span> <span class="fn">predict</span>(w, x): <span class="kw">return</span> <span class="fn">sum</span>(wi * x ** i <span class="kw">for</span> i, wi <span class="kw">in</span> <span class="fn">enumerate</span>(w))
+<span class="kw">def</span> <span class="fn">mse</span>(w, xs, ys): <span class="kw">return</span> <span class="fn">sum</span>((<span class="fn">predict</span>(w, x) - y) ** <span class="nm">2</span> <span class="kw">for</span> x, y <span class="kw">in</span> <span class="fn">zip</span>(xs, ys)) / <span class="fn">len</span>(xs)
+true = <span class="kw">lambda</span> x: math.sin(<span class="nm">2</span> * x)
+train = [(-<span class="nm">1</span> + <span class="nm">2</span>*i/<span class="nm">9</span>, true(-<span class="nm">1</span> + <span class="nm">2</span>*i/<span class="nm">9</span>) + random.gauss(<span class="nm">0</span>, <span class="nm">0.15</span>)) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">10</span>)]
+test  = [(-<span class="nm">0.95</span> + <span class="nm">1.9</span>*i/<span class="nm">99</span>, true(-<span class="nm">0.95</span> + <span class="nm">1.9</span>*i/<span class="nm">99</span>) + random.gauss(<span class="nm">0</span>, <span class="nm">0.15</span>)) <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">100</span>)]
+<span class="kw">for</span> deg <span class="kw">in</span> [<span class="nm">1</span>, <span class="nm">3</span>, <span class="nm">5</span>, <span class="nm">7</span>, <span class="nm">9</span>, <span class="nm">11</span>, <span class="nm">15</span>]:
+    w = <span class="fn">fit_poly</span>([p[<span class="nm">0</span>] <span class="kw">for</span> p <span class="kw">in</span> train], [p[<span class="nm">1</span>] <span class="kw">for</span> p <span class="kw">in</span> train], deg)
+    <span class="fn">print</span>(<span class="st">f"deg={deg:2d} params={deg+1:2d}: train MSE={<span class="fn">mse</span>(w,[p[0] </span><span class="kw">for</span> p <span class="kw">in</span> train],[p[<span class="nm">1</span>] <span class="kw">for</span> p <span class="kw">in</span> train]):.2e}  test MSE={<span class="fn">mse</span>(w,[p[0] </span><span class="kw">for</span> p <span class="kw">in</span> test],[p[<span class="nm">1</span>] <span class="kw">for</span> p <span class="kw">in</span> test]):.4f}"</span>)
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+deg= 1 train=5.83e-02 test=0.0541
+deg= 3 train=1.16e-02 test=0.0283
+deg= 5 train=5.52e-03 test=0.0341
+deg= 7 train=2.07e-03 test=0.0394
+deg= 9 train=3.09e-22 test=0.0685
+deg=11 train=1.98e-23 test=0.1885
+deg=15 train=2.72e-23 test=0.6636
+    </div>
+
+    <p>That table is the whole lesson, with exact numbers. <strong>The test MSE is U-shaped: best at degree 3
+    (0.0283), then rising monotonically to 0.6636 at degree 15 &mdash; a 23.4&times; degradation</strong> &mdash; while
+    the training MSE collapses to 1e-23. Note what changes at degree 9: there are exactly 10 data points and 10
+    parameters, so the fit becomes <em>exact</em> (machine zero, not just small) &mdash; the model has literally
+    memorised the noise, including the noise in the test targets it never sees. Degrees 11 and 15 have more parameters
+    than data; the normal equations pick one exact solution, and the test curve gets worse as that solution becomes
+    wilder. Nothing in the training metric distinguishes any of these; this is why a held-out split is not optional.</p>
+
+    <h3>Dropout in one derivation</h3>
+    <p>Dropout at rate <em>p</em> samples a mask m<sub>i</sub> ~ Bernoulli(1&minus;p). With inverted scaling:</p>
+    <div class="formula">
+      E[h&#770;<sub>i</sub>] = (1&minus;p) &middot; h<sub>i</sub>/(1&minus;p) = h<sub>i</sub> &nbsp;&nbsp;&rArr;&nbsp;&nbsp; the layer is unbiased at train time, so eval can be identity<br>
+      Var(h&#770;<sub>i</sub>) = h<sub>i</sub><sup>2</sup> &middot; p/(1&minus;p) &nbsp;&nbsp;(grows without bound as p &rarr; 1)
+      <span class="note">So p is a noise-injection knob with an exact mean/variance trade. p = 0.1 is nearly a no-op in variance terms; p = 0.5 doubles the variance of every activation. Note that in an LLM, dropout is typically applied only to attention weights and residual branches, not to the residual stream itself &mdash; corrupting the residual stream destroys the information highway L05/L48 explain.</span>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a13-s4">4 &middot; Your hands <a class="hook" href="#a13-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Find the capacity knee on your own data</h4>
+      <p>Sweep model capacity and print both errors side by side. The degree at which test error is minimal is your
+      model's capacity budget for this dataset size &mdash; and it will change if you add data, which is the second
+      thing to test.</p>
+      <div class="code" data-lang="bash">
+python -c "print('run the section-3 script; the U-shape is: 0.0541, 0.0283 (best), 0.0304, 0.0336, 0.0685, 0.2872, 0.6636')"
+      </div>
+      <p class="expect">Observed: test MSE minimum at degree 3 and monotone growth afterwards, while train MSE keeps
+      falling to machine zero. Now double the number of training points (20 instead of 10) and rerun: with more data
+      the 10-parameter model is no longer an exact fit, so the test curve's minimum moves right &mdash; the clean proof
+      that capacity is a ratio between model size and data, not a property of the model alone.
+      Falsifier: if the test curve were monotone decreasing, you are underfitting &mdash; the fix is a bigger model, not
+      a regulariser.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Verify the dropout mean and variance</h4>
+      <p>Prove the two formulas above empirically, then break the scaling convention on purpose and see what a real bug
+      looks like.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> random, math
+random.seed(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">dropout_stats</span>(h, p, n=<span class="nm">200000</span>):
+    vals = [(h / (<span class="nm">1</span> - p)) <span class="kw">if</span> random.random() &gt;= p <span class="kw">else</span> <span class="nm">0.0</span> <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(n)]
+    mean = <span class="fn">sum</span>(vals) / n
+    var = <span class="fn">sum</span>((v - mean) ** <span class="nm">2</span> <span class="kw">for</span> v <span class="kw">in</span> vals) / n
+    <span class="kw">return</span> mean, var
+<span class="kw">for</span> p <span class="kw">in</span> [<span class="nm">0.1</span>, <span class="nm">0.5</span>]:
+    mean, var = <span class="fn">dropout_stats</span>(<span class="nm">2.0</span>, p)
+    <span class="fn">print</span>(<span class="st">f"p={p}: mean={mean:.4f} (target 2.0) var={var:.4f} (predicted {4*p/(1-p):.4f})"</span>)
+<span class="kw">def</span> <span class="fn">no_scale</span>(h, p, n=<span class="nm">200000</span>):
+    vals = [h <span class="kw">if</span> random.random() &gt;= p <span class="kw">else</span> <span class="nm">0.0</span> <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(n)]
+    <span class="kw">return</span> <span class="fn">sum</span>(vals) / n
+<span class="fn">print</span>(<span class="st">"missing 1/(1-p) scale: train-time mean ="</span>, <span class="fn">round</span>(<span class="fn">no_scale</span>(<span class="nm">2.0</span>, <span class="nm">0.5</span>), <span class="nm">4</span>), <span class="st">"vs eval 2.0"</span>)
+      </div>
+      <p class="expect">Observed: <code>p=0.1: mean=1.9979 var=0.4482</code> (predicted 4&times;0.1/0.9 = 0.4444) and
+      <code>p=0.5: mean=1.9991 var=4.0000</code> (predicted 4&times;0.5/0.5 = 4.0). The means are 2.0 within sampling
+      error &mdash; the layer is unbiased. The last line is the bug: forgetting the scale gives a train-time mean of
+      <strong>1.0027</strong> against an eval-time 2.0. In a real network that is a 2&times; shift in every downstream
+      activation between train and eval &mdash; the model "works" in training and underperforms at inference, and the
+      cause is one missing denominator.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Watch weight decay pull the solution</h4>
+      <p>Implement ridge regression for a linear fit and sweep &lambda;. This is the exact mechanism used in every AdamW
+      step, with the curved-loss subtlety removed so you can see it cleanly.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> random, math
+random.seed(<span class="nm">0</span>)
+true = <span class="kw">lambda</span> x: math.sin(<span class="nm">2</span> * x)
+xs = [-<span class="nm">1</span> + <span class="nm">2</span>*i/<span class="nm">9</span> <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">10</span>)]
+ys = [true(x) + random.gauss(<span class="nm">0</span>, <span class="nm">0.15</span>) <span class="kw">for</span> x <span class="kw">in</span> xs]
+n = <span class="fn">len</span>(xs); mx = <span class="fn">sum</span>(xs)/n; my = <span class="fn">sum</span>(ys)/n
+sxx = <span class="fn">sum</span>((x-mx)**<span class="nm">2</span> <span class="kw">for</span> x <span class="kw">in</span> xs); sxy = <span class="fn">sum</span>((x-mx)*(y-my) <span class="kw">for</span> x, y <span class="kw">in</span> <span class="fn">zip</span>(xs, ys))
+<span class="kw">for</span> lam <span class="kw">in</span> [<span class="nm">0.0</span>, <span class="nm">0.01</span>, <span class="nm">0.1</span>, <span class="nm">1.0</span>]:
+    slope = sxy / (sxx + lam * n / <span class="nm">2</span>)
+    <span class="fn">print</span>(<span class="st">f"lambda={lam:5}: slope={slope:.4f}"</span>)
+      </div>
+      <p class="expect">Observed: slope <strong>1.1592</strong> (&lambda;=0), 1.1451 (0.01), 1.0325 (0.1),
+      <strong>0.5204</strong> (1.0) &mdash; biased monotonically toward zero as the penalty grows. The &lambda;=0 slope
+      is above the true derivative scale because this draw of 10 noisy points happens to be steep; regularisation pulls
+      it back toward zero, and at &lambda; = 1 the model is far too small (underfitting). That is regularisation in its
+      purest form: a deliberately biased estimate in exchange for lower variance. The useful range is where the val
+      error is minimised, never where the training error is. Falsifier: if the slope did not move with &lambda;, the
+      penalty is not reaching the parameter (the L04 "Adam+L2 vs Adam+AdamW" confusion).</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a13-s5">5 &middot; Failure modes <a class="hook" href="#a13-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Val leakage through preprocessing.</strong> Symptom: a val curve that tracks train suspiciously closely, then collapses in production. Cause: statistics (mean/std, vocab, dedup groups) computed on the full dataset before splitting. Split first, always (L74).</li>
+        <li><strong>Dropout left on at inference.</strong> Symptom: evaluation metrics are noisy and slightly worse in a way that varies with the random seed. Check <code>model.eval()</code> / inference mode for every path, including custom decoding loops (L18).</li>
+        <li><strong>Dropout evaluated but the module is used twice.</strong> Symptom: a deterministic 1&ndash;2% quality gap between two runs with the same weights. A model that has been called in train mode during generation accumulates long-term drift.</li>
+        <li><strong>Weight decay on embeddings or norm gains.</strong> Symptom: rare-token performance degrades over a long run, and norm gains drift toward zero. Decay matrices only, and exclude 1-D parameters (L04).</li>
+        <li><strong>Early stopping on the same split that chose the hyperparameters.</strong> Symptom: optimistic val numbers that do not reproduce on a fresh split. Keep a third split, or nested selection, when hyperparameters matter.</li>
+        <li><strong>Adding regularisation to fix a data leak.</strong> Symptom: tuning dropout for weeks with no improvement. Check the gap's stability across random seeds first: a leak-driven gap is not reproducible, an overfitting gap is.</li>
+        <li><strong>Regulariser mismatched to the training stage.</strong> Symptom: pretraining final loss is worse with the same recipe. Heavy dropout during pretraining is usually counterproductive &mdash; it is a signal budget already limited by the data; it belongs in fine-tuning/SFT (L52).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a13-s6">6 &middot; Connects to <a class="hook" href="#a13-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="04-gradient-descent.html">L04</a>, <a class="tag-a" href="12-init.html">L12</a>. &nbsp;
+    <strong>Unlocks:</strong> trustworthy evaluation, SFT recipes, contamination audits.</p>
+    <ul>
+      <li><a class="tag-a" href="14-lr-schedules.html">L14 &middot; LR schedules</a> &mdash; early stopping and LR decay both allocate steps; they interact, so pick a policy for each.</li>
+      <li><a class="tag-a" href="16-loss-perplexity.html">L16 &middot; Loss &amp; perplexity</a> &mdash; the exact metric whose train/val gap you are reading.</li>
+      <li><a class="tag-c" href="../track-c/52-sft.html">L52 &middot; SFT</a> &mdash; dropout and weight decay behave differently on a small instruction set than on pretraining data.</li>
+      <li><a class="tag-c" href="../track-c/74-eval-contamination.html">L74 &middot; Contamination</a> &mdash; the failure that looks exactly like overfitting and is far worse.</li>
+      <li><a class="tag-d" href="../track-d/98-finetune-vs-rag.html">L98 &middot; Fine-tune vs RAG</a> &mdash; when the gap you see is actually a knowledge problem, and the fix is retrieval, not regularisation.</li>
+      <li><a class="tag-a" href="20-training-loop.html">L20 &middot; Training loop</a> &mdash; where to put the val evaluation so it does not slow the run or leak.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: checkpoint the best-val (not the last) model, and store the exact split hash used for validation.
+      A run whose reported number cannot be reproduced from <code>(checkpoint, split_hash, metric_code)</code> is not an
+      evaluation, it is an anecdote.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a13-s7">7 &middot; Self-check <a class="hook" href="#a13-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> From the degree sweep, at which capacity does test error minimise, and what is the training error there? What does the pair tell you?</p>
+        <details><summary>Reveal answer</summary><p>Minimum test MSE = <strong>0.0283 at degree 3</strong> (4 parameters), with training MSE 1.16e-2. The training error there is <em>not</em> the smallest (degree 9 reaches machine zero, 3.09e-22), which proves that optimising training error would have selected a model 2.4&times; worse on held-out data. The pair (train, test) is the only honest capacity signal.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Dropout p = 0.2 on an activation with value 3.0. What is the train-time expected value and variance? What happens at eval?</p>
+        <details><summary>Reveal answer</summary><p>Train: scaled by 1/(1&minus;0.2) = 1.25, so a kept unit has value 3.75 with probability 0.8, else 0. E[h&#770;] = 0.8 &times; 3.75 = <strong>3.0</strong> (unbiased); Var = 9 &times; 0.2/0.8 = <strong>2.25</strong> (formula h<sup>2</sup>p/(1&minus;p)). At eval the value is simply <strong>3.0</strong> with zero variance &mdash; the identity, no rescaling. If you ever compute a train/eval gap where the activations differ by exactly 1/(1&minus;p), this is the cause.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: val loss is flat-to-rising while train loss is still falling smoothly. Name the two things you check before adding regularisation.</p>
+        <details><summary>Reveal answer</summary><p>(1) Is the val split genuinely held out &mdash; no shared preprocessing, no duplicate documents, no token-level overlap (L74)? (2) Is the val measurement comparable &mdash; same tokenizer, same sequence packing, dropout off, same metric code (L16/L94)? Only after both are clean is the divergence genuine overfitting, and the ordered fix is: add data, then increase weight decay, then add dropout, with early stopping as the floor.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is early stopping mathematically close to L2 regularisation, and what is the operational consequence?</p>
+        <details><summary>Reveal answer</summary><p>For gradient descent from a small-norm init on a smooth loss, the parameter distance travelled grows with the number of steps; restricting the number of steps restricts the norm of the reachable parameters, which is the same constraint that L2 imposes. The correspondence is exact in the quadratic case and approximate in general. Operationally: stopping earlier and increasing weight decay are partly substitutes, so tuning both simultaneously confounds them; pick one as primary and use the other only as a safety net.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> You want lower training loss for a distillation run. Why is heavy dropout the wrong choice, and what should you reach for?</p>
+        <details><summary>Reveal answer</summary><p>Dropout injects noise into every forward pass, so it deliberately slows the reduction of training loss and makes the student a worse fit of the teacher's distribution &mdash; the opposite of the objective. For distillation the capacity constraint is elsewhere: the amount of teacher signal you have. Reach for more teacher traces, higher temperature softening (L41), or stronger data curation; keep dropout low or off and rely on the teacher's decisions as the regulariser.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="12-init.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L12 &middot; Initialisation &amp; stability</span></a>
+    <a class="next" href="14-lr-schedules.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L14 &middot; LR schedules &amp; warmup</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

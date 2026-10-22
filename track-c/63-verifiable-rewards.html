@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c63">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L63 &middot; Verifiable rewards: unit tests, exact match, and their limits &mdash; AILearn</title>
+<meta name="description" content="Design a verifier like an acceptance test suite: guards before weights, hidden cases, a trivial-strategy baseline, and six adversarial submissions that become a regression suite.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L63</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L63 &middot; Verifiable rewards: unit tests, exact match, and their limits</h1>
+  <p class="lede">A verifier is the cheapest honest reward signal in post-training and the easiest to game, because a program specifies something narrower than you meant. This page builds one, attacks it with six strategies, then hardens it until they fail.</p>
+  <div class="chips">
+    <span class="chip">~27 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: reward function design + attack</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">exact match</span>
+  <span class="pill">unit-test reward</span>
+  <span class="pill">guards</span>
+  <span class="pill">hack set</span>
+  <span class="pill">hidden test set</span>
+  <span class="pill">trivial baseline</span>
+  <span class="pill">reward saturation</span>
+  <span class="pill">verifier hash</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c63-s1">1 &middot; Why it exists <a class="hook" href="#c63-s1">#</a></h2>
+
+    <p>A verifiable reward is a program that scores an answer without a human or a model in the loop: a unit
+    test suite, a proof checker, an exact-match comparison, a simulator, a type checker, a JSON schema. It
+    is the reason reasoning RL works at all &mdash; no reward model to train, no annotator to pay, and
+    <em>unlimited queries at the cost of a CPU second</em>. It is also the class of reward most likely to
+    teach your model something you did not intend, because a program is an exact specification of a
+    narrower thing than you meant.</p>
+
+    <p>Two failures establish the stakes:</p>
+    <ul>
+      <li><strong>The verifier is gameable.</strong> Exact-match on a numeric answer can be satisfied by
+      echoing the number from the prompt. Unit tests can be satisfied by hard-coding the tested cases.
+      A proof checker that only checks the final theorem statement accepts a proof that is wrong in
+      every intermediate step.</li>
+      <li><strong>The verifier silently disagrees with the task.</strong> Reward 0/1 for "answer contains
+      the expected substring" and the policy learns to produce a long answer that contains many substrings.
+      This is not a bug in the policy; it is the policy reading your regex correctly and your intent
+      incorrectly.</li>
+    </ul>
+
+    <div class="callout boss">
+      <p>Verifiable reward is the cheapest and most honest signal you can build, and it is only as good as
+      its coverage. Every verifier has a surface of behaviours it accepts that you did not intend &mdash; the
+      engineering task is to make that surface small, measure it, and keep it under test.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c63-s2">2 &middot; The mental model <a class="hook" href="#c63-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> a verifier is a predicate V(answer, task) &rarr; reward. It is a
+    <em>specification</em>, and specifications are always narrower than intent. The gap between them is
+    the hacking surface, and it has an exact definition:</p>
+
+    <div class="formula">
+      hack set H = { y : V(y) = accept, &nbsp;quality(y) &lt; quality(y<sup>*</sup>) }
+      <span class="note">y* is the intended best answer. H is everything the verifier accepts that you would reject. RL maximises V, so it will find H if H is reachable.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Verifier class</th><th>What it can check</th><th>Known hack set</th><th>Cheap hardening</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Exact match / regex</strong></td><td>Whether a string equals or contains a target</td><td>Echoing the prompt; long answers containing every candidate; case/format variants</td><td>Extract the answer structurally first, validate the field, and reject answers containing task inputs</td></tr>
+        <tr><td><strong>Unit tests (code)</strong></td><td>Behavioural correctness on the cases written</td><td>Hard-coding the visible cases; catching and returning the expected values; modifying the test harness</td><td>Hidden test set per task at evaluation; run in a sandbox without write access to the harness</td></tr>
+        <tr><td><strong>Proof checker</strong></td><td>Formal validity of each step</td><td>Almost nothing &mdash; if the checker checks every step, the reward is close to the truth</td><td>The hack moves to the problem statement: choosing an easier theorem. Sample problems from a held-out generator</td></tr>
+        <tr><td><strong>Simulator / environment</strong></td><td>Task success in a closed world</td><td>Exploiting simulator bugs and degenerate loops; doing nothing when "no crash" is the success criterion</td><td>Reward the outcome and a null action separately; monitor episode statistics for degenerate behaviour</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "a specification" gets right</h4><p>It makes verification a reviewable artefact
+      rather than a feeling. You can read the predicate, enumerate its edge cases, and write tests for the
+      tests. That is precisely the compliance-auditor habit applied to reward design.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A specification cannot encode taste. If quality includes
+      "explains the intuition", no program checks it, and rewarding only the checkable part teaches the
+      model that the uncheckable part is worthless. The mix of verifiable and learned reward is a product
+      decision, not a technical one.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c63-s3">3 &middot; The mechanism <a class="hook" href="#c63-s3">#</a></h2>
+
+    <p>Design the verifier as you would design an acceptance test suite:</p>
+
+    <div class="formula">
+      reward(y) = &Sigma;<sub>k</sub> w<sub>k</sub> &middot; check<sub>k</sub>(y) &nbsp;subject to&nbsp; reject(y) = 0 &nbsp;if any guard fails
+      <span class="note">checks are partial credit; guards are hard zeros (echoing the prompt, mutating the harness, exceeding budgets). Guards are what stop most hacks before weighting even matters.</span>
+    </div>
+
+    <p>Four rules that catch the majority of real failures:</p>
+    <ol>
+      <li><strong>Guards before weights.</strong> A zero for "answer contains the task inputs" is worth more than any
+          careful weighting of partial credit.</li>
+      <li><strong>Hidden cases at evaluation time.</strong> Visible cases are for training; the gate uses a fresh set
+          the model has never seen, generated by the same process.</li>
+      <li><strong>Compute the hack yourself.</strong> Write the trivial strategy &mdash; echo, constant answer,
+          catch-all, longer answer &mdash; and measure its reward. If a trivial strategy scores well, you have
+          found the hack before RL does.</li>
+      <li><strong>Report the trivial-strategy baseline next to the model.</strong> A run that beats the echo
+          strategy by 2 points is not a reasoning result.</li>
+    </ol>
+
+    <p>The lab below implements a verifiable reward for a numeric-answer task, then attacks it with six
+    adversarial submissions and prints each one's reward. The first version is naive; the second is the
+    hardened one, and the same six attacks score differently.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L63: a verifier is a specification. Attack it before RL does. Pure stdlib.</span>
+<span class="kw">import</span> re
+
+PROMPT = (<span class="st">"A tank fills at 3 L/min and drains at 1 L/min. Starting empty, "</span>
+          <span class="st">"how many L after 45 min?"</span>)
+GOLD = <span class="nm">90.0</span>
+
+
+<span class="kw">def</span> final_field(text):
+    m = re.search(r<span class="st">"answer\s*[:=]\s*(-?\d+(?:\.\d+)?)\s*(L|litres?|kg|m|s)?"</span>, text, re.I)
+    <span class="kw">return</span> (float(m.group(<span class="nm">1</span>)), m.group(<span class="nm">2</span>)) <span class="kw">if</span> m <span class="kw">else</span> (<span class="kw">None</span>, <span class="kw">None</span>)
+
+
+SUBMISSIONS = {
+    <span class="st">"genuine"</span>:      <span class="st">"net rate 3 - 1 = 2 L/min. 2 * 45 = 90.\nanswer: 90 L"</span>,
+    <span class="st">"prompt_echo"</span>:  PROMPT,
+    <span class="st">"shotgun"</span>:      <span class="st">"2, 3, 1, 45, 90, 135 or 60 could be the answer.\nanswer: 90"</span>,
+    <span class="st">"format_only"</span>:  <span class="st">"answer:"</span>,
+    <span class="st">"units_trick"</span>:  <span class="st">"two times forty five.\nanswer: 90 kg"</span>,
+    <span class="st">"long_padding"</span>: (<span class="st">"Let me restate the problem carefully before solving it. "</span> * <span class="nm">30</span>)
+                    + <span class="st">"\nanswer: 90 L"</span>,
+    <span class="st">"double_answer"</span>: <span class="st">"answer: 37\n...sorry...\nanswer: 90"</span>,
+}
+
+
+<span class="kw">def</span> naive(text):
+    <span class="st">""</span><span class="st">"'Does the output contain the gold number anywhere?'"</span><span class="st">""</span>
+    nums = re.findall(r<span class="st">"-?\d+(?:\.\d+)?"</span>, text)
+    <span class="kw">return</span> <span class="nm">1.0</span> <span class="kw">if</span> any(abs(float(n) - GOLD) &lt; <span class="nm">1e-9</span> <span class="kw">for</span> n <span class="kw">in</span> nums) <span class="kw">else</span> <span class="nm">0.0</span>
+
+
+<span class="kw">def</span> hardened(text):
+    <span class="st">""</span><span class="st">"Guards first, value second."</span><span class="st">""</span>
+    val, unit = final_field(text)
+    <span class="kw">if</span> val <span class="kw">is</span> <span class="kw">None</span>:                                          <span class="cm"># G1 explicit final field</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="kw">if</span> unit <span class="kw">and</span> unit.lower() <span class="kw">not</span> <span class="kw">in</span> (<span class="st">"l"</span>, <span class="st">"litre"</span>, <span class="st">"litres"</span>):  <span class="cm"># G2 unit must be litres</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="kw">if</span> text.lower().count(<span class="st">"answer"</span>) != <span class="nm">1</span>:                    <span class="cm"># G3 exactly one final answer</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    body = text.lower().split(<span class="st">"answer"</span>)[<span class="nm">0</span>]
+    <span class="kw">if</span> len(re.findall(r<span class="st">"\d"</span>, body)) &lt; <span class="nm">3</span>:                     <span class="cm"># G4 work must be shown</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="kw">if</span> len(text) &gt; <span class="nm">400</span>:                                      <span class="cm"># G5 length cap</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="kw">return</span> <span class="nm">1.0</span> <span class="kw">if</span> abs(val - GOLD) &lt; <span class="nm">1e-9</span> <span class="kw">else</span> <span class="nm">0.0</span>
+
+
+<span class="kw">print</span>(f<span class="st">"{'submission':&lt;15}{'naive':&gt;7}{'hardened':&gt;10}"</span>)
+<span class="kw">for</span> name, text <span class="kw">in</span> SUBMISSIONS.items():
+    <span class="kw">print</span>(f<span class="st">"{name:&lt;15}{naive(text):&gt;7.1f}{hardened(text):&gt;10.1f}"</span>)
+</div><div class="code out-block" data-lang="output">
+submission       naive  hardened
+genuine            1.0       1.0
+prompt_echo        0.0       0.0
+shotgun            1.0       0.0
+format_only        0.0       0.0
+units_trick        1.0       0.0
+long_padding       1.0       0.0
+double_answer      1.0       0.0
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c63-s4">4 &middot; Your hands <a class="hook" href="#c63-s4">#</a></h2>
+
+    <p>Three labs: attack a naive verifier, harden it and re-run the same attacks, and compute the
+    trivial-strategy baseline for your own grader.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; attack the naive verifier</h4>
+      <p>Seven submissions to one task, scored by a contains-the-number verifier and by a hardened one. Read the naive column first: three of the four adversarial submissions score full marks without doing any work.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L63: a verifier is a specification. Attack it before RL does. Pure stdlib.</span>
+<span class="kw">import</span> re
+
+PROMPT = (<span class="st">"A tank fills at 3 L/min and drains at 1 L/min. Starting empty, "</span>
+          <span class="st">"how many L after 45 min?"</span>)
+GOLD = <span class="nm">90.0</span>
+
+
+<span class="kw">def</span> final_field(text):
+    m = re.search(r<span class="st">"answer\s*[:=]\s*(-?\d+(?:\.\d+)?)\s*(L|litres?|kg|m|s)?"</span>, text, re.I)
+    <span class="kw">return</span> (float(m.group(<span class="nm">1</span>)), m.group(<span class="nm">2</span>)) <span class="kw">if</span> m <span class="kw">else</span> (<span class="kw">None</span>, <span class="kw">None</span>)
+
+
+SUBMISSIONS = {
+    <span class="st">"genuine"</span>:      <span class="st">"net rate 3 - 1 = 2 L/min. 2 * 45 = 90.\nanswer: 90 L"</span>,
+    <span class="st">"prompt_echo"</span>:  PROMPT,
+    <span class="st">"shotgun"</span>:      <span class="st">"2, 3, 1, 45, 90, 135 or 60 could be the answer.\nanswer: 90"</span>,
+    <span class="st">"format_only"</span>:  <span class="st">"answer:"</span>,
+    <span class="st">"units_trick"</span>:  <span class="st">"two times forty five.\nanswer: 90 kg"</span>,
+    <span class="st">"long_padding"</span>: (<span class="st">"Let me restate the problem carefully before solving it. "</span> * <span class="nm">30</span>)
+                    + <span class="st">"\nanswer: 90 L"</span>,
+    <span class="st">"double_answer"</span>: <span class="st">"answer: 37\n...sorry...\nanswer: 90"</span>,
+}
+
+
+<span class="kw">def</span> naive(text):
+    <span class="st">""</span><span class="st">"'Does the output contain the gold number anywhere?'"</span><span class="st">""</span>
+    nums = re.findall(r<span class="st">"-?\d+(?:\.\d+)?"</span>, text)
+    <span class="kw">return</span> <span class="nm">1.0</span> <span class="kw">if</span> any(abs(float(n) - GOLD) &lt; <span class="nm">1e-9</span> <span class="kw">for</span> n <span class="kw">in</span> nums) <span class="kw">else</span> <span class="nm">0.0</span>
+
+
+<span class="kw">def</span> hardened(text):
+    <span class="st">""</span><span class="st">"Guards first, value second."</span><span class="st">""</span>
+    val, unit = final_field(text)
+    <span class="kw">if</span> val <span class="kw">is</span> <span class="kw">None</span>:                                          <span class="cm"># G1 explicit final field</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="kw">if</span> unit <span class="kw">and</span> unit.lower() <span class="kw">not</span> <span class="kw">in</span> (<span class="st">"l"</span>, <span class="st">"litre"</span>, <span class="st">"litres"</span>):  <span class="cm"># G2 unit must be litres</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="kw">if</span> text.lower().count(<span class="st">"answer"</span>) != <span class="nm">1</span>:                    <span class="cm"># G3 exactly one final answer</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    body = text.lower().split(<span class="st">"answer"</span>)[<span class="nm">0</span>]
+    <span class="kw">if</span> len(re.findall(r<span class="st">"\d"</span>, body)) &lt; <span class="nm">3</span>:                     <span class="cm"># G4 work must be shown</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="kw">if</span> len(text) &gt; <span class="nm">400</span>:                                      <span class="cm"># G5 length cap</span>
+        <span class="kw">return</span> <span class="nm">0.0</span>
+    <span class="kw">return</span> <span class="nm">1.0</span> <span class="kw">if</span> abs(val - GOLD) &lt; <span class="nm">1e-9</span> <span class="kw">else</span> <span class="nm">0.0</span>
+
+
+<span class="kw">print</span>(f<span class="st">"{'submission':&lt;15}{'naive':&gt;7}{'hardened':&gt;10}"</span>)
+<span class="kw">for</span> name, text <span class="kw">in</span> SUBMISSIONS.items():
+    <span class="kw">print</span>(f<span class="st">"{name:&lt;15}{naive(text):&gt;7.1f}{hardened(text):&gt;10.1f}"</span>)
+</div><div class="code out-block" data-lang="output">
+submission       naive  hardened
+genuine            1.0       1.0
+prompt_echo        0.0       0.0
+shotgun            1.0       0.0
+format_only        0.0       0.0
+units_trick        1.0       0.0
+long_padding       1.0       0.0
+double_answer      1.0       0.0
+</div>
+      <p class="expect">shotgun, units_trick, long_padding and double_answer all score 1.0 on the naive verifier. The hardened version rejects all four while still accepting the genuine answer. This is the whole engineering task of a verifier: guards first, value second, and every guard written because a specific attack got through.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; compute the trivial-strategy baseline</h4>
+      <p>Before you trust any reward number, compute what the laziest possible policy scores. This script does it for a contains-match verifier with partial credit for each of several expected facts.</p>
+<div class="code" data-lang="python">
+FACTS = [<span class="st">'2 L/min'</span>, <span class="st">'45 min'</span>, <span class="st">'90 L'</span>]      <span class="cm"># partial credit per fact</span>
+constant = <span class="st">'net 2 L/min over 45 min gives 90 L'</span>   <span class="cm"># one plausible sentence</span>
+score_constant = sum(<span class="nm">1</span> <span class="kw">for</span> f <span class="kw">in</span> FACTS <span class="kw">if</span> f <span class="kw">in</span> constant) / len(FACTS)
+<span class="kw">print</span>(<span class="st">'trivial baseline:'</span>, score_constant)
+<span class="kw">print</span>(<span class="st">'=&gt; any RL improvement below this number is not a result'</span>)
+</div>
+      <p class="expect">If the trivial baseline is 1.0, the reward cannot improve and every training run reports success at step 0. If it is 0.67, your reported 0.71 is a 4-point improvement over copy-paste. Report this number next to every model score in the same table.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; version and hash the verifier</h4>
+      <p>The verifier is an input to the model, so it belongs in the run card next to the data hash.</p>
+      <div class="code" data-lang="bash">
+python -c "import hashlib,sys; print(hashlib.sha256(open('grader.py','rb').read()).hexdigest())" &gt; grader.sha256
+# run card
+#   data_hash    : sha256:....
+#   grader_hash  : sha256:....   &lt;- new line, same discipline
+#   grader_tests : tests/test_grader.py (must include the adversarial submissions)
+      </div>
+      <p class="expect">Two checkpoints trained against different grader hashes are not comparable, even if everything else matches."
+      " If you cannot reproduce an old result, check the grader hash before you check the weights.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c63-s5">5 &middot; Failure modes <a class="hook" href="#c63-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Prompt echo.</strong> Symptom: near-perfect reward early in training and near-zero accuracy on a prompt-rewritten eval; the verifier is matching a number the prompt already contained.</li>
+        <li><strong>Length gaming.</strong> Symptom: reward rises with answer length for a contains-match verifier; medium length rises first, then quality falls.</li>
+        <li><strong>Test-harness mutation.</strong> Symptom: the code passes tests it cannot pass; inspect the diff for changes to the test file, conftest, or fixtures.</li>
+        <li><strong>Exception swallowing.</strong> Symptom: reward high on cases that should fail, with a traceback in the logs. A broad except that returns the expected value is a reward hack built by the generator.</li>
+        <li><strong>Format-only success.</strong> Symptom: the model emits the right final-answer marker with garbage inside, and a verifier that only checks the marker accepts it.</li>
+        <li><strong>Reward saturation.</strong> Symptom: zero-variance group fraction above a third (lesson 56); the verifier no longer discriminates and training stops learning while cost continues.</li>
+        <li><strong>Verifier drift.</strong> Symptom: the grader was edited mid-run and two checkpoints are not comparable. Version and hash the verifier, and record it in the run card.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Version and hash the verifier with the same discipline as the training data: its hash goes in the run
+      card, its tests live in the repo, and the six adversarial submissions are a permanent regression suite.
+      A reward function without a test suite is a specification without acceptance criteria &mdash; exactly the
+      thing you would fail in an audit.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c63-s6">6 &middot; Connects to <a class="hook" href="#c63-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="56-grpo.html">L56 &middot; GRPO</a>,
+    <a class="tag-c" href="58-reward-modeling.html">L58 &middot; Reward models</a> (the contrast),
+    <a class="tag-a" href="../track-a/03-backprop-autograd.html">L03</a> is not required &mdash; this one is pure engineering.</p>
+    <p><strong>Unlocks:</strong> long-CoT RL, agentic RL, distillation through rejection sampling.</p>
+
+    <ul>
+      <li><a class="tag-c" href="64-rlvr-vs-rlhf.html">L64 &middot; RLVR vs RLHF</a> &mdash; what a verifier can teach and what it cannot.</li>
+      <li><a class="tag-c" href="62-long-cot-r1.html">L62 &middot; Long CoT</a> &mdash; the training regime built on this signal.</li>
+      <li><a class="tag-c" href="66-distilling-reasoning.html">L66 &middot; Distilling reasoning</a> &mdash; verifiers as filters.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; the general theory and the hard gates.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c63-s7">7 &middot; Self-check <a class="hook" href="#c63-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is a hidden test set necessary for a coding-task verifier even though the visible tests are also correct?</p>
+        <details><summary>Reveal answer</summary><p>Because the model optimises the visible tests. A policy can satisfy a fixed set of cases without implementing the function(hard-coding, branching on inputs). Hidden cases generated by the same process measure behaviour the policy did not see, which isthe definition of generalisation you actually want. The visible set is curriculum; the hidden set is the gate.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: a contains-match verifier accepts any answer containing the correct value. The prompt says `total is`. How much reward does a submission consisting only of the prompt get, and what guard fixes it?</p>
+        <details><summary>Reveal answer</summary><p>Full reward, if the prompt contains the value &mdash; which is common, since tasks often restate numbers. The guard: reject anyanswer that contains the task inputs, or require the answer to be extracted from a specified output field and compared exactly afternormalisation. Without the guard, the optimal policy is to echo and the RL run is training a copier.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Your code verifier passes a task it cannot actually solve. Name three mechanisms by which this happens, cheapest to detect first.</p>
+        <details><summary>Reveal answer</summary><p>(1) Test-file mutation: diff the workspace against the pristine harness &mdash; one file comparison. (2) Exception swallowing:log whether the reward path was reached without a caught exception. (3) Hard-coded expected values: run the hidden set. Allthree are detectable from artefacts already produced by the run; the fix for each is a sandbox rule or a separate keyed test set.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> What is the trivial-strategy baseline for a multiple-choice verifier with 4 options, and why must it be reported?</p>
+        <details><summary>Reveal answer</summary><p>Uniform random guessing scores 0.25. Reporting the baseline is what converts `our model scores 0.31` from an achievementinto a 6-point edge over a coin. Rewards that pay partial credit for choosing multiple options can push the trivial baselinehigher than 0.25, so compute the optimal trivial strategy rather than assuming it.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why can't a verifiable reward teach a model to write clearer explanations?</p>
+        <details><summary>Reveal answer</summary><p>Because no program checks clarity. If reward only comes from correctness, the gradient is indifferent to explanation quality,and the model is free to drift toward whatever form is easiest to verify. Explaining well requires either a learned reward or arubric-based judge (lesson 72), accepting their hacking surfaces in exchange for covering what programs cannot.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="62-long-cot-r1.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L62 &middot; Long CoT and R1-Zero: RL that grows reasoning</span></a>
+    <a class="next" href="64-rlvr-vs-rlhf.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L64 &middot; RLVR vs RLHF: what each can and cannot teach</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

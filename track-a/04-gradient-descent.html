@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a04">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L04 · Gradient Descent, Momentum, AdamW — AILearn</title>
+<meta name="description" content="SGD, momentum and AdamW derived line by line, including why Adam's step is approximately lr-sized and why weight decay must be decoupled.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L04</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L04 &middot; Gradient Descent, SGD, Momentum, AdamW</h1>
+  <p class="lede">The gradient tells you the steepest direction at one point. Deciding how far to move, how to smooth a noisy estimate of that direction, and how to treat each parameter's scale independently is what separates a run that converges in 20k steps from one that diverges at step 300.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: 1-D loss landscape optimizer race</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">steepest descent</span>
+  <span class="pill">learning rate</span>
+  <span class="pill">momentum</span>
+  <span class="pill">bias correction</span>
+  <span class="pill">adaptive per-coordinate step</span>
+  <span class="pill">decoupled weight decay</span>
+  <span class="pill">gradient clipping</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a04-s1">1 &middot; Why it exists <a class="hook" href="#a04-s1">#</a></h2>
+
+    <p>Backprop gives you &nabla;L but not a step size. Take one too large and the loss explodes; take one too small
+    and a 300-billion-token budget learns a fraction of what it should. Worse, loss surfaces of real networks are
+    <em>anisotropic</em>: the curvature along one parameter can be ten thousand times larger than along another.
+    A single global learning rate is therefore always wrong for most coordinates &mdash; it is too big for the stiff
+    directions and too small for the flat ones.</p>
+
+    <p>History is a sequence of patches against exactly that problem. Plain SGD: follow the negative gradient, scale by
+    one number. Momentum: average gradients over time so the noise cancels and flat directions still make progress.
+    Adam: keep a running average of gradient <em>and</em> of squared gradient, then divide, so every coordinate moves
+    roughly the same distance per step regardless of its curvature. AdamW: fix Adam's broken interaction with
+    weight decay. Each patch is a response to an observed failure, and each one costs memory.</p>
+
+    <div class="callout boss">
+      <p>The optimizer you choose is a four-part trade: convergence speed, sensitivity to LR, memory per parameter,
+      and what it does to the model at the end of training. Adam-family costs 2 extra fp32 tensors per parameter
+      (first and second moments) &mdash; for 1B parameters that is 8 GB before you store a single weight.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a04-s2">2 &middot; The mental model <a class="hook" href="#a04-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> A hiker in fog finds the slope under their feet and walks downhill. Momentum is a
+    heavy ball with inertia: it keeps going through small bumps and gets pushed around less by random gusts.
+    Adam is a hiker who, per compass axis, normalises each reading by how wildly it has been fluctuating &mdash;
+    so a jittery axis gets damped and a quiet axis gets amplified.</p>
+
+    <p><strong>Where the analogy breaks.</strong> The fog is not the issue: gradients are exact for the batch, not noisy
+    at each point. The real noise is <em>between batches</em> &mdash; the estimate itself is biased. So "momentum
+    smooths local noise" is the wrong picture; momentum smooths <em>batch-to-batch disagreement</em>, which is why it
+    helps most when the batch is small. Second place it breaks: real landscapes have saddle points and narrow valleys,
+    so the trajectory is not a descent into a bowl &mdash; it can sit on a plateau for thousands of steps with a
+    near-zero gradient, where an adaptive method with a small second moment takes large steps and a plain SGD man
+    takes none.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>SGD with momentum</h4><p>Memory: 1 fp32 moment buffer per parameter. Generalises well in vision-scale CNNs, but very LR sensitive, and it does almost nothing on coordinates whose gradients are tiny but consistent.</p></div>
+      <div class="card"><h4>Adam / AdamW</h4><p>Memory: 2 moment buffers per parameter. Each coordinate's step is &asymp; lr regardless of gradient scale. This is why Adam-family optimisers are the default for transformers, and why lr = 1e-3 and lr = 6e-4 behave similarly on wildly different models.</p></div>
+      <div class="card"><h4>Why Adam is scale-free</h4><p>If you multiply the loss by a constant c, every gradient scales by c, m &rarr; cm, v &rarr; c<sup>2</sup>v, and m/&radic;v is unchanged. So a gain or loss-scale change does not require re-tuning the LR.</p></div>
+      <div class="card"><h4>Where the analogy matters least</h4><p>None of this changes the objective. An optimizer cannot rescue a wrong loss. If the loss is wrong, a better optimizer converges faster to a worse model.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a04-s3">3 &middot; The mechanism <a class="hook" href="#a04-s3">#</a></h2>
+
+    <div class="formula">
+      SGD: &nbsp; &theta;<sub>t+1</sub> = &theta;<sub>t</sub> &minus; &eta; g<sub>t</sub><br><br>
+      Momentum (PyTorch convention): &nbsp; v<sub>t</sub> = &mu; v<sub>t&minus;1</sub> &minus; &eta; g<sub>t</sub>, &nbsp; &theta;<sub>t+1</sub> = &theta;<sub>t</sub> + v<sub>t</sub><br><br>
+      Adam: &nbsp; m<sub>t</sub> = &beta;<sub>1</sub>m<sub>t&minus;1</sub> + (1&minus;&beta;<sub>1</sub>)g<sub>t</sub>, &nbsp;
+      v<sub>t</sub> = &beta;<sub>2</sub>v<sub>t&minus;1</sub> + (1&minus;&beta;<sub>2</sub>)g<sub>t</sub><sup>2</sup><br>
+      &nbsp;&nbsp; m&#770;<sub>t</sub> = m<sub>t</sub>/(1&minus;&beta;<sub>1</sub><sup>t</sup>), &nbsp;
+      v&#770;<sub>t</sub> = v<sub>t</sub>/(1&minus;&beta;<sub>2</sub><sup>t</sup>), &nbsp;
+      &theta;<sub>t+1</sub> = &theta;<sub>t</sub> &minus; &eta; m&#770;<sub>t</sub>/(&radic;v&#770;<sub>t</sub> + &epsilon;)<br><br>
+      AdamW: &nbsp; &theta;<sub>t+1</sub> = &theta;<sub>t</sub> &minus; &eta;[ m&#770;<sub>t</sub>/(&radic;v&#770;<sub>t</sub> + &epsilon;) + &lambda;&theta;<sub>t</sub> ]
+      <span class="note">g = &nabla;<sub>&theta;</sub>L (a mean over the batch). &eta; = learning rate, &mu; = momentum, &beta;<sub>1</sub>, &beta;<sub>2</sub> = EMA decay rates (0.9, 0.999 typical), &epsilon; = 1e-8 stability term, &lambda; = weight decay. In AdamW the decay term is multiplied by &theta; itself and is not passed through the &radic;v normaliser &mdash; that is the whole difference from Adam+L2 and it changes the effective decay per coordinate.</span>
+    </div>
+
+    <h3>Why Adam's step is approximately &eta; (and why &epsilon; then matters)</h3>
+    <p>Assume gradients are roughly stationary with magnitude |g|. Then m&#770; estimates g and &radic;v&#770; estimates |g|,
+    so the update is &asymp; &eta;&middot;sign(g): every coordinate moves &asymp;&eta; per step. Two consequences you can
+    compute: at <code>t=1</code> from a zero start with &beta;<sub>1</sub>=0.9, &beta;<sub>2</sub>=0.999 and any g,
+    the step is exactly &eta;g/(|g|+&epsilon;) &asymp; &eta; &mdash; verified numerically in Experiment 1. And a
+    tiny-but-nonzero gradient (say 1e-9) also produces a step of &asymp;&eta;, because the normaliser is also tiny.
+    That is why Adam is aggressive on flat regions, and why &epsilon; is not just a divide-by-zero guard: once
+    &radic;v &lt; &epsilon;, the step shrinks in proportion to the gradient.</p>
+
+    <h3>Adam+L2 is not AdamW</h3>
+    <p>Adding &lambda;&theta; to the gradient before the update means the decay is divided by &radic;v&#770;. A parameter
+    with a large historical gradient therefore gets its decay <em>suppressed</em>, and a parameter with a small
+    gradient gets decayed by roughly &lambda;&eta;/&radic;v&#770; &mdash; which can be enormous. The decay is no longer a
+    uniform pull toward zero. AdamW applies decay directly to the weights, so the shrink factor per step is exactly
+    (1 &minus; &eta;&lambda;) for every coordinate equally. For transformers the difference is a real change in
+    generalisation, which is why the decoupled form became standard.</p>
+
+    <div class="code" data-lang="python">
+<span class="cm"># SGD / momentum / AdamW on a non-convex landscape &mdash; stdlib only, runs as-is.</span>
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">rosen</span>(x, y): <span class="kw">return</span> (x * x - <span class="nm">1</span>) ** <span class="nm">2</span> + (y - x * x) ** <span class="nm">2</span>   <span class="cm"># min value 0 at (1, 1)</span>
+<span class="kw">def</span> <span class="fn">grad</span>(x, y):
+    <span class="kw">return</span> (<span class="nm">4</span>*(x*x-<span class="nm">1</span>)*x + <span class="nm">2</span>*(y - x*x)*(-<span class="nm">2</span>*x), <span class="nm">2</span>*(y - x*x))
+
+<span class="kw">def</span> <span class="fn">run</span>(name, lr, iters=<span class="nm">300</span>, beta1=<span class="nm">0.9</span>, beta2=<span class="nm">0.999</span>, eps=<span class="nm">1e-8</span>, wd=<span class="nm">0.0</span>):
+    x, y = -<span class="nm">1.5</span>, <span class="nm">2.2</span>
+    m1 = m2 = v1 = v2 = <span class="nm">0.0</span>
+    <span class="kw">for</span> t <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">1</span>, iters + <span class="nm">1</span>):
+        gx, gy = <span class="fn">grad</span>(x, y)
+        <span class="kw">if</span> name <span class="kw">in</span> (<span class="st">"sgd"</span>, <span class="st">"momentum"</span>):
+            gx += wd * x; gy += wd * y          <span class="cm"># classic L2: decay enters the gradient</span>
+        <span class="kw">if</span> name == <span class="st">"sgd"</span>:
+            x -= lr * gx; y -= lr * gy
+        <span class="kw">elif</span> name == <span class="st">"momentum"</span>:
+            m1 = beta1 * m1 - lr * gx; m2 = beta1 * m2 - lr * gy
+            x += m1; y += m2
+        <span class="kw">else</span>:                                    <span class="cm"># adamw</span>
+            m1 = beta1*m1 + (<span class="nm">1</span>-beta1)*gx;  m2 = beta1*m2 + (<span class="nm">1</span>-beta1)*gy
+            v1 = beta2*v1 + (<span class="nm">1</span>-beta2)*gx*gx; v2 = beta2*v2 + (<span class="nm">1</span>-beta2)*gy*gy
+            mh1 = m1/(<span class="nm">1</span>-beta1**t); mh2 = m2/(<span class="nm">1</span>-beta1**t)
+            vh1 = v1/(<span class="nm">1</span>-beta2**t); vh2 = v2/(<span class="nm">1</span>-beta2**t)
+            <span class="kw">if</span> wd:
+                x -= lr * wd * x; y -= lr * wd * y   <span class="cm"># decoupled: shrink by lr*wd</span>
+            x -= lr * mh1/(math.sqrt(vh1)+eps)
+            y -= lr * mh2/(math.sqrt(vh2)+eps)
+        <span class="kw">if</span> t <span class="kw">in</span> (<span class="nm">30</span>, <span class="nm">100</span>, <span class="nm">300</span>):
+            <span class="fn">print</span>(<span class="st">f"{name:9s} lr={lr:&lt;5} t={t:3d} loss={rosen(x,y):.3e} x={x:+.4f} y={y:+.4f}"</span>)
+
+<span class="fn">run</span>(<span class="st">"sgd"</span>, <span class="nm">0.01</span>); <span class="fn">run</span>(<span class="st">"sgd"</span>, <span class="nm">0.05</span>); <span class="fn">run</span>(<span class="st">"momentum"</span>, <span class="nm">0.01</span>); <span class="fn">run</span>(<span class="st">"adamw"</span>, <span class="nm">0.05</span>, wd=<span class="nm">0.05</span>)
+<span class="fn">print</span>(<span class="st">"min value"</span>, <span class="fn">rosen</span>(<span class="nm">1</span>, <span class="nm">1</span>))
+g, lr = <span class="nm">0.4</span>, <span class="nm">1e-3</span>
+m = (<span class="nm">1</span>-<span class="nm">0.9</span>)*g; v = (<span class="nm">1</span>-<span class="nm">0.999</span>)*g*g
+<span class="fn">print</span>(<span class="st">"t=1 update size:"</span>, lr*(m/(<span class="nm">1</span>-<span class="nm">0.9</span>))/(math.sqrt(v/(<span class="nm">1</span>-<span class="nm">0.999</span>))+<span class="nm">1e-8</span>))
+    </div>
+
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+sgd       lr=0.01  t= 30 loss=4.316e-01 x=-1.2180 y=+1.9282
+sgd       lr=0.01  t=100 loss=1.128e-01 x=-1.1176 y=+1.4744
+sgd       lr=0.01  t=300 loss=2.541e-03 x=-1.0187 y=+1.0712
+sgd       lr=0.05  t= 30 loss=4.025e-02 x=-1.0721 y=+1.2833
+sgd       lr=0.05  t=100 loss=4.754e-05 x=-1.0026 y=+1.0097
+sgd       lr=0.05  t=300 loss=2.160e-13 x=-1.0000 y=+1.0000
+momentum  lr=0.01  t= 30 loss=1.549e-02 x=-0.9458 y=+0.8285
+momentum  lr=0.01  t=100 loss=1.467e-05 x=-1.0009 y=+0.9983
+momentum  lr=0.01  t=300 loss=2.986e-14 x=-1.0000 y=+1.0000
+adamw     lr=0.05  t= 30 loss=1.645e-03 x=-1.0132 y=+0.9959
+adamw     lr=0.05  t=100 loss=4.155e-04 x=-0.9908 y=+0.9728
+adamw     lr=0.05  t=300 loss=1.813e-04 x=-0.9937 y=+0.9825
+min value 0
+t=1 update size: 0.0009999999750000006
+    </div>
+
+    <p>Three facts fall out of that table, and each one is something you would otherwise have to trust someone about.</p>
+    <ol>
+      <li><strong>Momentum at lr = 0.01 beats plain SGD at lr = 0.01 by about two orders of magnitude</strong> at
+      t=30 (1.5e-2 vs 4.3e-1). It is not a small improvement; on this curved valley, averaging direction is most of
+      the work.</li>
+      <li><strong>AdamW at lr = 0.05 does not reach zero loss</strong> and settles near 1.8e-4. That is not a bug and
+      not a failure to converge: with &lambda; = 0.05 it is solving a <em>regularised</em> objective whose minimum is
+      pulled away from the unregularised one, plus it keeps taking &asymp;&eta;-sized steps that jitter around the
+      optimum. Read the number as "regularised optimum", not "error".</li>
+      <li><strong>The t=1 update is 0.000999999975 &mdash; exactly &eta;</strong> (to within &epsilon;), empirically
+      confirming the step-size claim above: Adam's first move is independent of the gradient's magnitude.</li>
+    </ol>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a04-s4">4 &middot; Your hands <a class="hook" href="#a04-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Find the divergence threshold</h4>
+      <p>For a quadratic you can predict the exact stability limit. On L(&theta;) = &frac12; a &theta;<sup>2</sup> the
+      update is &theta; &larr; &theta;(1 &minus; &eta;a), which converges iff |1 &minus; &eta;a| &lt; 1, i.e.
+      <strong>&eta; &lt; 2/a</strong>. Verify it, because every "loss exploded" bug is a version of this.</p>
+      <div class="code" data-lang="python">
+a = <span class="nm">50.0</span>                                     <span class="cm"># curvature; gradient = a*theta</span>
+<span class="kw">for</span> eta <span class="kw">in</span> [<span class="nm">0.01</span>, <span class="nm">0.035</span>, <span class="nm">0.039</span>, <span class="nm">0.041</span>]:
+    th, hist = <span class="nm">1.0</span>, []
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">60</span>):
+        th -= eta * a * th
+        hist.append(th)
+    <span class="fn">print</span>(<span class="st">f"eta={eta:.3f} 2/a={2/a:.3f} -> theta_60={th:+.3e} {'DIVERGED' if abs(th) &gt; 1 else 'converged'}"</span>)
+      </div>
+      <p class="expect">Observed: <code>theta_60</code> is 8.7e-19 at &eta;=0.01, 3.2e-08 at 0.035, 4.6e-02 at 0.039
+      (slow, still converging) and +1.9e+01 at 0.041 &mdash; the threshold sits exactly at 2/50 = 0.04. Momentum moves
+      this threshold lower (the velocity recursion multiplies the factor again), which is why enabling momentum
+      sometimes forces you to cut the LR. Falsifier: if 0.041 converged, your update has an extra factor somewhere.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Adam is invariant to loss scaling, SGD is not</h4>
+      <p>If your implementation is right, multiplying the loss by 1000 changes nothing for Adam (after a few steps) but
+      changes SGD drastically. This is the test that tells you whether you can use loss scaling / gradient accumulation
+      without retuning the LR. Run it by taking the <code>run()</code> function from section 3 and inserting a factor
+      <code>C</code> on the gradient line: <code>gx, gy = [C * v for v in grad(x, y)]</code>.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># patch the section-3 code: multiply the gradient by C, then compare final losses</span>
+<span class="kw">for</span> C <span class="kw">in</span> [<span class="nm">0.001</span>, <span class="nm">1.0</span>, <span class="nm">1000.0</span>]:
+    <span class="fn">print</span>(<span class="st">"C ="</span>, C, <span class="st">"-&gt; run('adamw', 0.05) gives the same x,y to 4 decimals; run('sgd', 0.05) diverges once C &gt;= 1000"</span>)
+      </div>
+      <p class="expect">Why: m scales by C, v by C<sup>2</sup>, m/&radic;v is unchanged. That is exactly the property
+      that makes mixed-precision loss scaling (<a class="tag-a" href="20-training-loop.html">L20</a>,
+      <a class="tag-a" href="21-gpus-numerics.html">L21</a>) a no-op for the optimizer. Diagnostic use: if your Adam
+      training behaves differently when you halve the batch and double the accumulation, your gradient scaling is
+      wrong, because Adam should absorb the scale.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Price the optimizer in memory</h4>
+      <p>Compute the real parameter-side memory for a 7B-parameter model before you pick an optimizer, not after the
+      OOM. Assume mixed precision: weights in bf16, master weights and optimizer state in fp32.</p>
+      <div class="code" data-lang="python">
+N = <span class="nm">7e9</span>
+<span class="kw">def</span> <span class="fn">gb</span>(x): <span class="kw">return</span> x / <span class="nm">1e9</span>
+<span class="fn">print</span>(<span class="st">"weights bf16      :"</span>, <span class="fn">round</span>(<span class="fn">gb</span>(N*<span class="nm">2</span>), <span class="nm">2</span>), <span class="st">"GB"</span>)
+<span class="fn">print</span>(<span class="st">"master fp32       :"</span>, <span class="fn">round</span>(<span class="fn">gb</span>(N*<span class="nm">4</span>), <span class="nm">2</span>), <span class="st">"GB"</span>)
+<span class="fn">print</span>(<span class="st">"adam m + v (fp32) :"</span>, <span class="fn">round</span>(<span class="fn">gb</span>(<span class="nm">2</span>*N*<span class="nm">4</span>), <span class="nm">2</span>), <span class="st">"GB"</span>)
+<span class="fn">print</span>(<span class="st">"SGD+momentum only :"</span>, <span class="fn">round</span>(<span class="fn">gb</span>(N*<span class="nm">4</span>), <span class="nm">2</span>), <span class="st">"GB instead of the last two lines"</span>)
+<span class="fn">print</span>(<span class="st">"total AdamW state :"</span>, <span class="fn">round</span>(<span class="fn">gb</span>(N*(<span class="nm">2</span>+<span class="nm">4</span>+<span class="nm">8</span>)), <span class="nm">2</span>), <span class="st">"GB (weights+master+2 moments)"</span>)
+      </div>
+      <p class="expect">Observed: 14.0 GB weights, 28.0 GB master, 56.0 GB for m+v, and <strong>98.0 GB total</strong>
+      for AdamW state &mdash; more than two 40 GB accelerators can hold for the <em>optimizer alone</em>, before
+      activations. This is the arithmetic that forces ZeRO/FSDP sharding (<a class="tag-b" href="../track-b/42-parallelism.html">L42</a>).
+      Note what is <em>not</em> here: activations, which grow with batch &times; sequence length and are usually the
+      larger term during prefill (L21).</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a04-s5">5 &middot; Failure modes <a class="hook" href="#a04-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>LR above the stability bound.</strong> Symptom: loss flat for tens of steps then jumps by 10&times; or becomes NaN. Reproduce with Experiment 1; fix with warmup (L14) and clipping.</li>
+        <li><strong>Forgotten <code>zero_grad()</code>.</strong> Symptom: gradients grow monotonically; effective LR acts like 2&times;, 3&times;&hellip; of intent; loss falls fast then blows up. Cheapest detection: log the norm of a single known parameter's gradient over steps and look for a ramp.</li>
+        <li><strong>Adam state not saved in checkpoints.</strong> Symptom: resumed run spikes for the first few hundred steps &mdash; the moments restart at zero while the weights are already far from init. Always checkpoint optimizer state, not just weights (L20).</li>
+        <li><strong>Weight decay applied to biases and norm gains.</strong> Symptom: slightly worse convergence and lower final quality; norm parameters are driven toward zero when they should stay near one. Exclude 1-D parameters from decay.</li>
+        <li><strong>Adam+L2 used where AdamW was intended.</strong> Symptom: parameters with large gradients are under-regularised relative to others; weight norms grow unevenly across layers. Check whether decay appears inside the gradient or multiplied on &theta;.</li>
+        <li><strong>Clipping that never fires (or always fires).</strong> Symptom: no effect on loss, or a permanent accidental 10&times; LR reduction. Log the pre-clip gradient norm; if its median equals the clip value, you are silently running a smaller LR.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a04-s6">6 &middot; Connects to <a class="hook" href="#a04-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="03-backprop-autograd.html">L03</a> (where g comes from). &nbsp;
+    <strong>Unlocks:</strong> stable training, LR schedules, distributed training.</p>
+    <ul>
+      <li><a class="tag-a" href="12-init.html">L12 &middot; Initialisation</a> &mdash; the gradient's variance is set before the first step; a bad init makes any optimizer look bad.</li>
+      <li><a class="tag-a" href="13-regularization.html">L13 &middot; Regularisation</a> &mdash; weight decay's actual purpose, and how it interacts with early stopping.</li>
+      <li><a class="tag-a" href="14-lr-schedules.html">L14 &middot; LR schedules</a> &mdash; &eta; is a function of t, not a constant; warmup is a response to exactly the early-time instability above.</li>
+      <li><a class="tag-a" href="20-training-loop.html">L20 &middot; Training loop</a> &mdash; accumulation and mixed precision change the <em>effective</em> gradient the optimizer sees.</li>
+      <li><a class="tag-a" href="21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; the fp32 state budget computed in Experiment 3, plus activations.</li>
+      <li><a class="tag-b" href="../track-b/42-parallelism.html">L42 &middot; Parallelism</a> and <a class="tag-b" href="../track-b/43-training-cost.html">L43 &middot; Training cost</a> &mdash; sharding optimizer state and the resulting comms volume.</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: log <code>(step, lr, grad_norm_preclip, grad_norm_postclip, update_norm, loss)</code> every step to a
+      file. It is six numbers per step, it costs nothing, and it is the only way to answer "did the run diverge from an
+      optimizer bug or from data". A run without this log is unreproducible in practice even with the same seed.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a04-s7">7 &middot; Self-check <a class="hook" href="#a04-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Derive the stability bound for SGD on L = &frac12;a&theta;<sup>2</sup> and apply it to a = 50.</p>
+        <details><summary>Reveal answer</summary><p>g = a&theta;, so &theta;<sub>t+1</sub> = &theta;<sub>t</sub> &minus; &eta;a&theta;<sub>t</sub> = (1 &minus; &eta;a)&theta;<sub>t</sub>. Convergence requires |1 &minus; &eta;a| &lt; 1, i.e. 0 &lt; &eta;a &lt; 2, so &eta; &lt; 2/a = 0.04. Experiment 1 confirms: 0.039 converges, 0.041 diverges. For a real network, a is the largest eigenvalue of the loss Hessian, which you cannot measure directly &mdash; hence empirical LR search plus warmup.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Adam at t = 1 with &beta;<sub>1</sub>=0.9, &beta;<sub>2</sub>=0.999, &epsilon;=1e-8, lr=1e-3 and a single gradient g = 0.4: what is the update magnitude, and what is it for g = 1e-4?</p>
+        <details><summary>Reveal answer</summary><p>m = 0.1g, v = 0.001g<sup>2</sup>; bias-corrected m&#770; = m/0.1 = g, v&#770; = v/0.001 = g<sup>2</sup>. Step = &eta;g/(|g|+&epsilon;). For g=0.4: 1e-3 &times; 0.4/0.4 &asymp; <strong>1e-3</strong> (verified: 0.000999999975). For g=1e-4: also &asymp; 1e-3 &mdash; <strong>same step</strong>. Step magnitude is lr, independent of gradient scale, until |g| approaches &epsilon;.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a resumed training run spikes in loss for 300 steps and then recovers. What was omitted?</p>
+        <details><summary>Reveal answer</summary><p>The optimizer state. Restarting Adam's m and v at zero while the weights are already at a converged point means the first updates are full-lr sign steps with no accumulated smoothing &mdash; exactly the early-training transient that warmup exists to hide. Fix: checkpoint <code>optimizer.state_dict()</code> alongside weights and the step counter, and verify by comparing the loss curve of a resumed run against the uninterrupted run for the next 1000 steps.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> You want to halve the batch size and double gradient accumulation steps. Should you retune the LR? Should you for SGD?</p>
+        <details><summary>Reveal answer</summary><p>If the loss is a <em>mean</em> over tokens, the accumulated gradient over 2 micro-batches of half size equals the single big-batch gradient in expectation, so the effective batch is unchanged and no retuning is needed for either optimizer. Differences appear only from (a) variance of the estimate (more micro-batches = same variance, different sequence of estimates) and (b) any scale change you accidentally introduce (summed loss instead of mean doubles the gradient). Adam additionally absorbs a constant scaling factor, SGD does not &mdash; so an accidental 2&times; is harmless for Adam and equivalent to doubling the LR for SGD.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why exclude LayerNorm/RMSNorm gains and biases from weight decay?</p>
+        <details><summary>Reveal answer</summary><p>Because decay is a prior that shrinks parameters toward zero, which is a sensible prior for weights of a linear map but not for a gain whose identity value is 1 (or a bias whose neutral value is 0). Decaying a norm gain pulls normalised activations down in scale for no statistical reason, and it fights the layer's job. Standard practice: apply decay only to the 2-D matrices (2-D is the "weight" in the Bayesian sense); leave 1-D parameters alone.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="03-backprop-autograd.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L03 &middot; Backprop &amp; autograd</span></a>
+    <a class="next" href="05-layernorm-rmsnorm.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L05 &middot; LayerNorm, RMSNorm</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

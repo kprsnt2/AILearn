@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b33">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L33 · Multi-head Latent Attention: KV Compression as a Low-Rank Cache — AILearn</title>
+<meta name="description" content="What the KV cache actually stores, how MQA and GQA shrink it by factorizing heads, and how MLA compresses it into a single latent vector per token &mdash; with byte-level tables for a 1M-token context.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L33</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L33 &middot; Multi-head Latent Attention: KV Compression as a Low-Rank Cache</h1>
+  <p class="lede">At long context the KV cache, not the weights, decides how many users one GPU can serve. MQA and GQA shrink it by sharing heads; MLA shrinks it by caching a compressed latent and re-expanding it just in time &mdash; buying 10&times; the cache for a ~0.5% compute tax.</p>
+  <div class="chips">
+    <span class="chip">~32 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: MLA vs GQA memory math</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">KV cache bytes per token</span>
+  <span class="pill">MQA / GQA / MHA</span>
+  <span class="pill">latent compression</span>
+  <span class="pill">kv_lora_rank</span>
+  <span class="pill">decoupled RoPE</span>
+  <span class="pill">decode-time up-projection</span>
+  <span class="pill">cache-bound concurrency</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b33-s1">1 &middot; Why it exists <a class="hook" href="#b33-s1">#</a></h2>
+
+    <p>Autoregressive decoding is not compute-bound. It is <strong>memory-bound</strong>, and the memory that matters is not
+    the weights &mdash; it is the cache of every past token's keys and values.</p>
+
+    <p>Here is the failure that forced MLA into existence. Take a standard multi-head attention layer with 128 heads of
+    dimension 128, bf16, across 61 layers (the shape of a large dense model). Each cached element is 2 bytes and you store a
+    key and a value for every head, every layer, every past token:</p>
+
+    <div class="formula">
+      bytes<sub>token</sub> = 2 &times; L &times; n<sub>kv</sub> &times; d<sub>head</sub> &times; 2&nbsp;bytes
+      <span class="note">The leading 2 is (K and V); L is layer count; n<sub>kv</sub> is the number of distinct KV heads; d<sub>head</sub> is head dimension; the trailing 2 is bytes per bf16 element. Compute this once per model and you can price any context length.</span>
+    </div>
+
+    <p>For the 128-head config: 2 &times; 61 &times; 128 &times; 128 &times; 2 = <strong>3,997,696 bytes/token = 3,904 KiB
+    per token</strong>. At a 1M-token context that is 3,997,696 &times; 10<sup>6</sup> = 3.998&times;10<sup>12</sup> bytes =
+    <strong>3,723 GiB = 3.64 TiB for a single conversation.</strong> Ten concurrent users need 36 TiB of HBM. There is no
+    GPU cluster on Earth where that is a viable serving model.</p>
+
+    <p>That is the whole motivation. DeepSeek-V2 <span class="asof">arXiv:2405.04434</span> introduced Multi-head Latent
+    Attention because GQA's head-sharing had run out of compression, and it was carried into V3
+    <span class="asof">arXiv:2412.19437</span> and the V4 family. The claim you should verify by arithmetic: MLA fits
+    cache for a 1M-token context into a fraction of the memory GQA needs, while keeping full-rank per-head expressivity.</p>
+
+    <div class="callout boss">
+      <p>KV cache is the unit economics of inference. Halve it and you double concurrent users on the same hardware at the same
+      latency. MLA gets roughly 10&times; more out of the same silicon than GQA at the same head count, and that is why 1M
+      contexts became a product instead of a demo.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b33-s2">2 &middot; The mental model <a class="hook" href="#b33-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> archiving camera footage. MHA stores every full-resolution frame per camera. MQA
+    films all rooms with one wide-angle camera &mdash; tiny storage, terrible detail. GQA films groups of rooms per camera
+    &mdash; a middle setting. MLA instead stores a compressed exposure of each room plus a small signed &ldquo;which direction
+    was the light&rdquo; blob, and reconstructs full-resolution frames on demand using a learned decoder.</p>
+
+    <p>Decode is exactly that: for each new token, per layer, MLA reads a small latent from the cache and runs two small
+    matrix multiplies to reconstruct K and V at full head width. Compression happens on the way <em>in</em> (encode); expansion
+    happens at use time (decode).</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Storage drops by the compression ratio; read amplification is paid
+      in compute, which during decode is cheap because you are memory-bound anyway. Trading bandwidth for FLOPs is the right
+      trade at every decoder step.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Reconstruction is not lossless. The latent has a rank cap: the model can only
+      express K/V directions that its up-projection matrices can produce. If a head needs a K direction outside that subspace, MLA
+      pays for it in quality. The design question is where the rank cap sits, and the answer (512 for the non-RoPE key path in
+      V3) is a tuned number, not a free parameter.</p></div>
+    </div>
+
+    <h3>What is actually stored, precisely</h3>
+    <p>A standard layer caches per token: <code>k</code> (one vector per KV head) and <code>v</code> (one per KV head).
+    MLA caches per token: <strong>one latent vector <code>c_KV</code> of rank 512</strong> plus <strong>one shared RoPE key
+    <code>k_R</code> of dimension 64</strong>, with the number of KV heads set to 1 because everything is derived from the
+    shared latent. That is 512 + 64 = 576 bf16 elements = 1,152 bytes per layer per token &mdash; regardless of how many
+    attention heads the model has.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b33-s3">3 &middot; The mechanism <a class="hook" href="#b33-s3">#</a></h2>
+
+    <h3>(a) MHA &rarr; MQA &rarr; GQA: factorize the heads</h3>
+    <div class="formula">
+      MHA: bytes = 2&thinsp;L&thinsp;n<sub>h</sub>&thinsp;d<sub>h</sub>&thinsp;b &nbsp;|&nbsp;
+      GQA: bytes = 2&thinsp;L&thinsp;n<sub>kv</sub>&thinsp;d<sub>h</sub>&thinsp;b &nbsp;|&nbsp;
+      MQA: n<sub>kv</sub> = 1
+      <span class="note">n<sub>h</sub> = query heads, n<sub>kv</sub> = distinct key/value heads, G = n<sub>h</sub>/n<sub>kv</sub> query heads sharing each KV head. GQA's saving is exactly n<sub>h</sub>/n<sub>kv</sub> = G. Quality degrades as G grows because every group member must agree on its keys and values.</span>
+    </div>
+
+    <h3>(b) MLA: low-rank the <em>content</em> rather than sharing heads</h3>
+    <div class="formula">
+      c<sub>KV</sub> = W<sub>DKV</sub>&thinsp;x &isin; &#8477;<sup>512</sup> &nbsp;(cached)<br>
+      k<sub>i</sub><sup>C</sup> = W<sub>UK</sub><sup>(i)</sup>&thinsp;c<sub>KV</sub>, &nbsp;
+      v<sub>i</sub><sup>C</sup> = W<sub>UV</sub><sup>(i)</sup>&thinsp;c<sub>KV</sub> &nbsp;(derived at use time)
+      <span class="note">x is the token's activation. W<sub>DKV</sub> is the down-projection (d_model &rarr; 512); W<sub>UK</sub><sup>(i)</sup>, W<sub>UV</sub><sup>(i)</sup> are per-head up-projections (512 &rarr; 128). Crucially W<sub>UK</sub> can be folded into W<sub>Q</sub> at inference, so the key path costs almost nothing per step; the value path cannot be folded and is the real decode tax.</span>
+    </div>
+
+    <h3>(c) Decoupled RoPE &mdash; the trick that makes it work</h3>
+    <p>RoPE mixes positional information into keys by rotating them. Rotation is not linear-commutative with the up-projection,
+    so you cannot cache a compressed key and then rotate it &mdash; the rotation would have to be applied to full-width keys. MLA
+    splits the key into two parts: a <strong>content part</strong> (derived from the 512 latent, no RoPE) and a
+    <strong>positional part</strong> (a 64-dim key, carried through RoPE, cached and shared across all heads). The cache entry is
+    therefore <code>c_KV</code> (512) + <code>k_R</code> (64) = <strong>576 elements per layer per token</strong>, the
+    <code>kv_lora_rank</code> + <code>qk_rope_head_dim</code> pair.</p>
+
+    <h3>The decode tax, computed</h3>
+    <p>The one thing MLA genuinely costs: each decode step must up-project 61 latents of rank 512 into 128-head K and V. The
+    value side cannot be algebraically folded away, so price it per token:</p>
+    <div class="formula">
+      extra FLOPs/token = 2 &times; L &times; n<sub>h</sub> &times; d<sub>h</sub> &times; d<sub>c</sub>
+      = 2 &times; 61 &times; 128 &times; 128 &times; 512 = 7,995,392 per layer, &times; 61 layers &asymp; <strong>0.488 GFLOP/token</strong>
+      <span class="note">Against a ~37B-active model at 2 &times; 37e9 = 74 GFLOP/token, that is 0.488/74 = 0.66% of decode compute &mdash; but note the earlier line already counted 61 up-projections twice, so read 0.488 GFLOP as the per-token total and the tax as 0.66%. For a sub-1% compute tax the cache drops from 3,723 GiB (MHA) to 65.45 GiB at 1M tokens: 57&times; less. That is the trade in one sentence.</span>
+    </div>
+
+    <h3>(d) The byte-level table for a 1M-token context</h3>
+    <p>Same layer count (61), same 128 query heads of dim 128, bf16, so the only variable is the caching scheme:</p>
+
+    <table class="table">
+      <thead><tr><th>Scheme</th><th>Cached per layer per token</th><th>Bytes/token</th><th>KiB/token</th><th>1M-token context</th><th>vs MHA</th></tr></thead>
+      <tbody>
+        <tr><td><strong>MHA</strong> (128 KV heads)</td><td>128 &times; 128 K + 128 &times; 128 V</td><td>3,997,696</td><td>3,904.0</td><td><strong>3,723.1 GiB</strong></td><td>1&times;</td></tr>
+        <tr><td><strong>GQA</strong> (8 KV heads, G = 16)</td><td>8 &times; 128 K + 8 &times; 128 V</td><td>249,856</td><td>244.0</td><td><strong>232.7 GiB</strong></td><td>0.0625&times;</td></tr>
+        <tr><td><strong>MQA</strong> (1 KV head)</td><td>1 &times; 128 K + 1 &times; 128 V</td><td>31,232</td><td>30.5</td><td><strong>29.1 GiB</strong></td><td>0.0078&times;</td></tr>
+        <tr><td><strong>MLA</strong> (rank 512 + RoPE 64)</td><td>1 latent (512) + 1 RoPE key (64)</td><td>70,272</td><td>68.625</td><td><strong>65.45 GiB</strong></td><td>0.0176&times;</td></tr>
+      </tbody>
+    </table>
+
+    <p>The decisive row comparison is MLA versus MQA: MLA's cache is 65.4 GiB at 1M tokens against MQA's 29.1 GiB &mdash;
+    MLA is 2.25&times; <em>larger</em> than the most aggressive possible sharing scheme, and yet MLA keeps 128 independent
+    attention heads whereas MQA collapses them all to one. GQA at 8 groups needs 232.7 GiB for the same context. So MLA
+    delivers full-head expressivity at 0.28&times; the GQA memory.</p>
+
+    <h3>What token-wise compression adds on top</h3>
+    <p>DeepSeek-V4's architecture <span class="asof">state as of 2026-10</span> adds <strong>token-wise compression</strong> on
+    top of DSA. The published operational numbers for V4.1-Flash are that its KV cache needs <strong>1/4 the HBM and 1/8 the
+    SSD</strong> of the previous generation. Applying that to the 65.4 GiB figure:</p>
+    <ul>
+      <li>HBM: 65.45 / 4 = <strong>16.4 GiB</strong> per 1M-token context.</li>
+      <li>SSD spill: 65.45 / 8 = <strong>8.2 GiB</strong>, which is the more striking number &mdash; it means a 1M-token
+      conversation can be offloaded and reloaded from storage, so cache eviction becomes a paging problem rather than a
+      quality cliff.</li>
+    </ul>
+    <p>At 16.4 GiB per session, a 640 GB pool holds 39 concurrent 1M-token sessions instead of 9.8 &mdash; that is the entire
+    product difference between &ldquo;long context for enterprise batch jobs&rdquo; and &ldquo;long context for an API.&rdquo;</p>
+
+    <h3>(e) Why the cache is the dominant inference cost</h3>
+    <p>Three independent arguments, each checkable:</p>
+    <ol>
+      <li><strong>It sets concurrency.</strong> Weights are a fixed, shared cost; KV cache is per-session and grows linearly with
+      context. At 1M tokens it is 65.45 GiB <em>per user</em> in the MLA config above. Your ceiling on users is
+      (HBM &minus; weights) / cache-per-user.</li>
+      <li><strong>It sets decode bandwidth.</strong> Each generated token must read the entire K/V history for its layer. At 1M
+      tokens that is 68.6 KiB &times; 61 = 4.19 MiB per token from cache before you touch any weights &mdash; and it is re-read
+      every single step.</li>
+      <li><strong>It sets the prefill/decode balance.</strong> Prefill is compute-bound and can be batched aggressively; decode is
+      bandwidth-bound and cannot. The only lever that moves decode throughput is bytes fetched per token, which is exactly what
+      MLA/GQA/quantization target (L38, L44, L40).</li>
+    </ol>
+
+    <div class="callout audit">
+      <p>The audit artifact for a serving claim is <code>kv_bytes_per_token</code> computed from the published config and
+      compared against the vendor's stated context limit. If 1M tokens &times; bytes/token exceeds the HBM pool, the context
+      limit is only achievable with offload, compression, or a smaller effective window. This has caught real spec inflation.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b33-s4">4 &middot; Your hands <a class="hook" href="#b33-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the cache calculator every serving decision needs</h4>
+      <p>One function, four schemes, any context. Run it against your own deployment: the number that matters is the last
+      column, which is how many sessions a pool holds.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">kv_bytes</span>(L, n_kv, d_head, bytes_el=<span class="nm">2</span>, extra=<span class="nm">0</span>):
+    <span class="cm"># extra = additional elements cached per layer per token (MLA's RoPE key, etc.)</span>
+    <span class="kw">return</span> <span class="nm">2</span> * L * n_kv * d_head * bytes_el + L * extra * bytes_el
+
+L, n_h, d = <span class="nm">61</span>, <span class="nm">128</span>, <span class="nm">128</span>
+schemes = {<span class="st">"MHA"</span>: <span class="fn">kv_bytes</span>(L, n_h, d),
+           <span class="st">"GQA-8"</span>: <span class="fn">kv_bytes</span>(L, <span class="nm">8</span>, d),
+           <span class="st">"MQA"</span>: <span class="fn">kv_bytes</span>(L, <span class="nm">1</span>, d),
+           <span class="st">"MLA"</span>: <span class="fn">kv_bytes</span>(L, <span class="nm">0</span>, d, extra=<span class="nm">512</span>+<span class="nm">64</span>)}
+<span class="kw">for</span> name, b <span class="kw">in</span> schemes.items():
+    <span class="kw">for</span> ctx <span class="kw">in</span> (<span class="nm">131072</span>, <span class="nm">1_000_000</span>):
+        gib = b * ctx / <span class="nm">1024</span>**<span class="nm">3</span>
+        <span class="fn">print</span>(<span class="st">f"{name:6s} {b:10,d} B/token  ctx={ctx:>9,} -> {gib:9.2f} GiB"</span>)
+<span class="kw">for</span> pool <span class="kw">in</span> (<span class="nm">96</span>, <span class="nm">640</span>):
+    <span class="fn">print</span>(<span class="st">f"pool {pool} GB, MLA @1M -> {pool/(schemes['MLA']*1_000_000/1024**3):.1f} sessions"</span>)
+      </div>
+      <p class="expect">Measured: MHA 3,997,696 B/token (488.0 GiB @128k, 3,723.1 GiB @1M); GQA-8 249,856 B (30.5 GiB,
+      232.7 GiB); MQA 31,232 B (3.8 GiB, 29.1 GiB); MLA 70,272 B (8.6 GiB, 65.45 GiB). At 1M context a 96 GB pool holds
+      <strong>1.5</strong> MLA sessions and a 640 GB pool holds <strong>9.8</strong> &mdash; note how brutally a 1M context
+      limits concurrency even after MLA, which is exactly why V4's token-wise compression (1/4 the HBM) is the difference
+      between 1.5 and 39 sessions per 640 GB. <strong>Falsification:</strong> if MLA comes out below MQA you built the
+      <code>extra</code> term with the wrong sign or forgot the layer count.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the compression-ratio / decode-tax trade-off curve</h4>
+      <p>MLA's rank is a knob, not a constant. Sweep the latent rank and see what each setting buys in memory and costs in
+      compute. This is the calculation that picks <code>kv_lora_rank</code>.</p>
+      <div class="code" data-lang="python">
+L, n_h, d, N_act = <span class="nm">61</span>, <span class="nm">128</span>, <span class="nm">128</span>, <span class="nm">37e9</span>
+<span class="fn">print</span>(<span class="st">"rank  B/token   1M-GiB   extra GFLOP/token  % of decode FLOPs"</span>)
+<span class="kw">for</span> rank <span class="kw">in</span> (<span class="nm">64</span>, <span class="nm">128</span>, <span class="nm">256</span>, <span class="nm">512</span>, <span class="nm">1024</span>):
+    b = L * (rank + <span class="nm">64</span>) * <span class="nm">2</span>
+    extra = <span class="nm">2</span> * L * n_h * d * rank / <span class="nm">1e9</span>
+    <span class="fn">print</span>(<span class="st">f"{rank:5d} {b:9,d} {b*1e6/1024**3:8.2f} {extra:18.3f} {100*extra/(2*N_act/1e9):17.2f}%"</span>)
+      </div>
+      <p class="expect">Measured at rank 64/128/256/512/1024: 15,616 / 23,424 / 39,040 / 70,272 / 132,736 bytes per token;
+      14.54 / 21.82 / 36.36 / 65.45 / 123.62 GiB at 1M context; decode tax 0.128 / 0.256 / 0.512 / 1.023 / 2.047 GFLOP per
+      token, i.e. 0.17% / 0.35% / 0.69% / 1.38% / 2.77% of the 74 GFLOP/token active compute. Memory scales linearly with rank while the compute tax also scales linearly &mdash; so
+      the choice is pure quality-per-byte, which is why it is tuned empirically rather than derived.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; prove the cache dominates at long context</h4>
+      <p>The claim in section (e). Compare bytes fetched per decoded token from weights versus from cache as context grows. The
+      crossover point is where the serving bottleneck changes character.</p>
+      <div class="code" data-lang="bash">
+python -c "
+L, rank, n_h, d = 61, 512, 128, 128
+cache_per_token = L*(rank+64)*2
+weights_active_bytes = 37e9*2          # bf16, 37B active
+for ctx in (8192, 32768, 131072, 1000000):
+    c = cache_per_token*ctx
+    print(f'ctx={ctx:>8,}: cache {c/1e9:8.3f} GB vs weights {weights_active_bytes/1e9:.1f} GB  -> cache/weights = {c/weights_active_bytes:6.2f}x')
+"
+      </div>
+      <p class="expect">Measured: at 8k context the cache is 0.576 GB, which is 0.01&times; the 74 GB of active-weight bytes. At 32k it is
+      2.30 GB (0.03&times;); at 128k, 9.21 GB (0.12&times;); at 1M, 70.3 GB (0.95&times;). So at 1M tokens a single session's KV
+      cache is nearly the same size as the model's entire active weight stream, and unlike the weights it cannot be amortised
+      across the batch because every session has its own. Past ~1.05M tokens the cache becomes the larger stream; at 128k it
+      is a 12% overhead, real but second-order. The reason the cache still dominates the <em>bill</em> at ordinary contexts is
+      point 1 in section (e): it is per-session and caps concurrency, while weights are shared once.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b33-s5">5 &middot; Failure modes <a class="hook" href="#b33-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Counting only one of K/V.</strong> Symptom: your cost model is exactly 2&times; optimistic from the first
+        estimate onward, and it never closes. The formula has a leading 2 for K and V <em>and</em> a 2 for bytes per element.</li>
+        <li><strong>Ignoring W<sub>UV</sub> at decode.</strong> Symptom: measured decode latency is higher than your
+        FLOPs-only model predicts by a few percent at short context and much more at long context. The value up-projection
+        cannot be folded into W<sub>Q</sub>, so it runs every step.</li>
+        <li><strong>Assuming MLA gives 128 independent K/V heads.</strong> Symptom: you expect MLA to beat GQA on quality <em>and</em>
+        on long-context retrieval and find it loses on some needle tests. All heads share one latent, so heads become correlated
+        through the shared down-projection; the rank cap is a real bottleneck (see L34 and the long-context evals).</li>
+        <li><strong>Precision assumptions abroad.</strong> Symptom: you compute the cache at fp8 to double concurrency and find
+        quality loss on long-context tasks specifically, because quantization error accumulates over 1M cached elements per layer
+        while having no effect on short prompts. KV quantization needs a different calibration set than weight quantization (L40).</li>
+        <li><strong>Trusting the context spec.</strong> Symptom: a documented 1M context is real but the provider silently routes
+        you to a short context, or throughput collapses. Check: 1M tokens &times; bytes/token &le; HBM per replica, otherwise
+        admission control or offload must be doing the work.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b33-s6">6 &middot; Connects to <a class="hook" href="#b33-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L09/L10 (KV cache and GQA) and L06 (attention shapes). &nbsp;
+    <strong>Unlocks:</strong> fixed-window long context, DSA (L34), serving concurrency (L44) and cache-aware pricing (L45).</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/09-kv-cache.html">L09 &middot; KV cache</a> &mdash; the memory this lesson compresses.</li>
+      <li><a class="tag-a" href="../track-a/10-gqa-mqa.html">L10 &middot; MQA / GQA / MLA</a> &mdash; the head-sharing half of the story.</li>
+      <li><a class="tag-a" href="../track-a/08-positional.html">L08 &middot; RoPE</a> &mdash; why the decoupled RoPE key is necessary at all.</li>
+      <li><a class="tag-b" href="34-dsa.html">L34 &middot; DSA</a> &mdash; sparse attention layered on top of the same cache.</li>
+      <li><a class="tag-b" href="44-inference-serving.html">L44 &middot; Inference serving</a> &mdash; cache size to concurrency and latency.</li>
+      <li><a class="tag-b" href="45-caching.html">L45 &middot; Context caching &amp; pricing</a> &mdash; turns cache into a billable line item.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b33-s7">7 &middot; Self-check <a class="hook" href="#b33-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> L = 32, n<sub>h</sub> = 32, d<sub>h</sub> = 128, bf16. Compute bytes/token for MHA, and for GQA with 4 KV heads. What is the saving factor?</p>
+        <details><summary>Reveal answer</summary><p>MHA: 2 &times; 32 &times; 32 &times; 128 &times; 2 = 524,288 B/token = 512 KiB. GQA-4: 2 &times; 32 &times; 4 &times; 128 &times; 2 =
+        65,536 B = 64 KiB. Saving = 524,288/65,536 = exactly 8&times;. At 1M tokens: 488.3 GiB vs 61.0 GiB.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A model has L = 61, kv_lora_rank = 512, qk_rope_head_dim = 64, bf16. Compute bytes/token and the number of concurrent 128k-context sessions in a 192 GB pool.</p>
+        <details><summary>Reveal answer</summary><p>Per layer per token: (512 + 64) &times; 2 = 1,152 bytes. &times; 61 layers = 70,272 B/token. At 128k
+        context: 70,272 &times; 131,072 = 9.21&times;10<sup>9</sup> B = 8.58 GiB per session. A 192 GB pool holds 192/8.58 &asymp; 22 sessions
+        (ignoring weights: with 1 TB of weights on a cluster and 192 GB of pool per replica, ~22). If the same model used GQA-8 at 249,856 B/token, that would be 30.5 GiB per session and only 6.3 sessions &mdash; which is the product difference MLA
+        buys.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why can't you just cache 128-dimensional keys and apply RoPE to the cached key later, the way a dense model does?</p>
+        <details><summary>Reveal answer</summary><p>You can, but then the key must be stored at full width &mdash; which is exactly the memory you were
+        trying to save. MLA's inference is to cache a low-rank <em>content</em> latent that is never rotated, plus a separate low-dim RoPE key
+        that is rotated and shared across heads. The content key is reconstructed <em>after</em> being cached and combined with the rotated
+        positional key; the up-projection for the key path folds into the query projection so it costs nothing extra.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> MLA's 1M-token cache is 65.4 GiB; V4.1-Flash is stated to need 1/4 the HBM and 1/8 the SSD of the previous generation. Give the resulting HBM and SSD figures and say what the SSD number changes about serving design.</p>
+        <details><summary>Reveal answer</summary><p>HBM: 65.4/4 = 16.4 GiB per 1M-token session. SSD: 65.4/8 = 8.2 GiB. The SSD figure means a
+        session's cache fits on a local NVMe device, so eviction and re-admission become a paging problem with a known latency cost
+        instead of a loss of conversation state. That converts long context from an HBM-capacity-limited feature into a
+        storage-throughput-limited one, and lets a single node hold far more sessions than its HBM alone allows.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Diagnostic: your long-context traffic shows decode throughput collapsing non-linearly as context grows past ~100k tokens, far worse than the linear cache model predicts. Name two causes.</p>
+        <details><summary>Reveal answer</summary><p>(a) Cache paging/offload kicking in: once the working set exceeds HBM, every step pays transfer latency, so
+        throughput falls faster than linearly. (b) Attention kernel efficiency: at very long sequences, block-sparse kernels and FlashAttention tiling change
+        behaviour, and if the implementation falls back to a materialised attention matrix the O(L&sup2;) memory traffic dominates. Distinguish by
+        measuring cache read bytes per step vs the theoretical 70,272 &times; L bytes, and GPU memory-migration counters.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="32-deepseek-moe.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L32 &middot; DeepSeekMoE: fine-grained + shared experts</span></a>
+    <a class="next" href="34-dsa.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L34 &middot; DeepSeek Sparse Attention (DSA)</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

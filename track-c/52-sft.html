@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c52">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L52 &middot; SFT: data quality, format, masking, loss weighting &mdash; AILearn</title>
+<meta name="description" content="SFT as a masked, weighted NLL over response tokens: the normaliser experiment, a JSONL linter, and the failure modes that look like good results.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L52</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L52 &middot; SFT: data quality, format, masking, loss weighting</h1>
+  <p class="lede">Supervised fine-tuning fails almost never because of the model and almost always because of the accounting: what got masked, what got weighted, what leaked into the prompt. This page gives you the objective with its normalisers exposed, and a linter that runs before your GPU does.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: a clean SFT JSONL + a linter</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">loss masking</span>
+  <span class="pill">response-only NLL</span>
+  <span class="pill">token vs sequence normalisation</span>
+  <span class="pill">record weight</span>
+  <span class="pill">chat template</span>
+  <span class="pill">answer leakage</span>
+  <span class="pill">duplicate records</span>
+  <span class="pill">per-token NLL</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c52-s1">1 &middot; Why it exists <a class="hook" href="#c52-s1">#</a></h2>
+
+    <p>The failure is not "the model is bad". The failure is <em>the model is fine and your data is lying to
+    it</em>. Three examples of the same lie, all common, all invisible in a loss curve:</p>
+
+    <ul>
+      <li>A builder flattens <code>[system, user, assistant]</code> into one string and computes
+      cross-entropy over <strong>every</strong> token, including the system prompt and the question. The model is
+      now trained to generate your users' questions. Symptom: after fine-tuning, it continues the prompt
+      instead of answering it.</li>
+      <li>The dataset contains a turn where the assistant says something, then says something else. The
+      model learns that two assistant messages in a row are normal. Symptom: responses trail off into
+      meta-commentary like "Let me know if you need anything else" wrapped inside the JSON payload.</li>
+      <li>Half of the examples are long, and the batch builder divides the batch loss by the number of
+      <em>tokens</em>. The long examples consume the gradient budget. Symptom: the short-format task you
+      care about never sharpens, while a chatty verbosity improves.</li>
+    </ul>
+
+    <p>All three are bugs in the accounting, not in the model. And they are all detectable with a
+    linter that runs in under a second, before you rent a single GPU-month.</p>
+
+    <div class="callout boss">
+      <p>SFT is not "<em>train on your good answers</em>". It is <em>a masked, weighted negative log-likelihood over
+      response tokens only, with an explicit choice of normaliser</em>. The lessons that survive contact with
+      production are about masking, weights, and role hygiene &mdash; not about how many epochs to run.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c52-s2">2 &middot; The mental model <a class="hook" href="#c52-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> an SFT example is a <em>transcript</em>, and you are telling the model
+    "given everything before this position, the next token should be this one". The mask is the list of
+    positions where you are willing to be graded. Everything else in the transcript is context.</p>
+
+    <div class="seq">&lt;bos&gt; [system] Return JSON only. &lt;eot&gt;  [user] Claim C-4417? &lt;eot&gt;  [assistant] { "claim": ... &lt;eot&gt;
+ mask:  0     0     0     0   0   0       0    0      0     0        1  1  1  1  1 ...  1</div>
+
+    <p>Two numbers then have to be defined, and practitioners routinely leave them implicit:</p>
+    <ul>
+      <li><strong>Loss numerator</strong>: the sum of per-token negative log-likelihoods, multiplied by the record weight.</li>
+      <li><strong>Loss denominator</strong>: either the number of scored tokens, or the number of records, or the sum of weights. Each choice silently redefines what "the batch average" means.</li>
+    </ul>
+
+    <div class="grid2">
+      <div class="card"><h4>What "graded positions" gets right</h4><p>It separates context from target cleanly,
+      and it gives you a single knobs-free invariant: a token you are not willing to be graded on must have
+      mask 0. That invariant is checkable automatically.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Masking is not the same as ignoring. Masked prompt tokens
+      still condition every scored token, so a badly formatted prompt poisons the target distribution even
+      though its own loss is zero. Masking also cannot fix an example whose answer is wrong &mdash; it only
+      stops you paying for the question.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c52-s3">3 &middot; The mechanism <a class="hook" href="#c52-s3">#</a></h2>
+
+    <p>The objective, written so that the two normalisers are visible:</p>
+
+    <div class="formula">
+      L(&theta;) = &minus; &Sigma;<sub>i</sub> w<sub>i</sub> &middot; &Sigma;<sub>t&isin;M<sub>i</sub></sub> log &pi;<sub>&theta;</sub>( y<sub>i,t</sub> | x<sub>i</sub>, y<sub>i,&lt;t</sub> ) &nbsp;/&nbsp; D
+      <span class="note">i indexes records, M<sub>i</sub> is the set of scored (response) positions, D is the normaliser: &Sigma;<sub>i</sub>&Sigma;<sub>t</sub>|M<sub>i</sub>| (token) or &Sigma;<sub>i</sub> w<sub>i</sub> (sequence).</span>
+    </div>
+
+    <p>The choice of D is invisible in the code diff and enormous in effect. Here is the experiment that
+    makes it visible: same six examples, same toy softmax model, only the per-example gradient weight
+    changes.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L52 snippet A: choose the loss normaliser with an experiment, not a paper.</span>
+<span class="cm"># Sequence-normalised and token-normalised SFT disagree on the same data, same model.</span>
+<span class="kw">import</span> math
+
+<span class="kw">def</span> softmax(d):
+    m = max(d.values())
+    e = {k: math.exp(v - m) <span class="kw">for</span> k, v <span class="kw">in</span> d.items()}
+    s = sum(e.values())
+    <span class="kw">return</span> {k: v / s <span class="kw">for</span> k, v <span class="kw">in</span> e.items()}
+
+<span class="kw">def</span> fit(targets, weights, steps=<span class="nm">400</span>, lr=<span class="nm">0.3</span>):
+    <span class="st">""</span><span class="st">"Stochastic gradient descent, one example at a time."</span><span class="st">""</span>
+    logits = {<span class="st">"A"</span>: <span class="nm">0.0</span>, <span class="st">"B"</span>: <span class="nm">0.0</span>, <span class="st">"C"</span>: <span class="nm">0.0</span>}
+    <span class="kw">for</span> _ <span class="kw">in</span> range(steps):
+        <span class="kw">for</span> t, w <span class="kw">in</span> zip(targets, weights):
+            p = softmax(logits)
+            <span class="kw">for</span> c <span class="kw">in</span> logits:                     <span class="cm"># d(-w*log p_t)/d logit_c = w*(p_c - 1[c==t])</span>
+                logits[c] -= lr * w * (p[c] - (<span class="nm">1.0</span> <span class="kw">if</span> c == t <span class="kw">else</span> <span class="nm">0.0</span>))
+    <span class="kw">return</span> softmax(logits)
+
+<span class="cm"># 6 examples: JSON task (A, B, B, C) and two chit-chat examples whose answer is "A"</span>
+targets = [<span class="st">"A"</span>, <span class="st">"B"</span>, <span class="st">"B"</span>, <span class="st">"C"</span>, <span class="st">"A"</span>, <span class="st">"A"</span>]
+lengths = [<span class="nm">40</span>, <span class="nm">40</span>, <span class="nm">40</span>, <span class="nm">40</span>, <span class="nm">260</span>, <span class="nm">260</span>]              <span class="cm"># response token counts</span>
+N_TOK = sum(lengths)
+
+seq_w = [<span class="nm">1</span> / len(targets) <span class="kw">for</span> _ <span class="kw">in</span> targets]       <span class="cm"># every example is one vote</span>
+tok_w = [n / N_TOK <span class="kw">for</span> n <span class="kw">in</span> lengths]              <span class="cm"># every token is one vote</span>
+
+<span class="kw">for</span> name, w <span class="kw">in</span> ((<span class="st">"sequence-normalised"</span>, seq_w), (<span class="st">"token-normalised "</span>, tok_w)):
+    p = fit(targets, w)
+    <span class="kw">print</span>(f<span class="st">"{name}  P(A)={p['A']:.3f}  P(B)={p['B']:.3f}  P(C)={p['C']:.3f}"</span>)
+
+<span class="kw">print</span>()
+<span class="kw">print</span>(f<span class="st">"the two long chit-chat examples hold {sum(lengths[4:]) / N_TOK:.0%} of all tokens, so token"</span>)
+<span class="kw">print</span>(<span class="st">"normalisation hands them that share of the gradient budget and the model"</span>)
+<span class="kw">print</span>(<span class="st">"learns 'answer A' instead of the JSON target. Sequence normalisation keeps"</span>)
+<span class="kw">print</span>(<span class="st">"every example worth one vote; length bias is then an explicit 'weight' field"</span>)
+<span class="kw">print</span>(<span class="st">"you can see in the data diff instead of a property of your batch builder."</span>)
+</div><div class="code out-block" data-lang="output">
+sequence-normalised  P(A)=0.506  P(B)=0.327  P(C)=0.167
+token-normalised   P(A)=0.829  P(B)=0.113  P(C)=0.057
+
+the two long chit-chat examples hold 76% of all tokens, so token
+normalisation hands them that share of the gradient budget and the model
+learns 'answer A' instead of the JSON target. Sequence normalisation keeps
+every example worth one vote; length bias is then an explicit 'weight' field
+you can see in the data diff instead of a property of your batch builder.
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c52-s4">4 &middot; Your hands <a class="hook" href="#c52-s4">#</a></h2>
+
+    <p>Three labs. The first is the normaliser experiment. The second is a data linter you should run on
+    every JSONL before it touches a GPU. The third is a browser-console round-trip test that catches
+    masking bugs in a serving stack.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; the normaliser decides what the model learns</h4>
+      <p>Six examples, three possible answers, one softmax. Only the per-example gradient weight changes between the two runs.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L52 snippet A: choose the loss normaliser with an experiment, not a paper.</span>
+<span class="cm"># Sequence-normalised and token-normalised SFT disagree on the same data, same model.</span>
+<span class="kw">import</span> math
+
+<span class="kw">def</span> softmax(d):
+    m = max(d.values())
+    e = {k: math.exp(v - m) <span class="kw">for</span> k, v <span class="kw">in</span> d.items()}
+    s = sum(e.values())
+    <span class="kw">return</span> {k: v / s <span class="kw">for</span> k, v <span class="kw">in</span> e.items()}
+
+<span class="kw">def</span> fit(targets, weights, steps=<span class="nm">400</span>, lr=<span class="nm">0.3</span>):
+    <span class="st">""</span><span class="st">"Stochastic gradient descent, one example at a time."</span><span class="st">""</span>
+    logits = {<span class="st">"A"</span>: <span class="nm">0.0</span>, <span class="st">"B"</span>: <span class="nm">0.0</span>, <span class="st">"C"</span>: <span class="nm">0.0</span>}
+    <span class="kw">for</span> _ <span class="kw">in</span> range(steps):
+        <span class="kw">for</span> t, w <span class="kw">in</span> zip(targets, weights):
+            p = softmax(logits)
+            <span class="kw">for</span> c <span class="kw">in</span> logits:                     <span class="cm"># d(-w*log p_t)/d logit_c = w*(p_c - 1[c==t])</span>
+                logits[c] -= lr * w * (p[c] - (<span class="nm">1.0</span> <span class="kw">if</span> c == t <span class="kw">else</span> <span class="nm">0.0</span>))
+    <span class="kw">return</span> softmax(logits)
+
+<span class="cm"># 6 examples: JSON task (A, B, B, C) and two chit-chat examples whose answer is "A"</span>
+targets = [<span class="st">"A"</span>, <span class="st">"B"</span>, <span class="st">"B"</span>, <span class="st">"C"</span>, <span class="st">"A"</span>, <span class="st">"A"</span>]
+lengths = [<span class="nm">40</span>, <span class="nm">40</span>, <span class="nm">40</span>, <span class="nm">40</span>, <span class="nm">260</span>, <span class="nm">260</span>]              <span class="cm"># response token counts</span>
+N_TOK = sum(lengths)
+
+seq_w = [<span class="nm">1</span> / len(targets) <span class="kw">for</span> _ <span class="kw">in</span> targets]       <span class="cm"># every example is one vote</span>
+tok_w = [n / N_TOK <span class="kw">for</span> n <span class="kw">in</span> lengths]              <span class="cm"># every token is one vote</span>
+
+<span class="kw">for</span> name, w <span class="kw">in</span> ((<span class="st">"sequence-normalised"</span>, seq_w), (<span class="st">"token-normalised "</span>, tok_w)):
+    p = fit(targets, w)
+    <span class="kw">print</span>(f<span class="st">"{name}  P(A)={p['A']:.3f}  P(B)={p['B']:.3f}  P(C)={p['C']:.3f}"</span>)
+
+<span class="kw">print</span>()
+<span class="kw">print</span>(f<span class="st">"the two long chit-chat examples hold {sum(lengths[4:]) / N_TOK:.0%} of all tokens, so token"</span>)
+<span class="kw">print</span>(<span class="st">"normalisation hands them that share of the gradient budget and the model"</span>)
+<span class="kw">print</span>(<span class="st">"learns 'answer A' instead of the JSON target. Sequence normalisation keeps"</span>)
+<span class="kw">print</span>(<span class="st">"every example worth one vote; length bias is then an explicit 'weight' field"</span>)
+<span class="kw">print</span>(<span class="st">"you can see in the data diff instead of a property of your batch builder."</span>)
+</div><div class="code out-block" data-lang="output">
+sequence-normalised  P(A)=0.506  P(B)=0.327  P(C)=0.167
+token-normalised   P(A)=0.829  P(B)=0.113  P(C)=0.057
+
+the two long chit-chat examples hold 76% of all tokens, so token
+normalisation hands them that share of the gradient budget and the model
+learns 'answer A' instead of the JSON target. Sequence normalisation keeps
+every example worth one vote; length bias is then an explicit 'weight' field
+you can see in the data diff instead of a property of your batch builder.
+</div>
+      <p class="expect">Sequence normalisation keeps the JSON target B at about 0.33 while A sits near 0.5. Token normalisation drives A to about 0.83 because the long chit-chat examples own most of the tokens. If short-format tasks refuse to learn, audit the normaliser before the learning rate.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; lint the JSONL before you pay for GPUs</h4>
+      <p>Five records, four deliberate defects. The linter is stdlib only and catches every bug from section 1.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L52 snippet B: build SFT JSONL, then lint it. The lint catches the bugs that silently cost a run.</span>
+<span class="cm"># Standard library only.</span>
+<span class="kw">import</span> json, re
+
+RAW = [
+    <span class="cm"># 1. correct: system + user + assistant, explicit stop</span>
+    {<span class="st">"id"</span>: <span class="st">"r1"</span>, <span class="st">"messages"</span>: [
+        {<span class="st">"role"</span>: <span class="st">"system"</span>, <span class="st">"content"</span>: <span class="st">"Return JSON only."</span>},
+        {<span class="st">"role"</span>: <span class="st">"user"</span>, <span class="st">"content"</span>: <span class="st">"Claim C-4417?"</span>},
+        {<span class="st">"role"</span>: <span class="st">"assistant"</span>, <span class="st">"content"</span>: <span class="st">"{\"claim\": \"C-4417\", \"status\": \"denied\"}"</span>}],
+     <span class="st">"weight"</span>: <span class="nm">1.0</span>},
+    <span class="cm"># 2. BUG: two assistant turns in a row -&gt; the model learns to keep talking</span>
+    {<span class="st">"id"</span>: <span class="st">"r2"</span>, <span class="st">"messages"</span>: [
+        {<span class="st">"role"</span>: <span class="st">"user"</span>, <span class="st">"content"</span>: <span class="st">"Claim C-9002?"</span>},
+        {<span class="st">"role"</span>: <span class="st">"assistant"</span>, <span class="st">"content"</span>: <span class="st">"{\"claim\": \"C-9002\", \"status\": \"paid\"}"</span>},
+        {<span class="st">"role"</span>: <span class="st">"assistant"</span>, <span class="st">"content"</span>: <span class="st">"Anything else?"</span>}],
+     <span class="st">"weight"</span>: <span class="nm">1.0</span>},
+    <span class="cm"># 3. BUG: the user turn leaks the answer, so the model learns to copy the prompt</span>
+    {<span class="st">"id"</span>: <span class="st">"r3"</span>, <span class="st">"messages"</span>: [
+        {<span class="st">"role"</span>: <span class="st">"user"</span>, <span class="st">"content"</span>: <span class="st">"Status for C-1177 is pending. Reply."</span>},
+        {<span class="st">"role"</span>: <span class="st">"assistant"</span>, <span class="st">"content"</span>: <span class="st">"{\"claim\": \"C-1177\", \"status\": \"pending\"}"</span>}],
+     <span class="st">"weight"</span>: <span class="nm">1.0</span>},
+    <span class="cm"># 4. BUG: weight 0 silently disables a hard example you think you are training on</span>
+    {<span class="st">"id"</span>: <span class="st">"r4"</span>, <span class="st">"messages"</span>: [
+        {<span class="st">"role"</span>: <span class="st">"user"</span>, <span class="st">"content"</span>: <span class="st">"Claim C-2288?"</span>},
+        {<span class="st">"role"</span>: <span class="st">"assistant"</span>, <span class="st">"content"</span>: <span class="st">"{\"claim\": \"C-2288\", \"status\": \"rejected\"}"</span>}],
+     <span class="st">"weight"</span>: <span class="nm">0.0</span>},
+    <span class="cm"># 5. BUG: duplicate of r1 (contamination-by-duplication)</span>
+    {<span class="st">"id"</span>: <span class="st">"r5"</span>, <span class="st">"messages"</span>: [
+        {<span class="st">"role"</span>: <span class="st">"system"</span>, <span class="st">"content"</span>: <span class="st">"Return JSON only."</span>},
+        {<span class="st">"role"</span>: <span class="st">"user"</span>, <span class="st">"content"</span>: <span class="st">"Claim C-4417?"</span>},
+        {<span class="st">"role"</span>: <span class="st">"assistant"</span>, <span class="st">"content"</span>: <span class="st">"{\"claim\": \"C-4417\", \"status\": \"denied\"}"</span>}],
+     <span class="st">"weight"</span>: <span class="nm">1.0</span>},
+]
+
+ROLES = (<span class="st">"system"</span>, <span class="st">"user"</span>, <span class="st">"assistant"</span>)
+
+<span class="kw">def</span> lint(rec):
+    errs = []
+    msgs = rec[<span class="st">"messages"</span>]
+    <span class="kw">if</span> [m[<span class="st">"role"</span>] <span class="kw">for</span> m <span class="kw">in</span> msgs] != sorted([m[<span class="st">"role"</span>] <span class="kw">for</span> m <span class="kw">in</span> msgs],
+                                           key=<span class="kw">lambda</span> r: ROLES.index(r)):
+        errs.append(<span class="st">"role order not system&gt;user&gt;assistant"</span>)
+    <span class="kw">if</span> any(m[<span class="st">"role"</span>] == <span class="st">"assistant"</span> <span class="kw">for</span> m <span class="kw">in</span> msgs[:-<span class="nm">1</span>]):
+        errs.append(<span class="st">"assistant turn not last"</span>)
+    <span class="kw">if</span> <span class="kw">not</span> msgs <span class="kw">or</span> msgs[-<span class="nm">1</span>][<span class="st">"role"</span>] != <span class="st">"assistant"</span>:
+        errs.append(<span class="st">"no trailing assistant target"</span>)
+    <span class="kw">if</span> rec[<span class="st">"weight"</span>] &lt;= <span class="nm">0</span>:
+        errs.append(<span class="st">"weight &lt;= 0: example is silently dropped"</span>)
+    user = <span class="st">" "</span>.join(m[<span class="st">"content"</span>] <span class="kw">for</span> m <span class="kw">in</span> msgs <span class="kw">if</span> m[<span class="st">"role"</span>] == <span class="st">"user"</span>)
+    gold = msgs[-<span class="nm">1</span>][<span class="st">"content"</span>]
+    <span class="kw">for</span> val <span class="kw">in</span> re.findall(r<span class="st">'"(denied|paid|pending|rejected)"'</span>, gold):
+        <span class="kw">if</span> val <span class="kw">in</span> user:
+            errs.append(f<span class="st">"answer value '{val}' leaks into the prompt"</span>)
+    <span class="kw">return</span> errs
+
+seen = {}
+<span class="kw">for</span> rec <span class="kw">in</span> RAW:
+    errs = lint(rec)
+    key = json.dumps(rec[<span class="st">"messages"</span>], sort_keys=<span class="kw">True</span>)
+    <span class="kw">if</span> key <span class="kw">in</span> seen:
+        errs.append(f<span class="st">"exact duplicate of {seen[key]}"</span>)
+    seen[key] = rec[<span class="st">"id"</span>]
+    <span class="kw">print</span>(f<span class="st">"{rec['id']}: {'OK' if not errs else '; '.join(errs)}"</span>)
+</div><div class="code out-block" data-lang="output">
+r1: OK
+r2: assistant turn not last
+r3: answer value 'pending' leaks into the prompt
+r4: weight &lt;= 0: example is silently dropped
+r5: exact duplicate of r1
+</div>
+      <p class="expect">r2, r3, r4, r5 are flagged and r1 passes. Put the linter in data CI so it fails the build rather than warning. The duplicate check is the one people skip and the one that quietly inflates the eval.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; template round-trip in the browser console</h4>
+      <p>Press F12 on this page and run this, or save it as <code>t.js</code> and run <code>node t.js</code>. It reproduces the train/inference template mismatch without a model: two code paths serialise the same transcript, and the byte streams differ.</p>
+<div class="code" data-lang="javascript">
+
+const tmpl = (msgs) =&gt; msgs.map(m =&gt; `&lt;|${m.role}|&gt;\n${m.content}`).join(<span class="st">"\n"</span>);
+const close = (text) =&gt; text + <span class="st">"&lt;|eot|&gt;"</span>;           // ONE canonical terminator, one place
+
+const train = [{role:<span class="st">"system"</span>,content:<span class="st">"Return JSON only."</span>},
+               {role:<span class="st">"user"</span>,content:<span class="st">"Claim C-4417?"</span>},
+               {role:<span class="st">"assistant"</span>,content:<span class="st">'{"claim":"C-4417","status":"denied"}'</span>}];
+
+// correct path: serialise the whole transcript through your ONE reference function
+const reference = (msgs) =&gt; tmpl(msgs) + <span class="st">"&lt;|eot|&gt;"</span>;
+
+// bug path: a wrapper that hand-rolls the join <span class="kw">and</span> re-terminates each piece itself
+const handRolled = (msgs) =&gt;
+  msgs.map(m =&gt; close(tmpl([m]))).join(<span class="st">"\n"</span>) + <span class="st">"&lt;|eot|&gt;"</span>;
+
+const msgs = [...train, {role:<span class="st">"user"</span>, content:<span class="st">"Claim C-9002?"</span>}];
+const a = reference(msgs), b = handRolled(msgs);
+console.log(<span class="st">"identical:"</span>, a === b);
+console.log(<span class="st">"first difference at char:"</span>, [...a].findIndex((c,i) =&gt; c !== b[i]), <span class="st">"of"</span>, a.length);
+console.log(<span class="st">"reference  :"</span>, JSON.stringify(a.slice(-<span class="nm">46</span>)));
+console.log(<span class="st">"hand-rolled:"</span>, JSON.stringify(b.slice(-<span class="nm">46</span>)));
+</div><div class="code out-block" data-lang="output">
+identical: false
+first difference at char: 28 of 132
+reference  : "tatus\":\"denied\"}\n&lt;|user|&gt;\nClaim C-9002?&lt;|eot|&gt;"
+hand-rolled: "\"}&lt;|eot|&gt;\n&lt;|user|&gt;\nClaim C-9002?&lt;|eot|&gt;&lt;|eot|&gt;"
+</div>
+      <p class="expect">It prints <code>identical: false</code> and the first differing character index. The hand-rolled path inserts a terminator the reference path does not, so the model is asked to predict a token sequence it never saw during training. Turn this into a unit test that compares both paths against one frozen golden string per template version.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c52-s5">5 &middot; Failure modes <a class="hook" href="#c52-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Unmasked prompt.</strong> Symptom: model continues the question instead of answering; loss starts suspiciously low because prompt tokens are easy to predict.</li>
+        <li><strong>Lost trailing assistant turn.</strong> Symptom: two-assistant-role records; model emits unsolicited sign-offs and multi-part answers.</li>
+        <li><strong>Answer leakage in the prompt.</strong> Symptom: near-zero training loss and near-random eval; the model learned to copy a value from the input and it is never present at eval time.</li>
+        <li><strong>Weight zero by accident.</strong> Symptom: an important example class has no effect, and its category recall does not move no matter how many epochs you add.</li>
+        <li><strong>Duplicate records.</strong> Symptom: an eval set that looks trained-up because the same prompts appear 40 times; train/eval scores decouple. This is contamination-by-duplication and it is the SFT version of lesson 74.</li>
+        <li><strong>Chat template drift.</strong> Symptom: training loss is fine and inference is degraded because inference uses a different template than training (extra space, different separators, a missing BOS). The model is fine; the byte stream you feed it is not the one it learned.</li>
+        <li><strong>Norm-not-loss reporting.</strong> Symptom: two runs compared by raw loss where one used token and one used sequence normalisation. The comparison is meaningless; standardise on the reported metric (per-token NLL on a fixed held-out set) before believing any delta.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c52-s6">6 &middot; Connects to <a class="hook" href="#c52-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="../track-a/16-loss-perplexity.html">L16 &middot; Loss &amp; perplexity</a>,
+    <a class="tag-a" href="../track-a/15-batching-seqpack.html">L15 &middot; Batching and seq packing</a>,
+    <a class="tag-a" href="../track-a/23-data-corpora.html">L23 &middot; Data: dedup and filters</a>,
+    and <a class="tag-c" href="51-post-training.html">L51 &middot; Post-training map</a>.</p>
+    <p><strong>Unlocks:</strong> everything below, because every RL method starts by getting SFT right.</p>
+
+    <ul>
+      <li><a class="tag-c" href="53-standard-pipeline.html">L53 &middot; The standard pipeline</a> &mdash; where SFT sits and what gate it must pass.</li>
+      <li><a class="tag-c" href="54-preference-learning.html">L54 &middot; Preference data</a> &mdash; the next signal after demonstrations.</li>
+      <li><a class="tag-c" href="55-dpo.html">L55 &middot; DPO</a> &mdash; needs a correctly-masked SFT reference or it inherits every bug here.</li>
+      <li><a class="tag-c" href="74-eval-contamination.html">L74 &middot; Contamination</a> &mdash; dedup against eval sets, the SFT-side twin of this page's duplicate check.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c52-s7">7 &middot; Self-check <a class="hook" href="#c52-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is a masked prompt token still able to hurt you, even though its own loss is exactly zero?</p>
+        <details><summary>Reveal answer</summary><p>Because it is context. Every scored token's log-probability is conditioned on the masked tokens before it; a malformedor stylistically inconsistent prompt shifts the distribution the targets are learned under. Masking controls <em>what you aregraded on</em>, not <em>what influences the answer</em>, and it also costs FLOPs: you still forward-pass those tokens and the modelstill attends to them.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: 6 examples, token counts [40,40,40,40,260,260]. Under token normalisation, what fraction of the gradient budget do the two long examples get, and what do they get under sequence normalisation?</p>
+        <details><summary>Reveal answer</summary><p>Total = 680 tokens. Token normalisation gives the long pair (520/680) = 76.5% of the budget; sequence normalisation gives them 2/6 = 33.3%.A 43-point swing in weight with no change to the data, which is why the normaliser must be fixed and documented per run.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> A linter reports: <code>answer value 'pending' leaks into the prompt</code>. What will training look like, and what will eval look like?</p>
+        <details><summary>Reveal answer</summary><p>Training loss falls abnormally fast and often to near zero, because the model only has to copy a token from the input. Evalloss stays at the base level, or accuracy is near chance, because the leaked value never appears in real prompts. This is the mostexpensive class of bug in SFT: it looks like a spectacular training result.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Your two assistant-turn dataset is the easiest to train on, so you weight it 2x. What behavioural risk are you buying, and how do you test for it?</p>
+        <details><summary>Reveal answer</summary><p>You are buying two-assistant-turn continuations: sign-offs, unsolicited follow-ups, and multi-part answers where one was asked for.Test: a deterministic stop-condition suite &mdash; generate 200 responses, parse the first JSON object, and assert that the text afterit is empty. Report the fraction of responses with trailing text as a first-class metric, not a spot check.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Diagnostic: SFT loss is 0.4 and held-out accuracy did not move. Give three candidate causes and the single check that eliminates each.</p>
+        <details><summary>Reveal answer</summary><p>(1) Leakage/duplication &mdash; check: exact and near-duplicate search between the SFT set and the eval set (and count duplicate records).(2) Template mismatch between train and inference &mdash; check: dump the exact token IDs for one prompt through both paths and diff them.(3) Overfitting a tiny dataset &mdash; check: hold out 10% and look at the held-out NLL; if it rises while train falls, it is (3).Each check is independent, so three cheap tests partition the search space.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="51-post-training.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L51 &middot; Post-training map: SFT &rarr; preferences &rarr; RL</span></a>
+    <a class="next" href="53-standard-pipeline.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L53 &middot; The standard pipeline and its gates</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

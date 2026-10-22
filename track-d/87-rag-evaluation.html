@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d87">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L87 · RAG evaluation: recall, faithfulness, groundedness, A/B — AILearn</title>
+<meta name="description" content="Three RAG systems with opposite defects all score 0.570 end-to-end. Decomposing into retrieval recall × faithfulness is what makes the score actionable. Wilson intervals for golden-set sizing.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L87</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L87 &middot; RAG evaluation: recall, faithfulness, groundedness, A/B</h1>
+  <p class="lede">A single end-to-end accuracy number is useless for RAG because it destroys attribution: recall 0.95 with faithfulness 0.60, recall 0.60 with faithfulness 0.95, and 0.755/0.755 all score <strong>0.570</strong> and need opposite fixes. Decompose or you are tuning blind.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: RAG eval harness</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">retrieval recall</span>
+  <span class="pill">faithfulness / groundedness</span>
+  <span class="pill">attribution decomposition</span>
+  <span class="pill">abstention correctness</span>
+  <span class="pill">Wilson interval</span>
+  <span class="pill">golden-set sizing</span>
+  <span class="pill">paired A/B test</span>
+  <span class="pill">contradiction vs unsupported</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d87-s1">1 &middot; Why it exists <a class="hook" href="#d87-s1">#</a></h2>
+
+    <p>The failure: <strong>you have one accuracy number and no idea what to fix.</strong> Your RAG system answers 57% of
+    questions correctly. Is that because retrieval misses (and you should work on chunking and expansion), or because the
+    model ignores good evidence (and you should work on prompts and grounding)? Both produce 0.57. The score cannot tell
+    you, and every change you make after this point is a guess. Worse: a change that improves retrieval and a change that
+    improves generation both move the same number, so you cannot tell your last two weeks from noise.</p>
+
+    <p>The second failure is subtler and more dangerous: <strong>plausible answers that the evidence does not support.</strong>
+    The retrieved chunk mentions the promotion gate; the answer says the gate runs four checks; the chunk says "some checks".
+    The answer is fluent, topically correct, and false. End-to-end accuracy with a correct-answer key will catch it, but
+    only if the key is exhaustive &mdash; and users rarely report the answers that <em>sound</em> right.</p>
+
+    <div class="callout boss">
+      <p>RAG evaluation is a <strong>factorisation, not a score</strong>. Report at least three numbers, always together:
+      <code>recall@k</code> (did the evidence arrive?), <code>faithfulness</code> (given the evidence, did the answer stick to it?),
+      and <code>answer correctness</code> (does it match the truth?). A single number hides which of three very different
+      systems you built; three numbers name the defect and therefore name the fix.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d87-s2">2 &middot; The mental model <a class="hook" href="#d87-s2">#</a></h2>
+
+    <p>A RAG answer is the product of two conditional steps. Step one is a filter: does the retrieved context contain
+    the evidence? Step two is a transformation: does the generator use it faithfully? Errors in each step need different
+    fixes, and the only way to see them is to measure each conditional separately.</p>
+
+    <table class="table">
+      <thead><tr><th>Metric</th><th>Question it answers</th><th>Measured against</th><th>Fix when low</th></tr></thead>
+      <tbody>
+        <tr><td><strong>recall@k</strong></td><td>is the gold passage in the top-k?</td><td>labelled gold passage ids</td><td>chunking, hybrid, expansion (L85, L86)</td></tr>
+        <tr><td><strong>context precision</strong></td><td>how much of what we retrieved is relevant?</td><td>relevance labels</td><td>reranking, depth (L86)</td></tr>
+        <tr><td><strong>faithfulness</strong></td><td>is every claim in the answer <em>entailed</em> by the context?</td><td>the context itself (no ground truth needed)</td><td>grounding prompt, citation requirement, lower temperature</td></tr>
+        <tr><td><strong>answer correctness</strong></td><td>does it match the reference answer?</td><td>gold answers</td><td>either of the above &mdash; decompose first</td></tr>
+        <tr><td><strong>abstention correctness</strong></td><td>when evidence is absent, does it say so?</td><td>unanswerable question set</td><td>explicit "insufficient evidence" path</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a library and a summariser</h4><p>Recall is whether the librarian brought the right book. Faithfulness is whether the summariser read it or made things up. A great summariser with bad books produces confident nonsense; good books with a bad summariser produce missed answers. You would never evaluate a library by asking "was the final summary good?" without knowing which of those failed.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>The product assumption <code>P(correct) &asymp; P(recall) &times; P(faithful | recall)</code> fails in two ways. First, the model can answer correctly <em>without</em> the evidence, from parametric memory &mdash; so correctness is not bounded above by recall, and high correctness with low recall is a contamination signal (L74), not a success. Second, faithfulness is conditioned on what was retrieved, so a system that retrieves nothing and answers "I don't know" is perfectly faithful and perfectly useless. Never report faithfulness without recall.</p></div>
+    </div>
+
+    <p>The last point deserves emphasis because it is a favourite way to game a dashboard: <strong>faithfulness rewards
+    silence</strong>. A model that says "insufficient information" for every query scores 1.0 on faithfulness and 0.0 on
+    answer correctness. That is why abstention correctness needs its own set, and why the three numbers must be read
+    together or not at all.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d87-s3">3 &middot; The mechanism <a class="hook" href="#d87-s3">#</a></h2>
+
+    <p>The decomposition, stated so it is testable:</p>
+
+    <div class="formula">
+      P(correct) &asymp; R &middot; F &nbsp;&nbsp;&nbsp;&nbsp; where &nbsp; R = recall@k, &nbsp; F = P(answer entailed by context | evidence retrieved)
+      <span class="note">Treat this as a diagnostic identity, not a law. It tells you where to spend effort; it does not predict correctness for systems answering from parametric memory. Report <code>R</code>, <code>F</code>, and <code>P(correct)</code> separately &mdash; when the product diverges materially from the measured correctness, you have found either a contamination problem or an unanswerable-question leak.</span>
+    </div>
+
+    <p>Because these are proportions estimated from a finite golden set, every number needs an interval. The naive Wald
+    interval collapses at <code>p</code> near 0 or 1 and is wrong at small <code>n</code>; use Wilson:</p>
+
+    <div class="formula">
+      CI = [ p + z&sup2;/2n &plusmn; z&radic;( p(1&minus;p)/n + z&sup2;/4n&sup2; ) ] / (1 + z&sup2;/n)
+      <span class="note"><code>p</code> = observed proportion, <code>n</code> = golden-set size, <code>z = 1.96</code> for 95%. Wilson stays inside <code>[0,1]</code> and behaves at extremes. At <code>p=0.90, n=20</code> the interval is <code>[0.699, 0.972]</code> &mdash; a 27-point-wide interval from 20 questions, which is why "we ran 20 evals and got 90%" is not a claim.</span>
+    </div>
+
+    <p>The harness. It computes all three metrics with intervals, and it fails loudly when the golden set is too small to
+    support the decision being made.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math
+
+<span class="kw">def</span> <span class="fn">wilson</span>(p, n, z=<span class="nm">1.96</span>):
+    <span class="kw">if</span> n == <span class="nm">0</span>: <span class="kw">return</span> (<span class="nm">0.0</span>, <span class="nm">1.0</span>)
+    d = <span class="nm">1</span> + z*z/n
+    c = (p + z*z/(<span class="nm">2</span>*n)) / d
+    h = z * math.<span class="fn">sqrt</span>(p*(<span class="nm">1</span>-p)/n + z*z/(<span class="nm">4</span>*n*n)) / d
+    <span class="kw">return</span> (<span class="fn">max</span>(<span class="nm">0.0</span>, c - h), <span class="fn">min</span>(<span class="nm">1.0</span>, c + h))
+
+<span class="kw">def</span> <span class="fn">rag_report</span>(items, z=<span class="nm">1.96</span>):
+    <span class="cm"># item: {"q", "gold_chunk", "retrieved": [ids], "answerable": bool,</span>
+    <span class="cm">#        "supported": bool | None, "correct": bool | None}</span>
+    n = <span class="fn">len</span>(items)
+    ans = [i <span class="kw">for</span> i <span class="kw">in</span> items <span class="kw">if</span> i[<span class="st">"answerable"</span>]]
+    unans = [i <span class="kw">for</span> i <span class="kw">in</span> items <span class="kw">if</span> <span class="kw">not</span> i[<span class="st">"answerable"</span>]]
+
+    R = <span class="fn">sum</span>(i[<span class="st">"gold_chunk"</span>] <span class="kw">in</span> i[<span class="st">"retrieved"</span>] <span class="kw">for</span> i <span class="kw">in</span> ans) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(ans))
+    r_lo, r_hi = <span class="fn">wilson</span>(R, <span class="fn">len</span>(ans), z)
+    <span class="cm"># faithfulness is conditioned on evidence having been retrieved</span>
+    got = [i <span class="kw">for</span> i <span class="kw">in</span> ans <span class="kw">if</span> i[<span class="st">"gold_chunk"</span>] <span class="kw">in</span> i[<span class="st">"retrieved"</span>] <span class="kw">and</span> i[<span class="st">"supported"</span>] <span class="kw">is not</span> <span class="kw">None</span>]
+    F = <span class="fn">sum</span>(i[<span class="st">"supported"</span>] <span class="kw">for</span> i <span class="kw">in</span> got) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(got))
+    f_lo, f_hi = <span class="fn">wilson</span>(F, <span class="fn">len</span>(got), z)
+    C = <span class="fn">sum</span>(i[<span class="st">"correct"</span>] <span class="kw">for</span> i <span class="kw">in</span> ans <span class="kw">if</span> i[<span class="st">"correct"</span>] <span class="kw">is not</span> <span class="kw">None</span>) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(ans))
+    c_lo, c_hi = <span class="fn">wilson</span>(C, <span class="fn">len</span>(ans), z)
+    A = <span class="fn">sum</span>(<span class="fn">isinstance</span>(i.<span class="fn">get</span>(<span class="st">"abstained"</span>), <span class="fn">bool</span>) <span class="kw">and</span> i[<span class="st">"abstained"</span>] <span class="kw">for</span> i <span class="kw">in</span> unans) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(unans))
+
+    <span class="kw">return</span> {<span class="st">"n_ans"</span>: <span class="fn">len</span>(ans), <span class="st">"n_unans"</span>: <span class="fn">len</span>(unans),
+            <span class="st">"recall"</span>: (<span class="fn">round</span>(R,<span class="nm">3</span>), <span class="fn">round</span>(r_lo,<span class="nm">3</span>), <span class="fn">round</span>(r_hi,<span class="nm">3</span>)),
+            <span class="st">"faithful"</span>: (<span class="fn">round</span>(F,<span class="nm">3</span>), <span class="fn">round</span>(f_lo,<span class="nm">3</span>), <span class="fn">round</span>(f_hi,<span class="nm">3</span>)),
+            <span class="st">"correct"</span>: (<span class="fn">round</span>(C,<span class="nm">3</span>), <span class="fn">round</span>(c_lo,<span class="nm">3</span>), <span class="fn">round</span>(c_hi,<span class="nm">3</span>)),
+            <span class="st">"abstention"</span>: <span class="fn">round</span>(A,<span class="nm">3</span>),
+            <span class="st">"product_RxF"</span>: <span class="fn">round</span>(R*F,<span class="nm">3</span>)}
+
+<span class="kw">def</span> <span class="fn">decide</span>(report, min_gap=<span class="nm">0.05</span>):
+    <span class="cm"># A/B decision rule: two systems are distinguishable only if the CIs do not overlap</span>
+    a, b = report
+    <span class="kw">if</span> a[<span class="st">"correct"</span>][<span class="nm">1</span>] &gt; b[<span class="st">"correct"</span>][<span class="nm">2</span>] <span class="kw">or</span> b[<span class="st">"correct"</span>][<span class="nm">1</span>] &gt; a[<span class="st">"correct"</span>][<span class="nm">2</span>]:
+        <span class="kw">return</span> <span class="st">"distinguishable"</span>
+    <span class="kw">return</span> <span class="st">"inconclusive: intervals overlap, need a larger golden set"</span>
+    </div>
+
+    <p>Two design decisions in that code carry the lesson. <strong>(1) Faithfulness is computed only over items where the gold
+    chunk was actually retrieved</strong> &mdash; otherwise you are measuring the model's ability to be faithful to context it
+    should not trust. <strong>(2) <code>decide</code> uses interval overlap, not a point-estimate comparison</strong>: two systems at
+    0.72 and 0.78 are not different when each has a &plusmn;0.06 interval on 100 questions.</p>
+
+    <div class="callout audit">
+      <p>The audit question for a RAG eval: <strong>for each failed item, is the failure attributed to retrieval or generation,
+      and is the attribution recorded?</strong> A per-item record of <code>{retrieved_ids, gold_id, supported, correct}</code> lets a
+      reviewer re-derive every aggregate you reported and verify that the aggregate was not cherry-picked. Without per-item
+      records, "we improved from 0.57 to 0.63" is unverifiable &mdash; and in practice it is usually a change in the golden set,
+      not the system.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d87-s4">4 &middot; Your hands <a class="hook" href="#d87-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; The attribution trap</h4>
+      <p>Three systems, one end-to-end score. The point is that you cannot tell them apart without decomposing.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">e2e</span>(recall, faithful):
+    <span class="kw">return</span> recall * faithful
+
+<span class="kw">for</span> name, rec, fth <span class="kw">in</span> ((<span class="st">"great retrieval, ungrounded LLM"</span>, <span class="nm">0.95</span>, <span class="nm">0.60</span>),
+                        (<span class="st">"bad retrieval, excellent LLM"</span>, <span class="nm">0.60</span>, <span class="nm">0.95</span>),
+                        (<span class="st">"mediocre at both"</span>, <span class="nm">0.755</span>, <span class="nm">0.755</span>)):
+    print(<span class="st">f"{name:32s} recall={rec:.3f} faithful={fth:.3f} end2end={e2e(rec,fth):.3f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>great retrieval, ungrounded LLM recall=0.950 faithful=0.600 end2end=0.570</code> &middot;
+      <code>bad retrieval, excellent LLM recall=0.600 faithful=0.950 end2end=0.570</code> &middot;
+      <code>mediocre at both recall=0.755 faithful=0.755 end2end=0.570</code>.
+      All three are <strong>0.570</strong>. The first needs grounding work, the second needs a retriever rebuild, the third needs
+      both. If your dashboard shows one number, you cannot distinguish these &mdash; and you will spend the next sprint on the wrong
+      component with a 1-in-3 chance of guessing right.
+      <strong>Falsifier:</strong> if your real systems show <code>e2e</code> materially above <code>R&times;F</code>, the generator is
+      answering from memory &mdash; check for contamination (L74) before claiming the decomposition is wrong.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; How many golden questions do you actually need?</h4>
+      <p>Wilson intervals at a range of <code>n</code> and <code>p</code>. This is the sizing chart for the eval set.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">wilson</span>(p, n, z=<span class="nm">1.96</span>):
+    d = <span class="nm">1</span> + z*z/n
+    c = (p + z*z/(<span class="nm">2</span>*n)) / d
+    h = z * math.<span class="fn">sqrt</span>(p*(<span class="nm">1</span>-p)/n + z*z/(<span class="nm">4</span>*n*n)) / d
+    <span class="kw">return</span> c - h, c + h
+
+<span class="kw">print</span>(<span class="st">"   n   p    95% CI            width"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">20</span>, <span class="nm">50</span>, <span class="nm">100</span>, <span class="nm">300</span>, <span class="nm">500</span>, <span class="nm">1000</span>):
+    <span class="kw">for</span> p <span class="kw">in</span> (<span class="nm">0.90</span>, <span class="nm">0.60</span>):
+        lo, hi = <span class="fn">wilson</span>(p, n)
+        <span class="kw">print</span>(<span class="st">f"{n:5d} {p:4.2f}  [{lo:.3f}, {hi:.3f}]  {hi-lo:6.3f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output</strong> (excerpt): <code>20 0.90 [0.699, 0.972] width 0.273</code> &middot;
+      <code>20 0.60 [0.387, 0.781] width 0.395</code> &middot; <code>100 0.90 [0.826, 0.945] width 0.119</code> &middot;
+      <code>100 0.60 [0.502, 0.691] width 0.189</code> &middot; <code>300 0.90 [0.861, 0.929] width 0.068</code> &middot;
+      <code>1000 0.90 [0.880, 0.917] width 0.037</code>.
+      Read it as a decision tool: if you need to detect a <strong>3-point</strong> improvement, your interval half-width must be well
+      under 1.5 points, which needs <code>n</code> in the many hundreds at <code>p&asymp;0.9</code>. With <code>n=20</code> the
+      interval is 27 points wide &mdash; you cannot detect anything short of a total redesign.
+      <strong>Falsifier:</strong> if your A/B shows a 5-point gain at <code>n=50</code>, the intervals
+      (<code>[0.786,0.957]</code> vs <code>[0.462,0.724]</code>) do separate &mdash; that is a real effect, but note it took a
+      large effect to be visible; small effects need more items, or a paired design (same questions, both systems).</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Lexical overlap cannot measure faithfulness (copy-paste)</h4>
+      <p>Two answers, identical text, opposite truth. Any token-overlap metric scores them as equal.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">overlap</span>(answer, context):
+    a = <span class="fn">set</span>(answer.<span class="fn">lower</span>().<span class="fn">split</span>())
+    c = <span class="fn">set</span>(context.<span class="fn">lower</span>().<span class="fn">split</span>())
+    <span class="kw">return</span> <span class="fn">len</span>(a &amp; c) / <span class="fn">len</span>(a)
+
+cases = [
+    (<span class="st">"The gate runs four checks."</span>, <span class="st">"The promotion gate requires four independent checks."</span>, <span class="kw">True</span>),
+    (<span class="st">"The gate runs four checks."</span>, <span class="st">"The gate runs some checks before merge."</span>, <span class="kw">False</span>),
+]
+<span class="kw">for</span> ans, ctx, truly_supported <span class="kw">in</span> cases:
+    print(<span class="st">f"overlap={overlap(ans, ctx):.2f}  truly_supported={truly_supported}  ctx={ctx[:44]!r}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>overlap=0.80 truly_supported=True</code> and
+      <code>overlap=0.60 truly_supported=False</code>. Overlap gives 0.80 vs 0.60 &mdash; it <em>directionally</em> separates them
+      here, but both values are high and any threshold you pick is arbitrary. Reverse the case (a supported answer that
+      paraphrases heavily) and overlap drops while truth is unchanged. The correct instrument is <strong>entailment</strong>: does
+      the context logically support the claim &mdash; which in practice means an NLI-style model or a calibrated judge (L89), with
+      the "four checks" vs "some checks" distinction being exactly the kind of <em>numerical quantification</em> a judge must be
+      trained or prompted to catch.
+      <strong>Falsifier:</strong> if your overlap-based faithfulness metric correlates &gt;0.9 with human judgements on a
+      labelled sample, it is adequate for your corpus &mdash; verify on at least 100 human-labelled pairs before relying on it.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d87-s5">5 &middot; Failure modes <a class="hook" href="#d87-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Single-number evaluation.</strong> Only end-to-end accuracy is tracked. Symptom: sprints spent improving the wrong component; two consecutive changes produce the same delta.</li>
+        <li><strong>Faithfulness measured on unrecovered items.</strong> Faithfulness computed over all questions including retrieval misses. Symptom: faithfulness looks high while answers are wrong &mdash; the model is faithful to the <em>wrong</em> context it received.</li>
+        <li><strong>Abstention gaming.</strong> A model that refuses more scores higher on faithfulness. Symptom: faithfulness up, correctness down, abstention rate climbing silently.</li>
+        <li><strong>Interval-free A/B.</strong> Two point estimates compared without intervals. Symptom: "significant" wins of 2 points at <code>n=40</code> that fail to reproduce; repeated reversals between runs.</li>
+        <li><strong>Golden-set contamination.</strong> Eval questions were written by looking at retrieved passages, or appear in the corpus. Symptom: recall@k near 1.0 with poor user-reported quality.</li>
+        <li><strong>Unanswerable set missing.</strong> No questions without evidence. Symptom: the system never learns to abstain; hallucination rate is invisible in the eval.</li>
+        <li><strong>Moving golden set.</strong> Items added/removed between runs. Symptom: score jumps that do not reproduce; per-item comparison impossible. Fix: version the set, compare on the intersection.</li>
+        <li><strong>Recall measured at the wrong k.</strong> recall@50 reported while production serves top-8. Symptom: eval says 0.91, users see 0.44 precision.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d87-s6">6 &middot; Connects to <a class="hook" href="#d87-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="85-rag-retrieval.html">L85 &middot; Retrieval</a>,
+    <a class="tag-d" href="86-rag-reranking.html">L86 &middot; Reranking</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="88-evals.html">L88 &middot; Statistical power</a>,
+    <a class="tag-d" href="89-llm-as-judge.html">L89 &middot; Judges</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="85-rag-retrieval.html">L85 &middot; Hybrid retrieval</a> &mdash; the recall number this page reports is produced there.</li>
+      <li><a class="tag-d" href="86-rag-reranking.html">L86 &middot; Reranking</a> &mdash; context precision is the metric that reranking moves, and it must be held separate from recall.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; golden-set sizing, power, and why pass@k differs from pass^k.</li>
+      <li><a class="tag-d" href="89-llm-as-judge.html">L89 &middot; LLM-as-judge</a> &mdash; faithfulness at scale needs a judge, and a judge needs calibration against humans.</li>
+      <li><a class="tag-c" href="../track-c/74-eval-contamination.html">L74 &middot; Contamination</a> &mdash; correctness above the <code>R&times;F</code> product is the contamination tell.</li>
+      <li><a class="tag-d" href="97-rag-in-production.html">L97 &middot; RAG in production</a> &mdash; these metrics must be recomputed after every index change, not once.</li>
+      <li><a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a> &mdash; this page's three metrics are the RAG section of the harness's report format.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d87-s7">7 &middot; Self-check <a class="hook" href="#d87-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> System A: recall 0.88, faithfulness 0.71. System B: recall 0.62, faithfulness 0.94. Which do you improve first and why?</p>
+        <details><summary>Reveal answer</summary><p>Both products are close: <code>0.88&times;0.71 = 0.6248</code> vs <code>0.62&times;0.94 = 0.5828</code>. A is better end-to-end, but the diagnoses differ. For A, the binding term is faithfulness (0.71) &mdash; the evidence is there and the generator ignores it, which is usually the cheaper fix (grounding prompt, citation requirement, lower temperature). For B, the binding term is recall (0.62) &mdash; a retriever rebuild (chunking, expansion) is more work. So improve A's faithfulness first: cheaper per point, and A starts ahead. The general rule: fix the term furthest from its ceiling, and prefer the cheaper intervention for equal distance.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> You observe 72/100 correct. Give the Wilson 95% interval and state what improvement you can detect with a second 100-item run.</p>
+        <details><summary>Reveal answer</summary><p><code>p=0.72, n=100, z=1.96</code>: <code>p + z&sup2;/2n = 0.72 + 0.0192 = 0.7392</code>, <code>1 + z&sup2;/n = 1.0384</code>, centre <code>0.7392/1.0384 = 0.7118</code>; half-width <code>1.96&times;&radic;(0.2016/100 + 0.000384)/1.0384 = 1.96&times;0.04488/1.0384 = 0.0847</code>. Interval <strong>[0.625, 0.799]</strong> (width 0.173). A second run at <code>n=100</code> has a similar interval, so to distinguish two systems the point estimates must differ by roughly <strong>17 points</strong> for disjoint intervals. Detectable effect sizes at <code>n=100</code> are therefore large; for a 3-point question you need a paired design (same questions, both systems) or many hundreds of items.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why must faithfulness be conditioned on "gold chunk was retrieved"?</p>
+        <details><summary>Reveal answer</summary><p>Because faithfulness asks "does the answer follow from the context it was given", and if the gold chunk was never retrieved, the answer is being judged against context that cannot support a correct answer &mdash; so scoring it as unfaithful conflates a retrieval failure with a generation failure. That conflation destroys the attribution that is the whole point. Conditioning gives you: retrieval failure = <code>1&minus;R</code>, generation failure = <code>R&times;(1&minus;F)</code>, and these sum correctly: <code>(1&minus;R) + R(1&minus;F) = 1 &minus; RF = 1 &minus; P(correct)</code>. That identity is worth memorising.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: faithfulness 0.98, correctness 0.41, abstention rate 0.55. What is happening?</p>
+        <details><summary>Reveal answer</summary><p>The system is <strong>abstaining its way to a high faithfulness score</strong>. Abstentions count as faithful (nothing asserted, nothing unsupported) but as incorrect, and an abstention rate of 0.55 caps correctness at about 0.45. Faithfulness rewards silence; that is why it must never be reported alone. Check the abstention rate and the "insufficient evidence" trigger threshold &mdash; it is almost certainly firing on answerable questions because of a conservative prompt or a coverage check that is too strict (which in turn may be a genuine recall problem showing up as abstention rather than as a wrong answer).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your eval reports recall@50 = 0.93 but users complain about precision. Name the measurement error and the fix to the harness.</p>
+        <details><summary>Reveal answer</summary><p>The harness measures recall at a <code>k</code> that production does not use. Recall@50 says the answer is <em>somewhere</em> in the 50 candidates; production serves 8 to the model, so the user-facing metric is precision@8. Fix: measure and report recall at the <em>serving</em> depth as the primary number (call it recall@8 or "hit rate at served k"), and keep recall@50 as a diagnostic for the candidate generator only. Two numbers, two purposes: recall@50 diagnoses the retriever, precision@8 diagnoses the ranker+serving path, and only precision@8 predicts user experience.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="86-rag-reranking.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L86 &middot; Reranking &amp; query expansion</span></a>
+    <a class="next" href="88-evals.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L88 &middot; Evals &amp; statistical power</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="track-b/index">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Track B - Scaling & Architecture - AILearn</title>
+<meta name="description" content="Big-iron physics. Why DeepSeek made huge models affordable, on a napkin.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .hero { padding: 44px 0 8px; max-width: 92ch; }
+  .hero h1 { font-size: clamp(1.9rem, 4.4vw, 2.9rem); letter-spacing: -1.4px; line-height: 1.1; }
+  .thesis { border-left: 3px solid #8b5cf6; padding-left: 20px; margin: 26px 0; font-size: 1.04rem;
+    color: var(--txt-2); line-height: 1.75; max-width: 88ch; }
+  .sec { margin: 46px 0; }
+  .sec h2 { font-size: 1.32rem; letter-spacing: -.5px; margin: 0 0 14px; color: var(--txt); }
+  .lesson-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px,1fr)); gap: 10px; }
+  .L { display: flex; gap: 12px; text-decoration: none; background: var(--card); border: 1px solid var(--line);
+    border-radius: 11px; padding: 12px 14px; transition: .16s; align-items: flex-start; }
+  .L:hover { border-color: #8b5cf666; transform: translateY(-2px); background: var(--card-2); }
+  .L .n { font-family: var(--mono); font-size: .72rem; font-weight: 700; color: #8b5cf6; min-width: 26px; padding-top: 2px; }
+  .L .t { color: var(--txt); font-size: .89rem; font-weight: 550; line-height: 1.4; }
+  .L .b { color: var(--txt-3); font-size: .74rem; font-family: var(--mono); margin-top: 3px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 14px; }
+  .card h4 { margin: 0 0 7px !important; color: #8b5cf6; font-size: .8rem; letter-spacing: .6px;
+    text-transform: uppercase; font-family: var(--mono); }
+  .card p { margin: 0; font-size: .87rem; }
+  ul.check { list-style: none; padding: 0; margin: 0; }
+  ul.check li { position: relative; padding-left: 26px; margin-bottom: 9px; font-size: .9rem; color: var(--txt-2); }
+  ul.check li::before { content: "\2713"; position: absolute; left: 0; color: #8b5cf6; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../about/prashanth.html">Profile</a>
+      <a href="../agi/index.html">AGI Lab</a>
+      <a href="../tools/index.html">Tools</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+<header class="hero">
+  <div class="track-tag" style="color:#8b5cf6;border-color:#8b5cf655;background:#8b5cf614;">TRACK B &middot; SCALING & ARCHITECTURE</div>
+  <h1>Scaling &amp; Architecture - 25 lessons</h1>
+  <p class="lede">Big-iron physics. Why DeepSeek made huge models affordable, on a napkin.</p>
+  <p class="thesis">This is the track written for your blind spot, and it is the one that pays immediately. Every lesson turns an architecture choice into arithmetic you can do in a review: parameters, FLOPs, bytes, dollars, tokens per second. By the end you can look at any model announcement and independently reconstruct what it costs, why it was built that way, and what its serving economics must be.</p>
+  <div class="chips">
+    <span class="chip">L26 &rarr; L50</span>
+    <span class="chip">build: A cost model that</span>
+    <span class="chip">prereq: Track A lessons 06, 09, 10 at minimum</span>
+  </div>
+</header>
+
+<div class="sec">
+  <h2>Why this track exists</h2>
+  <div class="grid3">
+    <div class="card"><h4>01</h4><h4>You will stop taking architecture claims on faith</h4><p>Scaling laws, Chinchilla and the over-training reversal explain why models look the way they do in 2026.</p></div>
+<div class="card"><h4>02</h4><h4>DeepSeek's specific bets become legible</h4><p>MLA, DeepSeekMoE, DSA, multi-token prediction and the V4.1 asymmetric encoder-decoder each solve one arithmetic problem.</p></div>
+<div class="card"><h4>03</h4><h4>Cost modelling becomes a deliverable</h4><p>This is the single most valuable skill for someone applying for AI systems roles. Almost nobody can do it.</p></div>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>By the end you can</h2>
+  <ul class="check"><li>Derive the compute-optimal N and D for a given budget from a scaling law</li>
+    <li>Explain why inference volume moves the optimum away from Chinchilla</li>
+    <li>Compute the KV-cache bytes for MHA, GQA and MLA and pick one for a stated workload</li>
+    <li>Estimate a training run's GPU-hours and dollars with defensible assumptions</li></ul>
+</div>
+
+<div class="sec">
+  <h2>Prerequisites</h2>
+  <p style="color:var(--txt-2);">Track A lessons 06, 09, 10 at minimum. Basic algebra. This track is arithmetic-heavy on purpose.</p>
+  <p style="color:var(--txt-2);"><strong>The artifact:</strong> A cost model that, given an architecture and a workload, predicts training cost, serving cost and the binding constraint.</p>
+</div>
+
+<div class="sec">
+  <h2>Lessons</h2>
+  <div class="lesson-list">
+    <a class="L" href="26-scaling-laws.html"><span class="n">26</span><span><span class="t">Kaplan scaling laws: loss is a power law</span><span class="b">fit your own tiny law</span></span></a>
+    <a class="L" href="27-chinchilla.html"><span class="n">27</span><span><span class="t">Chinchilla: compute-optimal data vs params</span><span class="b">compute-optimal calculator</span></span></a>
+    <a class="L" href="28-over-training.html"><span class="n">28</span><span><span class="t">Overtraining and inference-aware scaling</span><span class="b">cost-per-query optimizer</span></span></a>
+    <a class="L" href="29-emergence.html"><span class="n">29</span><span><span class="t">Emergence, and why it is partly a metric artifact</span><span class="b">continuity study</span></span></a>
+    <a class="L" href="30-moe.html"><span class="n">30</span><span><span class="t">Mixture of Experts: sparse activation</span><span class="b">toy MoE with load stats</span></span></a>
+    <a class="L" href="31-moe-routing.html"><span class="n">31</span><span><span class="t">Router design, balancing, aux-loss-free</span><span class="b">router collapse and fix</span></span></a>
+    <a class="L" href="32-deepseek-moe.html"><span class="n">32</span><span><span class="t">DeepSeekMoE: fine-grained + shared experts</span><span class="b">expert capacity model</span></span></a>
+    <a class="L" href="33-mla.html"><span class="n">33</span><span><span class="t">MLA: KV compression as a low-rank cache</span><span class="b">MLA vs GQA memory math</span></span></a>
+    <a class="L" href="34-dsa.html"><span class="n">34</span><span><span class="t">DeepSeek Sparse Attention</span><span class="b">sparse pattern simulation</span></span></a>
+    <a class="L" href="35-long-context.html"><span class="n">35</span><span><span class="t">What 1M tokens actually costs</span><span class="b">context cost model</span></span></a>
+    <a class="L" href="36-mtp.html"><span class="n">36</span><span><span class="t">Multi-token prediction</span><span class="b">2-token prediction toy</span></span></a>
+    <a class="L" href="37-encoder-decoder.html"><span class="n">37</span><span><span class="t">Encoder-decoder and the V4.1 asymmetric split</span><span class="b">prefill/decode economics</span></span></a>
+    <a class="L" href="38-flash-attention.html"><span class="n">38</span><span><span class="t">FlashAttention and IO-awareness</span><span class="b">bandwidth model</span></span></a>
+    <a class="L" href="39-kernels.html"><span class="n">39</span><span><span class="t">CUDA / Triton / TileLang in practice</span><span class="b">fused softmax</span></span></a>
+    <a class="L" href="40-precision-quant.html"><span class="n">40</span><span><span class="t">Quantization: PTQ, QAT, FP8, AWQ/GPTQ, KV quant</span><span class="b">quantize a small model</span></span></a>
+    <a class="L" href="41-distillation.html"><span class="n">41</span><span><span class="t">Distillation: teacher to student</span><span class="b">distill a tiny teacher</span></span></a>
+    <a class="L" href="42-parallelism.html"><span class="n">42</span><span><span class="t">DP, TP, PP, EP, ZeRO/FSDP</span><span class="b">pick a parallel config</span></span></a>
+    <a class="L" href="43-training-cost.html"><span class="n">43</span><span><span class="t">Training cost: FLOPs, MFU, dollars</span><span class="b">full run cost model</span></span></a>
+    <a class="L" href="44-inference-serving.html"><span class="n">44</span><span><span class="t">Continuous batching, PagedAttention, prefill/decode</span><span class="b">throughput calculator</span></span></a>
+    <a class="L" href="45-caching.html"><span class="n">45</span><span><span class="t">Context caching and cache-aware pricing</span><span class="b">cache-hit cost model</span></span></a>
+    <a class="L" href="46-ssm-hybrids.html"><span class="n">46</span><span><span class="t">Alternatives: SSMs, RWKV, hybrids</span><span class="b">recurrence vs attention</span></span></a>
+    <a class="L" href="47-multimodal.html"><span class="n">47</span><span><span class="t">Native multimodal: vision into the token stream</span><span class="b">patchify an image</span></span></a>
+    <a class="L" href="48-residual-stream.html"><span class="n">48</span><span><span class="t">The residual stream as shared memory</span><span class="b">logit lens</span></span></a>
+    <a class="L" href="49-components-circuits.html"><span class="n">49</span><span><span class="t">Induction heads, circuits, reliability</span><span class="b">induction-head detector</span></span></a>
+    <a class="L" href="50-conditioning.html"><span class="n">50</span><span><span class="t">Conditioning and why prompts work</span><span class="b">in-context task with distractors</span></span></a>
+  </div>
+</div>
+
+<nav class="pager">
+  <a class="prev" href="../track-a/index.html"><span class="dir">&larr; PREVIOUS TRACK</span><span class="ttl">Track A &middot; Foundations</span></a>
+  <a class="next" href="../track-c/index.html"><span class="dir">NEXT TRACK &rarr;</span><span class="ttl">Track C &middot; Post-training &amp; Reasoning</span></a>
+</nav>
+
+</main>
+
+<footer>AILearn &middot; <a href="../about/calibration.html">level calibration</a> &middot; <a href="../tools/flashcards.html">flashcards</a></footer>
+<script src="../_shell.js"></script>
+</body>
+</html>

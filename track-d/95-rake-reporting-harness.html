@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d95">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L95 · The RAKE reporting harness — AILearn</title>
+<meta name="description" content="RAKE = Reporting And Knowledge Evaluation: an 18-field run manifest, an immutable per-run artifact bundle, a hash-chained event log outside the workspace, AND-gated promotion, an independent oracle, and cost attribution. Full implementable spec.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L95</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L95 &middot; The RAKE reporting harness</h1>
+  <p class="lede"><strong>R</strong>eporting <strong>A</strong>nd <strong>K</strong>nowledge <strong>E</strong>valuation: the harness that turns "the agent did well" into a bundle a stranger can verify. Six components &mdash; manifest, immutable artifact bundle, hash-chained log outside the workspace, AND-gated promotion, independent oracle, cost attribution &mdash; each specified to the field.</p>
+  <div class="chips">
+    <span class="chip">~45 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: full RAKE harness spec + reference implementation</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">run manifest</span>
+  <span class="pill">immutable artifact bundle</span>
+  <span class="pill">hash-chained event log</span>
+  <span class="pill">AND-gated promotion</span>
+  <span class="pill">independent oracle</span>
+  <span class="pill">cost &amp; latency attribution</span>
+  <span class="pill">report format</span>
+  <span class="pill">reproducibility class</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d95-s1">1 &middot; Why it exists <a class="hook" href="#d95-s1">#</a></h2>
+
+    <p>The failure RAKE exists to stop: <strong>a run reports success and nobody can check it.</strong> The agent finished, the
+    logs show tool calls, the summary says the task is complete, and the person reading it has no way to distinguish that
+    from a run that asserted completion and did nothing. Every claim is a claim about a transcript that no longer exists in
+    a form anyone can replay.</p>
+
+    <p>Your existing systems already contain the pieces. BugAgents' 4-point promotion gate is an AND-gate. AgentSwarm's
+    hash-chained ledger is the immutability primitive. JobAgents' zero-LLM scoring path is an oracle that does not depend on
+    the model being right. What is missing is the <em>assembly</em>: one bundle per run, produced by a harness that will not emit a
+    report it cannot back with evidence, and a promotion decision that is a function of that bundle alone.</p>
+
+    <p>RAKE is that assembly. The name is deliberate: <em>rake</em> as in raking a ledger &mdash; sweeping every run into a single auditable
+    record &mdash; and <em>Reporting And Knowledge Evaluation</em> as the two outputs: a report per run, and the accumulated knowledge
+    (golden sets, calibration records, gate history) that makes the next report comparable to the last.</p>
+
+    <div class="callout boss">
+      <p>RAKE's single design rule: <strong>the harness refuses to produce a report it cannot substantiate.</strong> A missing
+      manifest field, a broken hash chain, a claim with no oracle event, or an undeclared reproducibility class makes the report
+      say so &mdash; it does not default to pass. Everything else in the spec follows from that rule.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d95-s2">2 &middot; The mental model <a class="hook" href="#d95-s2">#</a></h2>
+
+    <p>Six components, each with one job, arranged so that no component trusts another's assertion:</p>
+
+    <table class="table">
+      <thead><tr><th>#</th><th>Component</th><th>Single job</th><th>Refuses when</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><strong>Run manifest</strong></td><td>freeze everything that could change the result</td><td>a required field is missing</td></tr>
+        <tr><td>2</td><td><strong>Artifact bundle</strong></td><td>hold the run's outputs, content-addressed and immutable</td><td>an artifact's hash does not match its recorded address</td></tr>
+        <tr><td>3</td><td><strong>Event log</strong></td><td>record every action in a hash chain outside the workspace</td><td>the chain does not verify from genesis</td></tr>
+        <tr><td>4</td><td><strong>Promotion gates</strong></td><td>decide go/no-go as an AND over named gates</td><td>any single gate fails</td></tr>
+        <tr><td>5</td><td><strong>Independent oracle</strong></td><td>mint credit for a claim</td><td>no oracle event exists for the claim</td></tr>
+        <tr><td>6</td><td><strong>Cost &amp; latency attribution</strong></td><td>price the run per event kind and per tool</td><td>a spend event has no cost estimate</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a laboratory notebook with a notary</h4><p>A lab notebook records what was done, with page numbers so a removed page is obvious. A notary, periodically, seals the state of the book. RAKE is the notebook (event log), the page numbering (hash chain), the seals (artifact hashes), and the protocol for deciding whether an experiment is publishable (gates). The analogy holds because the value is in the <em>protocol</em>, not in the paper quality.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A notebook records an experiment once; a RAKE run produces a bundle intended to be <em>compared</em> with prior bundles. That adds a constraint the analogy lacks: comparability. A bundle is only useful if the next one is comparable, which forces the manifest to pin the golden set, the judge calibration, and the index version &mdash; otherwise two reports have different meanings and the gate history is meaningless. This is why the manifest has 18 fields rather than 4.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d95-s3">3 &middot; The mechanism <a class="hook" href="#d95-s3">#</a></h2>
+
+    <h3>Component 1 &mdash; the run manifest (18 required fields)</h3>
+
+    <table class="table">
+      <thead><tr><th>Group</th><th>Fields</th><th>Why it must be pinned</th></tr></thead>
+      <tbody>
+        <tr><td>Identity</td><td><code>run_id</code>, <code>task_id</code>, <code>created_at</code></td><td>addresses the bundle; <code>created_at</code> is informational only, never used for logic</td></tr>
+        <tr><td>Code</td><td><code>code_commit</code>, <code>agent_config_hash</code></td><td>the agent is code; without a commit the run is unattributable</td></tr>
+        <tr><td>Model</td><td><code>model_id</code>, <code>model_revision</code>, <code>temperature</code>, <code>top_p</code>, <code>seed</code></td><td>L94: a revision behind a stable name invalidates replay</td></tr>
+        <tr><td>Prompt surface</td><td><code>system_prompt_hash</code>, <code>tools_schema_hash</code></td><td>a whitespace or tool-order change changes the tokens (L77)</td></tr>
+        <tr><td>Evaluation</td><td><code>golden_set_id</code>, <code>golden_set_hash</code>, <code>judge_id</code>, <code>judge_calibration_id</code></td><td>L88/L89: a score is only comparable at fixed set and fixed calibrated judge</td></tr>
+        <tr><td>Environment</td><td><code>budget_cap</code>, <code>index_version</code></td><td>L76/L97: budgets and corpora drift silently</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Component 2 &mdash; the immutable artifact bundle</h3>
+
+    <p>Layout, addressed by content hash so the bundle is self-verifying:</p>
+
+    <div class="code" data-lang="text">
+bundle/&lt;run_id&gt;/
+  manifest.json            immutable; written once, then chmod 0444
+  events.jsonl             the hash-chained log (append-only)
+  head                     one line: final chain hash
+  artifacts/
+    &lt;sha256&gt;/&lt;name&gt;         every output file, addressed by its own hash
+  report.json              generated LAST, references only hashes
+  SEAL                     sha256 over (manifest, head, sorted artifact hashes)
+    </div>
+
+    <p>The <code>SEAL</code> is what makes the bundle immutable in practice: it is a single hash over the manifest, the chain head,
+    and every artifact hash. Recompute it and you know whether anything in the bundle changed. This is the same construction
+    as your AgentSwarm ledger's integrity check, applied to the whole run rather than to a single event stream.</p>
+
+    <h3>Component 3 &mdash; the hash-chained event log, outside the writable workspace</h3>
+
+    <div class="formula">
+      h<sub>i</sub> = SHA256( h<sub>i&minus;1</sub> &#8214; canonical_json(event<sub>i</sub>) ) &nbsp;&nbsp;&nbsp;&nbsp;
+      SEAL = SHA256( manifest_hash &#8214; h<sub>n</sub> &#8214; sort(artifact hashes) )
+      <span class="note">The log directory must be on storage the agent cannot write (L84) &mdash; otherwise the agent can edit and re-chain. Event kinds: <code>run_start</code>, <code>tool_call</code>, <code>claim</code>, <code>oracle</code>, <code>llm</code>, <code>error</code>, <code>denial</code>, <code>run_end</code>.</span>
+    </div>
+
+    <h3>Component 4 &mdash; promotion gates (AND, not majority)</h3>
+
+    <table class="table">
+      <thead><tr><th>Gate</th><th>Pass condition</th><th>Source of truth</th></tr></thead>
+      <tbody>
+        <tr><td><code>ledger_intact</code></td><td>chain verifies from genesis; SEAL matches</td><td>recomputation, not a stored boolean</td></tr>
+        <tr><td><code>oracle_passed</code></td><td>the independent oracle returned pass for the task</td><td>oracle event in the log</td></tr>
+        <tr><td><code>no_overclaim</code></td><td>every <code>claim</code> event has a matching <code>oracle</code> event</td><td>claim&harr;oracle join on <code>claim_seq</code></td></tr>
+        <tr><td><code>cost_within_cap</code></td><td>attributed spend &le; <code>budget_cap</code></td><td>attribution from events, not a dashboard</td></tr>
+        <tr><td><code>repro_declared</code></td><td>manifest's class is <code>BYTE_</code> or <code>TOLERANT_REPRODUCIBLE</code></td><td>the seed audit (L94)</td></tr>
+        <tr><td><code>taint_clean</code></td><td>no <code>denial</code> event was bypassed; no tainted&rarr;sink path</td><td>provenance ledger (L93)</td></tr>
+        <tr><td><code>eval_floor</code></td><td>golden-set score &ge; the declared floor, with CI lower bound above it</td><td>L88</td></tr>
+      </tbody>
+    </table>
+
+    <p>Every gate reads a <em>derived</em> value &mdash; a recomputation from the log &mdash; never a stored pass flag. A gate that reads a
+    boolean written by the agent is not a gate.</p>
+
+    <h3>Component 5 &mdash; the independent oracle</h3>
+
+    <p>"Independent" is a testable property, not an aspiration. An oracle is admissible only if it satisfies all four:</p>
+
+    <table class="table">
+      <thead><tr><th>Requirement</th><th>Test</th><th>Fails when</th></tr></thead>
+      <tbody>
+        <tr><td>Cannot be edited by the agent</td><td>oracle code + tests hash recorded; agent has no write capability to them</td><td>the agent can modify what judges it (L84 self-modification pair)</td></tr>
+        <tr><td>Deterministic or calibrated</td><td>same input &rarr; same verdict; or a calibration report with TPR/FPR (L89)</td><td>an uncalibrated judge is the oracle</td></tr>
+        <tr><td>Adversarially tested</td><td>a suite of known-bad inputs that the oracle rejects</td><td>no one has tried to make it pass wrongly</td></tr>
+        <tr><td>Reproducible from the bundle</td><td>re-running the oracle on bundle artifacts reproduces the verdict</td><td>the oracle depends on live state not captured in the bundle</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Component 6 &mdash; cost and latency attribution</h3>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json, time
+
+<span class="kw">def</span> <span class="fn">canon</span>(o):
+    <span class="kw">return</span> json.<span class="fn">dumps</span>(o, sort_keys=<span class="kw">True</span>, separators=(<span class="st">","</span>, <span class="st">":"</span>))
+
+<span class="kw">class</span> <span class="fn">EventLog</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>):
+        <span class="nm">self</span>.prev, <span class="nm">self</span>.events = <span class="st">"0"</span>*<span class="nm">64</span>, []
+    <span class="kw">def</span> <span class="fn">emit</span>(<span class="nm">self</span>, kind, payload):
+        ev = {<span class="st">"seq"</span>: <span class="fn">len</span>(<span class="nm">self</span>.events), <span class="st">"kind"</span>: kind, <span class="st">"ts"</span>: <span class="fn">round</span>(time.<span class="fn">time</span>(), <span class="nm">3</span>),
+              <span class="st">"payload"</span>: payload, <span class="st">"h_prev"</span>: <span class="nm">self</span>.prev}
+        ev[<span class="st">"h"</span>] = hashlib.<span class="fn">sha256</span>((<span class="nm">self</span>.prev + <span class="fn">canon</span>(ev)).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()
+        <span class="nm">self</span>.prev = ev[<span class="st">"h"</span>]
+        <span class="nm">self</span>.events.<span class="fn">append</span>(ev)
+    <span class="kw">def</span> <span class="fn">verify</span>(<span class="nm">self</span>):
+        prev = <span class="st">"0"</span>*<span class="nm">64</span>
+        <span class="kw">for</span> i, ev <span class="kw">in</span> <span class="fn">enumerate</span>(<span class="nm">self</span>.events):
+            stored = ev[<span class="st">"h"</span>]
+            body = {k: v <span class="kw">for</span> k, v <span class="kw">in</span> ev.<span class="fn">items</span>() <span class="kw">if</span> k != <span class="st">"h"</span>}
+            <span class="kw">if</span> body[<span class="st">"h_prev"</span>] != prev:
+                <span class="kw">return</span> <span class="kw">False</span>, i, <span class="st">"chain"</span>
+            <span class="kw">if</span> hashlib.<span class="fn">sha256</span>((prev + <span class="fn">canon</span>(body)).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>() != stored:
+                <span class="kw">return</span> <span class="kw">False</span>, i, <span class="st">"hash"</span>
+            prev = stored
+        <span class="kw">return</span> <span class="kw">True</span>, <span class="fn">len</span>(<span class="nm">self</span>.events), prev[:<span class="nm">12</span>]
+
+<span class="cm"># ---- gates derive from the log; none reads a stored pass flag ----</span>
+<span class="kw">def</span> <span class="fn">g_ledger</span>(log):      <span class="kw">return</span> log.<span class="fn">verify</span>()[<span class="nm">0</span>]
+<span class="kw">def</span> <span class="fn">g_tests</span>(log):       <span class="kw">return</span> <span class="fn">any</span>(e[<span class="st">"kind"</span>]==<span class="st">"oracle"</span> <span class="kw">and</span> e[<span class="st">"payload"</span>].<span class="fn">get</span>(<span class="st">"pass"</span>) <span class="kw">for</span> e <span class="kw">in</span> log.events)
+<span class="kw">def</span> <span class="fn">g_no_overclaim</span>(log):
+    claims = {e[<span class="st">"seq"</span>] <span class="kw">for</span> e <span class="kw">in</span> log.events <span class="kw">if</span> e[<span class="st">"kind"</span>] == <span class="st">"claim"</span>}
+    covered = {e[<span class="st">"payload"</span>].<span class="fn">get</span>(<span class="st">"claim_seq"</span>) <span class="kw">for</span> e <span class="kw">in</span> log.events <span class="kw">if</span> e[<span class="st">"kind"</span>] == <span class="st">"oracle"</span>}
+    <span class="kw">return</span> claims &lt;= covered
+<span class="kw">def</span> <span class="fn">g_repro</span>(manifest):   <span class="kw">return</span> manifest.<span class="fn">get</span>(<span class="st">"repro_class"</span>) <span class="kw">in</span> (<span class="st">"BYTE_REPRODUCIBLE"</span>, <span class="st">"TOLERANT_REPRODUCIBLE"</span>)
+
+<span class="kw">def</span> <span class="fn">attribute</span>(log):
+    out = {}
+    <span class="kw">for</span> e <span class="kw">in</span> log.events:
+        <span class="kw">if</span> e[<span class="st">"kind"</span>] == <span class="st">"llm"</span>:
+            c = (e[<span class="st">"payload"</span>].<span class="fn">get</span>(<span class="st">"tokens_in"</span>, <span class="nm">0</span>)*<span class="nm">0.28</span>
+                 + e[<span class="st">"payload"</span>].<span class="fn">get</span>(<span class="st">"tokens_out"</span>, <span class="nm">0</span>)*<span class="nm">1.10</span>) / <span class="nm">1e6</span>
+            out[<span class="st">"llm"</span>] = out.<span class="fn">get</span>(<span class="st">"llm"</span>, <span class="nm">0.0</span>) + c
+        <span class="kw">elif</span> e[<span class="st">"kind"</span>] == <span class="st">"tool"</span>:
+            out[<span class="st">"tool"</span>] = out.<span class="fn">get</span>(<span class="st">"tool"</span>, <span class="nm">0.0</span>) + e[<span class="st">"payload"</span>].<span class="fn">get</span>(<span class="st">"cost_usd"</span>, <span class="nm">0.0</span>)
+    <span class="kw">return</span> {k: <span class="fn">round</span>(v, <span class="nm">8</span>) <span class="kw">for</span> k, v <span class="kw">in</span> out.<span class="fn">items</span>()}
+    </div>
+
+    <h3>The report format</h3>
+
+    <div class="code" data-lang="text">
+{
+  "rake_version": "1.0",
+  "manifest_hash": "&lt;12 hex&gt;",
+  "ledger":   { "n_events": 6, "verified": true, "head": "&lt;12 hex&gt;" },
+  "seal":     "&lt;sha256&gt;",
+  "gates":    [ {"gate":"ledger_intact","pass":true}, ... ],
+  "promoted": true,
+  "oracle":   { "name": "pytest", "pass": true, "calibration_id": "..." },
+  "cost":     { "by_kind": {"llm":0.00268,"tool":0.001}, "total": 0.00368 },
+  "latency":  { "p50_ms": ..., "p95_ms": ... },
+  "repro_class": "TOLERANT_REPRODUCIBLE",
+  "artifacts": [ {"name":"diff.patch","sha256":"..."} ],
+  "report_hash": "&lt;sha256 over all of the above, excluding this field&gt;"
+}
+    </div>
+
+    <div class="callout audit">
+      <p>RAKE's review test: <strong>given only the bundle, can a stranger reproduce the report hash and the promotion decision?</strong>
+      If yes, the run is evidence. If any step requires a dashboard, a database, or your memory, the bundle is a summary &mdash; and a
+      summary of an agent run is exactly the artifact that overclaims.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d95-s4">4 &middot; Your hands <a class="hook" href="#d95-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; A working harness, three run outcomes</h4>
+      <p>Manifest validation, hash-chained log, real gates, and report generation. Run it and observe that a tampered log and
+      an undeclared repro class each block promotion for a different reason.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json, time
+
+<span class="kw">def</span> <span class="fn">canon</span>(o): <span class="kw">return</span> json.<span class="fn">dumps</span>(o, sort_keys=<span class="kw">True</span>, separators=(<span class="st">","</span>,<span class="st">":"</span>))
+<span class="kw">def</span> <span class="fn">sha12</span>(o): <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(<span class="fn">canon</span>(o).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()[:<span class="nm">12</span>]
+
+REQUIRED = [<span class="st">"run_id"</span>,<span class="st">"task_id"</span>,<span class="st">"code_commit"</span>,<span class="st">"agent_config_hash"</span>,<span class="st">"model_id"</span>,
+            <span class="st">"model_revision"</span>,<span class="st">"temperature"</span>,<span class="st">"top_p"</span>,<span class="st">"seed"</span>,<span class="st">"system_prompt_hash"</span>,
+            <span class="st">"tools_schema_hash"</span>,<span class="st">"golden_set_id"</span>,<span class="st">"golden_set_hash"</span>,<span class="st">"judge_id"</span>,
+            <span class="st">"judge_calibration_id"</span>,<span class="st">"budget_cap"</span>,<span class="st">"index_version"</span>,<span class="st">"created_at"</span>]
+
+<span class="kw">class</span> <span class="fn">Log</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>): <span class="nm">self</span>.prev, <span class="nm">self</span>.ev = <span class="st">"0"</span>*<span class="nm">64</span>, []
+    <span class="kw">def</span> <span class="fn">emit</span>(<span class="nm">self</span>, k, p):
+        e = {<span class="st">"seq"</span>: <span class="fn">len</span>(<span class="nm">self</span>.ev), <span class="st">"kind"</span>: k, <span class="st">"payload"</span>: p, <span class="st">"h_prev"</span>: <span class="nm">self</span>.prev}
+        e[<span class="st">"h"</span>] = hashlib.<span class="fn">sha256</span>((<span class="nm">self</span>.prev + <span class="fn">canon</span>(e)).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()
+        <span class="nm">self</span>.prev = e[<span class="st">"h"</span>]; <span class="nm">self</span>.ev.<span class="fn">append</span>(e)
+    <span class="kw">def</span> <span class="fn">verify</span>(<span class="nm">self</span>):
+        prev = <span class="st">"0"</span>*<span class="nm">64</span>
+        <span class="kw">for</span> i, e <span class="kw">in</span> <span class="fn">enumerate</span>(<span class="nm">self</span>.ev):
+            h = e[<span class="st">"h"</span>]; body = {k: v <span class="kw">for</span> k, v <span class="kw">in</span> e.<span class="fn">items</span>() <span class="kw">if</span> k != <span class="st">"h"</span>}
+            <span class="kw">if</span> body[<span class="st">"h_prev"</span>] != prev: <span class="kw">return</span> <span class="kw">False</span>, i
+            <span class="kw">if</span> hashlib.<span class="fn">sha256</span>((prev + <span class="fn">canon</span>(body)).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>() != h: <span class="kw">return</span> <span class="kw">False</span>, i
+            prev = h
+        <span class="kw">return</span> <span class="kw">True</span>, <span class="fn">len</span>(<span class="nm">self</span>.ev)
+
+<span class="kw">def</span> <span class="fn">build</span>(tamper=<span class="kw">False</span>):
+    L = <span class="fn">Log</span>()
+    L.<span class="fn">emit</span>(<span class="st">"run_start"</span>, {<span class="st">"task"</span>: <span class="st">"t1"</span>})
+    L.<span class="fn">emit</span>(<span class="st">"tool"</span>, {<span class="st">"tool"</span>: <span class="st">"read"</span>, <span class="st">"cost_usd"</span>: <span class="nm">0.0</span>})
+    L.<span class="fn">emit</span>(<span class="st">"claim"</span>, {<span class="st">"text"</span>: <span class="st">"tests pass"</span>})
+    L.<span class="fn">emit</span>(<span class="st">"oracle"</span>, {<span class="st">"name"</span>: <span class="st">"pytest"</span>, <span class="st">"pass"</span>: <span class="kw">True</span>, <span class="st">"claim_seq"</span>: <span class="nm">2</span>})
+    L.<span class="fn">emit</span>(<span class="st">"llm"</span>, {<span class="st">"tokens_in"</span>: <span class="nm">8000</span>, <span class="st">"tokens_out"</span>: <span class="nm">400</span>})
+    <span class="kw">if</span> tamper: L.ev[<span class="nm">1</span>][<span class="st">"payload"</span>][<span class="st">"tool"</span>] = <span class="st">"exec"</span>
+    <span class="kw">return</span> L
+
+<span class="kw">def</span> <span class="fn">gates</span>(L, M):
+    claims = {e[<span class="st">"seq"</span>] <span class="kw">for</span> e <span class="kw">in</span> L.ev <span class="kw">if</span> e[<span class="st">"kind"</span>] == <span class="st">"claim"</span>}
+    covered = {e[<span class="st">"payload"</span>].<span class="fn">get</span>(<span class="st">"claim_seq"</span>) <span class="kw">for</span> e <span class="kw">in</span> L.ev <span class="kw">if</span> e[<span class="st">"kind"</span>] == <span class="st">"oracle"</span>}
+    <span class="kw">return</span> [
+      {<span class="st">"gate"</span>: <span class="st">"ledger_intact"</span>, <span class="st">"pass"</span>: L.<span class="fn">verify</span>()[<span class="nm">0</span>]},
+      {<span class="st">"gate"</span>: <span class="st">"oracle_passed"</span>, <span class="st">"pass"</span>: <span class="fn">any</span>(e[<span class="st">"kind"</span>]==<span class="st">"oracle"</span> <span class="kw">and</span> e[<span class="st">"payload"</span>].<span class="fn">get</span>(<span class="st">"pass"</span>) <span class="kw">for</span> e <span class="kw">in</span> L.ev)},
+      {<span class="st">"gate"</span>: <span class="st">"no_overclaim"</span>, <span class="st">"pass"</span>: claims &lt;= covered},
+      {<span class="st">"gate"</span>: <span class="st">"repro_declared"</span>, <span class="st">"pass"</span>: M.<span class="fn">get</span>(<span class="st">"repro_class"</span>) <span class="kw">in</span> (<span class="st">"BYTE_REPRODUCIBLE"</span>,<span class="st">"TOLERANT_REPRODUCIBLE"</span>)},
+    ]
+
+M = {f: <span class="st">f"v{i}"</span> <span class="kw">for</span> i, f <span class="kw">in</span> <span class="fn">enumerate</span>(REQUIRED)} | {<span class="st">"repro_class"</span>: <span class="st">"TOLERANT_REPRODUCIBLE"</span>}
+<span class="kw">for</span> name, L, MM <span class="kw">in</span> ((<span class="st">"clean"</span>, <span class="fn">build</span>(), M),
+                      (<span class="st">"tampered"</span>, <span class="fn">build</span>(<span class="kw">True</span>), M),
+                      (<span class="st">"no repro class"</span>, <span class="fn">build</span>(), {**M, <span class="st">"repro_class"</span>: <span class="st">"NOT_REPRODUCIBLE"</span>})):
+    g = <span class="fn">gates</span>(L, MM)
+    print(<span class="st">f"{name:15s} promoted={all(x['pass'] for x in g)}  "
+          f"failing={[x['gate'] for x in g if not x['pass']]}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>clean           promoted=True  failing=[]</code> &middot;
+      <code>tampered        promoted=False failing=['ledger_intact']</code> &middot;
+      <code>no repro class  promoted=False failing=['repro_declared']</code>.
+      Three runs, three verdicts, each traceable to a specific gate reading a specific derived value. Note that the tampered run
+      still has <code>oracle_passed=True</code> and <code>no_overclaim=True</code> &mdash; the edit changed a tool name, not the verdicts &mdash; and
+      it is blocked anyway, because the ledger gate noticed the edit. That is the AND-gate working as designed: one failure is enough.
+      <strong>Falsifier:</strong> if tampering with an event does not fail <code>ledger_intact</code>, your verifier is not recomputing
+      the hash from content (L90, Experiment 2).</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Reproduce the report hash independently</h4>
+      <p>The review test in executable form: a second party recomputes the report hash from the bundle's own contents and
+      confirms it matches.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json
+<span class="kw">def</span> <span class="fn">canon</span>(o): <span class="kw">return</span> json.<span class="fn">dumps</span>(o, sort_keys=<span class="kw">True</span>, separators=(<span class="st">","</span>,<span class="st">":"</span>))
+
+<span class="kw">def</span> <span class="fn">report_hash</span>(rep):
+    body = {k: v <span class="kw">for</span> k, v <span class="kw">in</span> rep.<span class="fn">items</span>() <span class="kw">if</span> k != <span class="st">"report_hash"</span>}
+    <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(<span class="fn">canon</span>(body).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()
+
+<span class="kw">def</span> <span class="fn">seal</span>(manifest_hash, head, artifact_hashes):
+    <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(<span class="fn">canon</span>([manifest_hash, head, <span class="fn">sorted</span>(artifact_hashes)]).<span class="fn">encode</span>()).<span class="fn">hexdigest</span>()
+
+rep = {<span class="st">"rake_version"</span>: <span class="st">"1.0"</span>, <span class="st">"manifest_hash"</span>: <span class="st">"abc123"</span>,
+       <span class="st">"ledger"</span>: {<span class="st">"n_events"</span>: <span class="nm">6</span>, <span class="st">"verified"</span>: <span class="kw">True</span>, <span class="st">"head"</span>: <span class="st">"def456"</span>},
+       <span class="st">"promoted"</span>: <span class="kw">True</span>, <span class="st">"repro_class"</span>: <span class="st">"TOLERANT_REPRODUCIBLE"</span>}
+r1 = <span class="fn">report_hash</span>(rep)
+rep2 = <span class="fn">dict</span>(rep); rep2[<span class="st">"promoted"</span>] = <span class="kw">False</span>
+r2 = <span class="fn">report_hash</span>(rep2)
+print(<span class="st">"report hash          "</span>, r1[:<span class="nm">16</span>])
+print(<span class="st">"after flipping promoted"</span>, r2[:<span class="nm">16</span>], <span class="st">"-&gt; matches:"</span>, r1 == r2)
+print(<span class="st">"seal                 "</span>, <span class="fn">seal</span>(<span class="st">"abc123"</span>, <span class="st">"def456"</span>, [<span class="st">"h1"</span>, <span class="st">"h2"</span>])[:<span class="nm">16</span>])
+print(<span class="st">"seal with one artifact changed"</span>,
+      <span class="fn">seal</span>(<span class="st">"abc123"</span>, <span class="st">"def456"</span>, [<span class="st">"h1"</span>, <span class="st">"hX"</span>])[:<span class="nm">16</span>])
+      </div>
+      <p class="expect">The report hash changes when a single verdict field flips, and the seal changes when a single
+      artifact hash changes. Together they give the reviewer two checks: <em>was the report altered?</em> (report hash) and
+      <em>were the inputs it references altered?</em> (seal). A reviewer recomputes both from the bundle and either both match
+      or the run is rejected &mdash; no trust required, no access to your systems required.
+      <strong>Falsifier:</strong> if your report hash is computed over a canonical form that omits fields (e.g. only the
+      summary line), flipping <code>promoted</code> will not change it &mdash; hash the whole report body minus the hash field.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Cost attribution by kind and by tool (copy-paste)</h4>
+      <p>The attribution component, on a realistic event stream. The output is what a report's cost section contains.</p>
+      <div class="code" data-lang="python">
+PRICE_IN, PRICE_OUT = <span class="nm">0.28</span>/<span class="nm">1e6</span>, <span class="nm">1.10</span>/<span class="nm">1e6</span>
+
+events = [
+    {<span class="st">"kind"</span>: <span class="st">"llm"</span>,  <span class="st">"payload"</span>: {<span class="st">"tokens_in"</span>: <span class="nm">2000</span>,  <span class="st">"tokens_out"</span>: <span class="nm">400</span>}},
+    {<span class="st">"kind"</span>: <span class="st">"tool"</span>, <span class="st">"payload"</span>: {<span class="st">"tool"</span>: <span class="st">"search"</span>, <span class="st">"cost_usd"</span>: <span class="nm">0.001</span>}},
+    {<span class="st">"kind"</span>: <span class="st">"llm"</span>,  <span class="st">"payload"</span>: {<span class="st">"tokens_in"</span>: <span class="nm">8000</span>,  <span class="st">"tokens_out"</span>: <span class="nm">300</span>}},
+    {<span class="st">"kind"</span>: <span class="st">"tool"</span>, <span class="st">"payload"</span>: {<span class="st">"tool"</span>: <span class="st">"pytest"</span>, <span class="st">"cost_usd"</span>: <span class="nm">0.0</span>}},
+    {<span class="st">"kind"</span>: <span class="st">"llm"</span>,  <span class="st">"payload"</span>: {<span class="st">"tokens_in"</span>: <span class="nm">14000</span>, <span class="st">"tokens_out"</span>: <span class="nm">250</span>}},
+]
+<span class="kw">def</span> <span class="fn">attribute</span>(events):
+    by_kind, by_tool = {}, {}
+    <span class="kw">for</span> e <span class="kw">in</span> events:
+        p = e[<span class="st">"payload"</span>]
+        <span class="kw">if</span> e[<span class="st">"kind"</span>] == <span class="st">"llm"</span>:
+            c = p[<span class="st">"tokens_in"</span>]*PRICE_IN + p[<span class="st">"tokens_out"</span>]*PRICE_OUT
+            by_kind[<span class="st">"llm"</span>] = by_kind.<span class="fn">get</span>(<span class="st">"llm"</span>, <span class="nm">0</span>) + c
+        <span class="kw">elif</span> e[<span class="st">"kind"</span>] == <span class="st">"tool"</span>:
+            c = p[<span class="st">"cost_usd"</span>]
+            by_kind[<span class="st">"tool"</span>] = by_kind.<span class="fn">get</span>(<span class="st">"tool"</span>, <span class="nm">0</span>) + c
+            by_tool[p[<span class="st">"tool"</span>]] = by_tool.<span class="fn">get</span>(p[<span class="st">"tool"</span>], <span class="nm">0</span>) + c
+    <span class="kw">return</span> by_kind, by_tool
+k, t = <span class="fn">attribute</span>(events)
+print(<span class="st">"by_kind"</span>, {a: <span class="fn">round</span>(b, <span class="nm">6</span>) <span class="kw">for</span> a, b <span class="kw">in</span> k.<span class="fn">items</span>()})
+print(<span class="st">"by_tool"</span>, {a: <span class="fn">round</span>(b, <span class="nm">6</span>) <span class="kw">for</span> a, b <span class="kw">in</span> t.<span class="fn">items</span>()})
+print(<span class="st">"total  $%.6f"</span> % <span class="fn">sum</span>(k.<span class="fn">values</span>()))
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>by_kind {'llm': 0.007765, 'tool': 0.001}</code>,
+      <code>by_tool {'search': 0.001, 'pytest': 0.0}</code>, <code>total $0.008765</code>.
+      The last LLM call (14,000 input tokens) costs $0.004195 &mdash; more than the first call's entire cost, because context grows
+      (L90, L79). LLM spend is <strong>88.6%</strong> of the run, and 54% of that LLM cost is the single final call. Attribution per
+      event is what turns "the run cost $0.0088" into "the run cost $0.0088 and 88.6% of it was three LLM calls with a growing
+      context, of which the last was half". That is the sentence a reviewer can act on.
+      <strong>Falsifier:</strong> if <code>by_kind</code> has no <code>tool</code> key, your tool events carry no
+      <code>cost_usd</code> and the tool bill is invisible &mdash; a harness that silently under-reports tool cost will approve runs
+      that are not cheap.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d95-s5">5 &middot; Failure modes <a class="hook" href="#d95-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Gate reads a stored boolean.</strong> The agent (or its framework) writes <code>passed: true</code>. Symptom: every run promotes; tampering has no effect on the decision.</li>
+        <li><strong>Log inside the workspace.</strong> Symptom: the chain verifies but events contradict artifacts &mdash; the agent re-chained its own edits (L84).</li>
+        <li><strong>Manifest written after the run.</strong> Values filled from what actually happened. Symptom: the manifest always matches the run, and can never detect a config drift.</li>
+        <li><strong>Majority-gate.</strong> "5 of 7 gates passed." Symptom: promotions with a broken ledger or a failed oracle, because the failing gate was outvoted.</li>
+        <li><strong>Oracle not independent.</strong> The oracle is the same model that produced the work. Symptom: <code>oracle_passed</code> correlates perfectly with the agent's own claims; zero true negatives.</li>
+        <li><strong>Unsealed artifacts.</strong> Artifacts referenced by path, not hash. Symptom: two bundles point at the same mutable path; the diff a reviewer sees is not the diff the run produced.</li>
+        <li><strong>Cost from a dashboard.</strong> Attribution pulled from a provider console. Symptom: totals disagree with the events; retries and failed calls missing from the report.</li>
+        <li><strong>Comparability broken.</strong> Golden set or judge calibration changed between runs. Symptom: report scores are not comparable; gate history shows improvement that reverses when re-scored (L88).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d95-s6">6 &middot; Connects to <a class="hook" href="#d95-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="90-observability.html">L90 &middot; Event log</a>,
+    <a class="tag-d" href="94-determinism.html">L94 &middot; Manifest</a>,
+    <a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="96-production-checklist.html">L96 &middot; Go/no-go</a>,
+    <a class="tag-d" href="99-capstone.html">L99 &middot; Capstone</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="76-agents.html">L76 &middot; Budgeted loop</a> &mdash; RAKE is that ledger promoted to a run-level artifact with gates.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; the <code>eval_floor</code> gate and its CI lower bound.</li>
+      <li><a class="tag-d" href="89-llm-as-judge.html">L89 &middot; Judges</a> &mdash; the oracle's calibration record that <code>judge_calibration_id</code> points at.</li>
+      <li><a class="tag-d" href="90-observability.html">L90 &middot; Observability</a> &mdash; the event log and hash chain the bundle wraps.</li>
+      <li><a class="tag-d" href="93-safety-alignment.html">L93 &middot; Containment</a> &mdash; the <code>taint_clean</code> gate.</li>
+      <li><a class="tag-d" href="94-determinism.html">L94 &middot; Determinism</a> &mdash; the <code>repro_declared</code> gate and the 10 pinned fields.</li>
+      <li><a class="tag-c" href="../track-c/63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a> &mdash; why "independent oracle" is a reward-function design problem, not a testing problem.</li>
+      <li><a class="tag-d" href="99-capstone.html">L99 &middot; Capstone</a> &mdash; the evidence bundle a reviewer demands is a RAKE bundle.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d95-s7">7 &middot; Self-check <a class="hook" href="#d95-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why must the SEAL cover artifact hashes in addition to the manifest and the chain head?</p>
+        <details><summary>Reveal answer</summary><p>Because the manifest pins the <em>configuration</em> and the chain pins the <em>events</em>, but neither pins the <em>outputs</em>. An attacker (or a careless process) could leave the manifest and the chain untouched while replacing a produced file &mdash; a diff that passes review but is not the diff the run made. Including the sorted set of artifact hashes in the seal makes the outputs part of the sealed state, so replacing one artifact changes the seal. Notice it must be <em>sorted</em> so that the seal is independent of listing order, otherwise the same bundle produces different seals.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A run has <code>oracle_passed=true</code>, <code>no_overclaim=true</code>, <code>cost_within_cap=true</code>, and <code>ledger_intact=false</code>. What is the promotion decision, and why is that the right rule?</p>
+        <details><summary>Reveal answer</summary><p><strong>Not promoted.</strong> <code>ledger_intact=false</code> means the record of what happened was altered, which invalidates the evidence for every other gate &mdash; the <code>oracle_passed</code> event could be one of the altered ones. An AND gate is correct because gates are not independent evidence of <em>different</em> qualities; they are a conjunction where the ledger gate is the <em>precondition</em> for trusting the rest. A majority rule would let four "passes" outvote a broken record, which is precisely the overclaim RAKE exists to prevent.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Name the four tests that make an oracle "independent", and say which one is most often skipped.</p>
+        <details><summary>Reveal answer</summary><p>(1) The agent cannot edit it (no write capability to oracle code or tests). (2) It is deterministic or has a calibration report with TPR/FPR. (3) It has been adversarially tested with known-bad inputs. (4) It is reproducible from the bundle alone. The most-skipped is <strong>adversarial testing</strong> &mdash; teams check that the oracle passes good work but rarely construct inputs designed to make it pass bad work, so its false-positive rate is unmeasured until production measures it for them (L89 calibration is the same gap in judge form).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: a RAKE report shows <code>cost.total = $0.0085</code>, but the provider invoice attributes $0.014 to the run. Give three checks in order.</p>
+        <details><summary>Reveal answer</summary><p>(1) <strong>Cached tokens</strong> &mdash; if the trace prices all input at the standard rate while the invoice bills cache writes at a different rate, totals diverge; check for a <code>cached_in</code> field on LLM events. (2) <strong>Error and timeout events</strong> &mdash; a timed-out call that carried a large prompt is often billed; if error events carry no <code>tokens_in</code>, their cost is missing from attribution. (3) <strong>Missing event kinds</strong> &mdash; embedding calls, reranker calls, and subagent calls that were not instrumented. A persistent gap should be treated as a missing span kind, not a pricing error, because the harness's job is to make every billable action an event.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does the spec require the manifest to be written <em>before</em> the run, when writing it afterwards would be more accurate?</p>
+        <details><summary>Reveal answer</summary><p>Because a manifest written afterwards is a description of what happened, not a commitment to what was intended &mdash; and it can therefore never detect the failure it exists to detect: configuration drift between what you believed you ran and what actually ran. A pre-run manifest that mismatches the observed events is a <em>finding</em> (the run used a different model revision, temperature, or prompt than declared). A post-run manifest always matches and has zero diagnostic power. The mutable fields (end time, actual spend, verdicts) live in the report, not the manifest.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="94-determinism.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L94 &middot; Determinism &amp; reproducibility</span></a>
+    <a class="next" href="96-production-checklist.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L96 &middot; Production checklist</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

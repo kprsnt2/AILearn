@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d80">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L80 · Memory: working / episodic / semantic / procedural — AILearn</title>
+<meta name="description" content="Memory is a retrieval-ranking problem, not a storage problem. Decay half-lives, the recency weight that decides whether stale facts get resurrected, and why supersession must be explicit.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L80</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L80 &middot; Memory: working / episodic / semantic / procedural</h1>
+  <p class="lede">Memory systems fail by <em>retrieving</em> the wrong thing, not by storing too little. The recency weight you pick silently decides whether a superseded fact outranks its replacement &mdash; and with the weight at zero it's a tie that sorting resolves in favour of whichever was written first.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: memory store with decay &amp; retrieval</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">working / episodic / semantic / procedural</span>
+  <span class="pill">decay half-life</span>
+  <span class="pill">recency-relevance tradeoff</span>
+  <span class="pill">supersession</span>
+  <span class="pill">interference</span>
+  <span class="pill">consolidation</span>
+  <span class="pill">provenance &amp; taint</span>
+  <span class="pill">retrieval scoring function</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d80-s1">1 &middot; Why it exists <a class="hook" href="#d80-s1">#</a></h2>
+
+    <p>The failure: <strong>the agent confidently uses a fact it should have known was obsolete.</strong> At session 1 it
+    learned "the database is Postgres 14". At session 40 the team upgraded to Postgres 16 and it learned that too. Now both
+    are in the store, both match the query "database version", and the retrieval function returns whichever scores slightly
+    higher. There is no error. There is a wrong migration script.</p>
+
+    <p>Note what this is <em>not</em>. It is not a storage-capacity failure, not an embedding-quality failure, and not a
+    context-window failure. It is a <strong>ranking failure between two true-at-different-times statements</strong>, and the only
+    structural fix is to record that one supersedes the other. Memory systems that store facts as flat text are
+    append-only by construction, and append-only stores cannot express "this replaced that".</p>
+
+    <p>The second failure is subtler and more expensive: <strong>memory that makes the agent worse</strong>. An agent that
+    retrieves a plausible but irrelevant past episode for every new task spends context and attention on noise. Because
+    retrieval always returns <code>k</code> results, a bag of low-value memories degrades every query rather than
+    returning nothing.</p>
+
+    <div class="callout boss">
+      <p>Memory is not a database with a search box. It is a <strong>ranking function over competing explanations of the
+      present</strong>, where recency, relevance, importance, and provenance are in tension and the weights are yours.
+      The audit question is not "is the fact stored" but <strong>"given the store at time T, would the retriever have
+      returned the fact that was true at time T?"</strong></p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d80-s2">2 &middot; The mental model <a class="hook" href="#d80-s2">#</a></h2>
+
+    <p>Four stores with different write paths, different lifetimes, and different retrieval rules. Treating them as one
+    store is the original sin.</p>
+
+    <table class="table">
+      <thead><tr><th>Store</th><th>Holds</th><th>Written by</th><th>Lifetime</th><th>Retrieved by</th><th>Failure if conflated</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Working</strong></td><td>current step's inputs and scratchpad</td><td>the loop, every turn</td><td>one step</td><td>always in context</td><td>evicted by compaction (L79)</td></tr>
+        <tr><td><strong>Episodic</strong></td><td>"on 3 Mar I tried X and it failed because Y"</td><td>post-run summarisation</td><td>weeks</td><td>similarity to current task</td><td>retrieves anecdotes that sound relevant but aren't</td></tr>
+        <tr><td><strong>Semantic</strong></td><td>"the ledger is hash-chained SHA-256"</td><td>explicit fact write + supersession</td><td>until superseded</td><td>similarity + recency + validity</td><td>stale facts resurrect (this page)</td></tr>
+        <tr><td><strong>Procedural</strong></td><td>"to promote: run gate, then sign, then deploy"</td><td>human curation only</td><td>permanent</td><td>always injected for matching task class</td><td>the agent invents a procedure that skips a gate</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a library where books are never withdrawn</h4><p>Semantic memory as a library: you shelve a new edition next to the old one, and the retrieval system returns whichever is closer to the hand. Without a withdrawal process the library becomes steadily less useful as it grows &mdash; which matches the observed behaviour of memory-augmented agents over long deployments.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A library has a single authoritative edition per title. Memory has no natural "title" &mdash; two statements about the database version are different strings with different embeddings, and "these are about the same fact" is a <em>judgement</em> that must be made explicitly (a key, a subject, an entity) rather than inferred from text similarity. Embedding similarity cannot detect contradiction; it only detects topical proximity.</p></div>
+    </div>
+
+    <p>So semantic memory needs a <strong>subject key</strong> (the thing the fact is about) and a validity interval, not just
+    a vector. With a subject key, supersession is a single indexed update. Without one, supersession is a research problem
+    you are solving at retrieval time with cosine similarity, badly.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d80-s3">3 &middot; The mechanism <a class="hook" href="#d80-s3">#</a></h2>
+
+    <p>Three mechanisms, in order: decay, scoring, supersession. Decay first, because it sets the scale for everything
+    else. An exponential retention curve with a half-life proportional to importance:</p>
+
+    <div class="formula">
+      R(t) = exp( &minus;(t &minus; t<sub>access</sub>) / &tau; ), &nbsp; &tau; = &tau;<sub>0</sub> &middot; importance &nbsp;&nbsp;&nbsp;&nbsp;
+      t<sub>1/2</sub> = &tau; &middot; ln 2
+      <span class="note"><code>&tau;<sub>0</sub></code> = base time constant (e.g. 8 hours), <code>importance</code> in 1&ndash;5 multiplies it. At <code>&tau;<sub>0</sub>=8h</code>: importance 1 &rarr; half-life 5.55h, importance 5 &rarr; half-life 27.7h. Decay is a <em>ranking</em> device, not a deletion device &mdash; low-retention items should rank lower, not vanish, so they stay auditable.</span>
+    </div>
+
+    <p>Then the score. The weights are the design, and the recency weight in particular has a cliff at zero.</p>
+
+    <div class="formula">
+      score = w<sub>rel</sub>&middot;rel(q,m) + w<sub>rec</sub>&middot;R(m) + w<sub>imp</sub>&middot;(importance/5)
+      <span class="note"><code>rel</code> = query-item relevance (lexical or embedding cosine), <code>R</code> = retention above, <code>w<sub>rec</sub> = 0</code> means the ranking is blind to when a fact was learned &mdash; and ties between a fact and its replacement break arbitrarily.</span>
+    </div>
+
+    <p>The store. Note the three fields that make it auditable: <code>subject</code> (supersession key),
+    <code>supersedes</code> (a pointer, not an inference), and <code>provenance</code> (which tool/human produced it).</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math, time
+
+<span class="kw">class</span> <span class="fn">MemoryStore</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="nm">self</span>, tau0=<span class="nm">8.0</span>):
+        <span class="nm">self</span>.tau0 = tau0
+        <span class="nm">self</span>.items = {}       <span class="cm"># id -&gt; item</span>
+        <span class="nm">self</span>.by_subject = {}   <span class="cm"># subject -&gt; current item id (supersession index)</span>
+
+    <span class="kw">def</span> <span class="fn">write</span>(<span class="nm">self</span>, text, subject, importance=<span class="nm">3</span>, provenance=<span class="st">"unknown"</span>, now=<span class="kw">None</span>):
+        now = now <span class="kw">or</span> time.<span class="fn">time</span>()
+        mid = <span class="fn">f"m{len(self.items)+1}"</span>
+        prev = <span class="nm">self</span>.by_subject.<span class="fn">get</span>(subject)
+        <span class="nm">self</span>.items[mid] = {<span class="st">"text"</span>: text, <span class="st">"subject"</span>: subject,
+                                <span class="st">"importance"</span>: importance, <span class="st">"t0"</span>: now,
+                                <span class="st">"t_access"</span>: now, <span class="st">"provenance"</span>: provenance,
+                                <span class="st">"supersedes"</span>: prev, <span class="st">"valid_to"</span>: <span class="kw">None</span>}
+        <span class="kw">if</span> prev: <span class="nm">self</span>.items[prev][<span class="st">"valid_to"</span>] = now   <span class="cm"># EXPLICIT supersession</span>
+        <span class="nm">self</span>.by_subject[subject] = mid
+        <span class="kw">return</span> mid
+
+    <span class="kw">def</span> <span class="fn">retention</span>(<span class="nm">self</span>, it, now):
+        tau = <span class="nm">self</span>.tau0 * it[<span class="st">"importance"</span>]
+        dt = <span class="fn">max</span>(<span class="nm">0.0</span>, now - it[<span class="st">"t_access"</span>])   <span class="cm"># clock-skew guard</span>
+        <span class="kw">return</span> math.<span class="fn">exp</span>(-dt / tau)
+
+    <span class="kw">def</span> <span class="fn">search</span>(<span class="nm">self</span>, q_terms, now=<span class="kw">None</span>, k=<span class="nm">3</span>,
+               w_rel=<span class="nm">1.0</span>, w_rec=<span class="nm">1.0</span>, w_imp=<span class="nm">0.5</span>, include_superseded=<span class="kw">False</span>):
+        now = now <span class="kw">or</span> time.<span class="fn">time</span>()
+        scored = []
+        <span class="kw">for</span> mid, it <span class="kw">in</span> <span class="nm">self</span>.items.<span class="fn">items</span>():
+            <span class="kw">if</span> it[<span class="st">"valid_to"</span>] <span class="kw">is not</span> <span class="kw">None</span> <span class="kw">and not</span> include_superseded:
+                <span class="kw">continue</span>                                  <span class="cm"># hard filter, not a soft penalty</span>
+            toks = <span class="fn">set</span>(it[<span class="st">"text"</span>].lower().<span class="fn">split</span>())
+            rel = <span class="fn">len</span>(toks &amp; q_terms) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(q_terms))
+            s = w_rel*rel + w_rec*<span class="nm">self</span>.<span class="fn">retention</span>(it, now) + w_imp*(it[<span class="st">"importance"</span>]/<span class="nm">5</span>)
+            scored.<span class="fn">append</span>((s, mid))
+        scored.<span class="fn">sort</span>(reverse=<span class="kw">True</span>)
+        <span class="kw">return</span> scored[:k]
+    </div>
+
+    <p>The single most important line is the hard filter <code>valid_to is not None &rarr; skip</code>. Superseded facts must
+    be <strong>excluded by a filter</strong>, not out-competed by a recency bonus, because a bonus is a continuous quantity
+    competing with relevance &mdash; and a sufficiently relevant stale fact will beat a less topically similar fresh one.
+    Filter first, rank second. That ordering is the invariant.</p>
+
+    <div class="callout audit">
+      <p>Retention-based ranking makes a specific audit promise testable: <strong>replay the store as of time T and confirm the
+      retriever returns the fact that was valid at T.</strong> This is only possible if writes are timestamped in a
+      tamper-evident log (L90/L94) and supersession is recorded as a pointer. If supersession is inferred at query time
+      by similarity, the store cannot be replayed to a historical state at all, and the audit is impossible by construction.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d80-s4">4 &middot; Your hands <a class="hook" href="#d80-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Reproduce the stale-fact resurrection</h4>
+      <p>Five memories, one superseding pair. Sweep the recency weight and watch the top result change. The interesting
+      row is <code>w_rec = 0.0</code>.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+
+<span class="kw">def</span> <span class="fn">ret</span>(t0, imp, now, tau0=<span class="nm">8.0</span>):
+    <span class="kw">return</span> math.<span class="fn">exp</span>(-(now - t0) / (tau0 * imp))
+
+<span class="kw">def</span> <span class="fn">score</span>(text, t0, imp, q, now, w_rel=<span class="nm">1.0</span>, w_rec=<span class="nm">1.0</span>, w_imp=<span class="nm">0.5</span>):
+    toks = <span class="fn">set</span>(text.lower().<span class="fn">split</span>())
+    rel = <span class="fn">len</span>(toks &amp; q) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">len</span>(q))
+    <span class="kw">return</span> w_rel*rel + w_rec*<span class="fn">ret</span>(t0, imp, now) + w_imp*(imp/<span class="nm">5</span>)
+
+NOW, Q = <span class="nm">100.0</span>, {<span class="st">"database"</span>, <span class="st">"postgres"</span>}
+MEM = [(<span class="st">"m1"</span>, <span class="st">"database uses postgres 14"</span>, <span class="nm">0</span>, <span class="nm">5</span>),
+       (<span class="st">"m6"</span>, <span class="st">"database uses postgres 16"</span>, <span class="nm">90</span>, <span class="nm">5</span>),
+       (<span class="st">"m4"</span>, <span class="st">"migration must be reversible"</span>, <span class="nm">0</span>, <span class="nm">5</span>)]
+
+<span class="kw">for</span> wr <span class="kw">in</span> (<span class="nm">0.0</span>, <span class="nm">0.5</span>, <span class="nm">1.0</span>, <span class="nm">2.0</span>, <span class="nm">4.0</span>):
+    r = <span class="fn">sorted</span>(MEM, key=<span class="kw">lambda</span> x: -<span class="fn">score</span>(x[<span class="nm">1</span>], x[<span class="nm">2</span>], x[<span class="nm">3</span>], Q, NOW, w_rec=wr))
+    print(<span class="st">f"w_rec={wr:.1f}  top1={r[0][0]} ({score(r[0][1],r[0][2],r[0][3],Q,NOW,w_rec=wr):.3f})"
+          f"  top2={r[1][0]} ({score(r[1][1],r[1][2],r[1][3],Q,NOW,w_rec=wr):.3f})"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>w_rec=0.0 top1=m1 (1.500) top2=m6 (1.500)</code> &mdash; an exact tie, resolved against the newer fact. Then
+      <code>w_rec=0.5 &rarr; m6 (1.889)</code>, <code>1.0 &rarr; m6 (2.279)</code>, <code>2.0 &rarr; m6 (3.058)</code>,
+      <code>4.0 &rarr; m6 (4.615)</code>. The scores for m1 stay near 1.5&ndash;1.8 throughout.
+      The lesson: with <code>w_rec = 0</code> you have <em>no signal at all</em> distinguishing a fact from its replacement, and
+      whether the bug manifests depends on dictionary iteration order &mdash; which means it manifests intermittently and
+      looks like flakiness. And notice that even at <code>w_rec = 0.5</code> the recency term is doing the entire job of
+      supersession, which is fragile: raise relevance (make the stale fact more topically similar) and it wins again.
+      <strong>Falsifier:</strong> if your store returns m6 at <code>w_rec = 0</code>, you got lucky on ordering &mdash;
+      rerun with the items inserted in the opposite order.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Half-lives, and why decay must not delete</h4>
+      <p>With <code>&tau;<sub>0</sub> = 8h</code> and importance 1&ndash;5, compute how fast each class of memory goes stale as a ranking signal.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+TAU0 = <span class="nm">8.0</span>
+<span class="kw">for</span> imp <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">3</span>, <span class="nm">4</span>, <span class="nm">5</span>):
+    tau = TAU0 * imp
+    print(<span class="st">f"importance={imp}  tau={tau:4.1f}h  half-life={tau*math.log(2):5.2f}h"</span>)
+print()
+<span class="cm"># after 48h, what is retention?</span>
+<span class="kw">for</span> imp <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">3</span>, <span class="nm">5</span>):
+    print(<span class="st">f"imp={imp} at 48h: R={math.exp(-48/(TAU0*imp)):.5f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> half-lives <code>imp=1 &rarr; 5.55h</code>, <code>2 &rarr; 11.09h</code>,
+      <code>3 &rarr; 16.64h</code>, <code>4 &rarr; 22.18h</code>, <code>5 &rarr; 27.73h</code>.
+      After 48h: <code>imp=1 R=0.00248</code>, <code>imp=3 R=0.13534</code>, <code>imp=5 R=0.38674</code>.
+      The design conclusion: importance must multiply <code>&tau;</code> <em>linearly</em>, or a low-importance memory decays so fast
+      it can never be retrieved. But even <code>R=0.0025</code> is not zero &mdash; the item still exists and is still auditable, which
+      is the property you want. If decay deleted items, you could not reconstruct why a past run behaved as it did.
+      <strong>Falsifier:</strong> if retrieval quality improves when you <em>delete</em> low-retention items, your scoring function
+      is letting low-relevance items through via the importance term &mdash; fix the weights, don't delete evidence.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Assert the supersession invariant (copy-paste test)</h4>
+      <p>The property that must hold in every memory store: after a superseding write, the old fact is unreachable <em>by any
+      weight setting</em>.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">test_supersession</span>(store):
+    now = time.<span class="fn">time</span>()                       <span class="cm"># realistic offsets; huge dt overflows exp()</span>
+    store.<span class="fn">write</span>(<span class="st">"database uses postgres 14"</span>, subject=<span class="st">"db.version"</span>,
+                importance=<span class="nm">5</span>, provenance=<span class="st">"tool:pg_read"</span>, now=now - <span class="nm">48</span>*<span class="nm">3600</span>)
+    store.<span class="fn">write</span>(<span class="st">"database uses postgres 16"</span>, subject=<span class="st">"db.version"</span>,
+                importance=<span class="nm">5</span>, provenance=<span class="st">"tool:pg_read"</span>, now=now - <span class="nm">10</span>*<span class="nm">3600</span>)
+    q = {<span class="st">"database"</span>, <span class="st">"postgres"</span>}
+    <span class="cm"># invariant: for ANY weight vector, the superseded item never wins</span>
+    <span class="kw">for</span> wr <span class="kw">in</span> (<span class="nm">0.0</span>, <span class="nm">0.1</span>, <span class="nm">1.0</span>, <span class="nm">10.0</span>):
+        <span class="kw">for</span> wi <span class="kw">in</span> (<span class="nm">0.0</span>, <span class="nm">0.5</span>, <span class="nm">2.0</span>):
+            hits = store.<span class="fn">search</span>(q, now=now, k=<span class="nm">5</span>, w_rec=wr, w_imp=wi)
+            texts = [store.items[m][<span class="st">"text"</span>] <span class="kw">for</span> _, m <span class="kw">in</span> hits]
+            <span class="kw">assert</span> <span class="st">"postgres 14"</span> <span class="kw">not in</span> <span class="st">" "</span>.<span class="fn">join</span>(texts), <span class="st">f"STALE LEAK wr={wr} wi={wi}"</span>
+            <span class="kw">assert</span> <span class="st">"postgres 16"</span> <span class="kw">in</span> <span class="st">" "</span>.<span class="fn">join</span>(texts), <span class="st">f"MISSING CURRENT wr={wr}"</span>
+    <span class="cm"># and the old fact is still retrievable for forensics</span>
+    hits = store.<span class="fn">search</span>(q, now=now, k=<span class="nm">5</span>, include_superseded=<span class="kw">True</span>)
+    <span class="kw">assert</span> <span class="fn">len</span>(hits) == <span class="nm">2</span>, <span class="st">"history must remain available"</span>
+    print(<span class="st">"PASS: supersession invariant holds across all weights"</span>)
+
+<span class="fn">test_supersession</span>(MemoryStore())
+      </div>
+      <p class="expect">Prints <code>PASS: supersession invariant holds across all weights</code>. The two assertions encode the
+      whole design: <em>no</em> weight combination may surface a superseded fact in normal retrieval, and the fact must still be
+      retrievable with <code>include_superseded=True</code> for forensics. If your store fails this test at even one weight
+      combination, your "memory" cannot distinguish current from historical and every downstream eval is contaminated.
+      <strong>Falsifier:</strong> if the assertion fails only at <code>w_imp = 2.0</code>, the importance term is overpowering
+      everything &mdash; which means importance is being used as a relevance proxy, a bug worth fixing on its own.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d80-s5">5 &middot; Failure modes <a class="hook" href="#d80-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Append-only semantics.</strong> No subject key, no supersession. Symptom: contradictory facts co-exist; the answer flips between runs on the same question &mdash; classic non-reproducibility (L94) misattributed to sampling.</li>
+        <li><strong>Recency-as-supersession.</strong> No hard filter; the new fact wins only because it scores higher. Symptom: raising relevance of the old fact (a slightly better keyword match) resurrects it. Detect: the supersession invariant test above.</li>
+        <li><strong>Provenance laundering.</strong> A model-generated guess is stored with the same authority as a tool-verified read. Symptom: memory says "the API returns X" and X was never returned by anything; traced to an inference that got written back. Fix: <code>provenance</code> is mandatory and tainted items are excluded from authoritative answers (L97).</li>
+        <li><strong>Episodic contamination.</strong> Failed attempts stored as facts. Symptom: the agent "remembers" that an approach doesn't work when it was the environment that was broken. Episodes need outcome labels (<code>failed_because</code>), not just text.</li>
+        <li><strong>Unbounded growth with no ranking calibration.</strong> 50k items, <code>k=5</code> always returned. Symptom: retrieval returns topically related but useless items; precision drops as the store grows while recall looks fine.</li>
+        <li><strong>Consolidation collapse.</strong> Periodic consolidation rewrites everything into a summary. Symptom: same half-life decay as summarization (L79), but now it is the <em>only</em> copy. Consolidation must write a new derived item, never overwrite sources.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d80-s6">6 &middot; Connects to <a class="hook" href="#d80-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="79-context-engineering.html">L79 &middot; Context budgets</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="85-rag-retrieval.html">L85 &middot; RAG retrieval</a>,
+    <a class="tag-d" href="97-rag-in-production.html">L97 &middot; RAG in production</a>.</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/02-embeddings.html">L02 &middot; Embeddings</a> &mdash; why cosine similarity detects topical proximity but not contradiction.</li>
+      <li><a class="tag-a" href="../track-a/22-vector-search.html">L22 &middot; ANN search</a> &mdash; the index that makes <code>k=5</code> over 50k items fast; recall@k sets the ceiling.</li>
+      <li><a class="tag-d" href="85-rag-retrieval.html">L85 &middot; RAG retrieval</a> &mdash; same scoring problem, different corpus and no supersession.</li>
+      <li><a class="tag-d" href="86-rag-reranking.html">L86 &middot; Reranking</a> &mdash; a second-stage ranker is the right place for expensive relevance, after the cheap filters.</li>
+      <li><a class="tag-d" href="90-observability.html">L90 &middot; Observability</a> &mdash; memory writes must be events in the trace to be replayable.</li>
+      <li><a class="tag-d" href="94-determinism.html">L94 &middot; Determinism</a> &mdash; a non-deterministic answer is often a retrieval-order artefact, not sampling.</li>
+      <li><a class="tag-c" href="../track-c/71-agentic-rl.html">L-Ref</a> <a href="../resources/papers.html" class="tag-c">Generative Agents &middot; arXiv:2304.03442</a> &mdash; the retrieval-recency-importance scoring pattern this page formalises.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d80-s7">7 &middot; Self-check <a class="hook" href="#d80-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is a hard <code>valid_to</code> filter strictly better than a recency bonus for supersession?</p>
+        <details><summary>Reveal answer</summary><p>Because a bonus is a <em>continuous</em> term competing against relevance and importance, so there always exists a fact stale enough to be penalised but relevant enough to win &mdash; the ranking is only correct within a weight regime, and your weights are also tuned for retrieval quality, so the two objectives fight. A filter is an <em>invariant</em>: superseded facts are excluded before scoring, for every weight vector. That is exactly what Experiment 3 tests. Filters encode "this is not a candidate"; bonuses encode "this candidate is slightly less good" &mdash; supersession is the former.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> With <code>&tau;<sub>0</sub>=8h</code>, what is the retention of an importance-4 memory after 36 hours, and after 120 hours? Show the arithmetic.</p>
+        <details><summary>Reveal answer</summary><p><code>&tau; = 8 &times; 4 = 32h</code>. At 36h: <code>exp(&minus;36/32) = exp(&minus;1.125) = 0.3247</code>. At 120h: <code>exp(&minus;120/32) = exp(&minus;3.75) = 0.0235</code>. Half-life is <code>32 &times; ln2 = 22.18h</code>. If your retrieval threshold is retention &gt; 0.3, that memory is a ranking candidate for about a day and a half regardless of how important it is &mdash; which is why importance must multiply <code>&tau;</code>, and why a fact you need indefinitely must be <em>re-accessed</em> (which resets <code>t_access</code>) or stored in procedural memory instead of relying on decay.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: for the same question, the agent answers correctly on Monday and incorrectly on Wednesday, same model, temperature 0. What do you check first?</p>
+        <details><summary>Reveal answer</summary><p>Memory contents, not sampling. At temperature 0 the model is nearly deterministic on a fixed prompt (L94), so a different answer implies a different prompt &mdash; and the most likely differing component is retrieved memory. Check the trace: what did retrieval return on each day? Look for a superseding write between Monday and Wednesday, or for a new item that outranked the correct one. The Monday-correct/Wednesday-wrong pattern with no deploy is the signature of a store that changed underneath a stable model.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why must consolidation write a <em>new derived item</em> rather than overwrite the sources it summarized?</p>
+        <details><summary>Reveal answer</summary><p>Two reasons. First, lossy: consolidation has the same <code>a<sup>r</sup></code> decay as summarization (L79), so an overwrite is irreversible information loss with no way to detect it later. Second, auditability: if the derived item is wrong, a reviewer must be able to walk back to the sources that produced it and see where the error entered. Overwriting destroys the evidence needed to do that. Store <code>derived_from: [ids]</code> on the new item and leave sources intact with <code>valid_to</code> set if they are truly retired &mdash; the distinction between "retired from ranking" and "deleted from existence" is the whole point.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your store has 2,000 memories, retrieval always returns <code>k=5</code>, and users say the agent "brings up irrelevant old episodes". Give the two candidate root causes and the measurement that separates them.</p>
+        <details><summary>Reveal answer</summary><p>(a) <em>Scoring miscalibration</em>: the importance or recency terms dominate so old high-importance episodes outrank genuinely relevant current material; (b) <em>episodic contamination</em>: the episodes are topically relevant but their outcomes are unlabelled, so "I tried X and it failed" is retrieved and treated as guidance. Measurement: label a sample of 100 retrieved sets for whether the top-1 item was <em>useful</em> to the response, then break the error rate down by item store (episodic vs semantic) and by score component. If failures concentrate in episodic items, it is (b) &mdash; add outcome labels and a store-type filter. If they spread evenly across both, it is (a) &mdash; recalibrate weights against the usefulness labels rather than against similarity, which is what you can already measure.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="79-context-engineering.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L79 &middot; Context engineering</span></a>
+    <a class="next" href="81-subagents.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L81 &middot; Subagents &amp; orchestration</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

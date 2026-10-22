@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b32">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L32 · DeepSeekMoE: Fine-Grained Experts + Shared Experts — AILearn</title>
+<meta name="description" content="Two structural changes to vanilla MoE: split experts finer so combinations are combinatorial, and keep a few always-on shared experts so common knowledge is not learned redundantly.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L32</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L32 &middot; DeepSeekMoE: Fine-Grained Experts + Shared Experts</h1>
+  <p class="lede">Vanilla top-k MoE wastes capacity twice: a coarse expert either covers everything or nothing about a token, and every expert redundantly relearns grammar. Splitting experts finer multiplies the reachable combinations; adding shared always-on experts removes the redundancy.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: expert-split capacity model</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">fine-grained experts</span>
+  <span class="pill">shared experts</span>
+  <span class="pill">combinatorial capacity</span>
+  <span class="pill">knowledge hybridity</span>
+  <span class="pill">expert redundancy</span>
+  <span class="pill">k/N ratio</span>
+  <span class="pill">auxiliary-loss-free balancing</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b32-s1">1 &middot; Why it exists <a class="hook" href="#b32-s1">#</a></h2>
+
+    <p>Two independent inefficiencies showed up in early sparse MoE training, and both were measured as loss you should have
+    got.</p>
+
+    <p><strong>Coarse experts waste the routing decision.</strong> With E = 8 experts and top-k = 2, there are only
+    C(8,2) = 28 possible expert pairs a token can be assigned. That is a tiny menu. Every expert must therefore be a
+    generalist: it has to be good at all the token types that might land on it, because the router cannot compose a specific
+    mixture. Real token types are far more numerous than 28.</p>
+
+    <p><strong>Redundant knowledge.</strong> Common structure &mdash; syntax, function words, basic reasoning patterns &mdash;
+    is needed by essentially every token. In a vanilla MoE, every expert that sees many tokens learns it independently. You
+    are buying the same knowledge E times over, and the specialists' capacity is partly spent on being generalists.</p>
+
+    <p>The fix, from <em>DeepSeekMoE</em> <span class="asof">arXiv:2405.04434</span> and used in DeepSeek-V2 and V3
+    <span class="asof">arXiv:2412.19437</span>, is two structural moves: (1) <strong>fine-grained experts</strong> &mdash; many
+    smaller experts with a larger k, and (2) <strong>shared experts</strong> &mdash; a small number of always-on experts that
+    capture the common knowledge so the routed experts can specialise. Combined with auxiliary-loss-free balancing, this is the
+    architecture family behind the 2026 DeepSeek line.</p>
+
+    <div class="callout boss">
+      <p>A MoE is not &ldquo;E experts of the same size as a dense FFN.&rdquo; The parameters that matter are how many distinct
+      <em>mixtures</em> the router can express, and how much of each expert's capacity is spent on knowledge that every token
+      already needs.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b32-s2">2 &middot; The mental model <a class="hook" href="#b32-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> mixing paint. Eight big cans of premixed colours with two-cans-per-token routing
+    gives you 28 colours. Sixty-four small cans of pure-ish pigments with six-cans-per-token routing gives you
+    C(64,&thinsp;6) = 74,974,368 colours from roughly the same total volume of paint.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Compositionality of the expert menu is combinatorial in
+      <em>how many you choose per token</em>, not just in total capacity. Same paint volume, exponentially finer shades.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Mixing paint is free; mixing experts is a weighted sum with fixed compute, so
+      choosing k = 6 small experts costs the same FLOPs as choosing 2 big ones only if 6&times;small = 2&times;big in width.
+      Also, and this is the reason shared experts exist: fine experts are <em>worse</em> at knowledge every token needs, because
+      no single small expert sees enough tokens to learn it confidently.</p></div>
+    </div>
+
+    <h3>The arithmetic of the split</h3>
+    <p>The right quantity is the <em>reachable mixture count</em>, C(E, k), given a fixed total parameter budget:</p>
+    <table class="table">
+      <thead><tr><th>Configuration</th><th>Pairs/mixtures per token</th><th>Total routed params*</th></tr></thead>
+      <tbody>
+        <tr><td>E = 8, k = 2 (coarse)</td><td>C(8,2) = 28</td><td>8 &times; 0.176B = 1.41B</td></tr>
+        <tr><td>E = 16, k = 2</td><td>C(16,2) = 120</td><td>16 &times; 0.088B = 1.41B</td></tr>
+        <tr><td>E = 64, k = 6</td><td>C(64,6) = 74,974,368</td><td>64 &times; 0.022B = 1.41B</td></tr>
+        <tr><td>E = 160, k = 8</td><td>C(160,8) = 8,917,061,687,820</td><td>160 &times; 0.0088B = 1.41B</td></tr>
+      </tbody>
+    </table>
+    <p>*Holding the total FFN parameter volume at 1.41B: expert width shrinks as E grows. Details in section 3.</p>
+    <p>Same parameter budget, same FLOPs per token, five orders of magnitude more expressive routing. That is the entire
+    justification for fine-grained experts, and it costs nothing except a larger E (hence larger routing and all-to-all
+    traffic).</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b32-s3">3 &middot; The mechanism <a class="hook" href="#b32-s3">#</a></h2>
+
+    <div class="formula">
+      y = &sum;<sub>s&isin;S</sub> FFN<sub>s</sub>(x) &nbsp;+&nbsp;
+      &sum;<sub>i&isin;TopK</sub>(g<sub>i</sub>) &nbsp;FFN<sub>i</sub>(x) &nbsp;,&nbsp;
+      g<sub>i</sub> = softmax(W<sub>g</sub>x)<sub>i</sub> for i &isin; TopK only
+      <span class="note">S = the small set of always-on shared experts (typically 1&ndash;2). The routed term is the standard top-k MoE. The shared term is a dense FFN that every token passes through, so common knowledge lives there once instead of in every routed expert.</span>
+    </div>
+
+    <h3>Worked: split one coarse expert into four fine ones</h3>
+    <p>Take d<sub>model</sub> = 4096 and a coarse expert of FFN width 8192. Its SwiGLU parameter count is
+    3 &times; d &times; w = 3 &times; 4096 &times; 8192 = <strong>100,663,296 &asymp; 0.1007B</strong> parameters.
+    Now split it into 4 fine experts of width 2048: each is 3 &times; 4096 &times; 2048 = <strong>25,165,824
+    &asymp; 25.17M</strong> parameters, and four of them total 100,663,296 &mdash; exactly identical. Zero parameter cost.</p>
+
+    <table class="table">
+      <thead><tr><th>Choice</th><th>Params per expert</th><th>Active (routed)</th><th>Mixture count</th></tr></thead>
+      <tbody>
+        <tr><td>1 coarse expert, always on</td><td>100.66M</td><td>100.66M</td><td>1</td></tr>
+        <tr><td>4 fine, choose 1</td><td>25.17M</td><td>25.17M</td><td>C(4,1) = 4</td></tr>
+        <tr><td>4 fine, choose 2</td><td>25.17M</td><td>50.33M</td><td>C(4,2) = 6</td></tr>
+        <tr><td>4 fine, choose 3</td><td>25.17M</td><td>75.50M</td><td>C(4,3) = 4</td></tr>
+      </tbody>
+    </table>
+
+    <p>Note the real trade-off, which is often glossed over: <strong>fine-grained experts do not give you more combinations
+    for free</strong>. Splitting increases the menu but you must increase k to use it, and increasing k increases active
+    parameters (and FLOPs) proportionally. What the split genuinely buys is that k experts of width w/4 can express a mixture
+    that a fixed k&times;w/4 budget could not, because you are choosing <em>which</em> quarters, not just averaging. Whether
+    that is worth it is an empirical question &mdash; the DeepSeekMoE finding is that at a fixed active budget, more granular
+    experts that sum to the same width outperform fewer coarse ones.</p>
+
+    <h3>The k/E ratio, stated plainly</h3>
+    <p>For a fixed total routed parameter count N<sub>routed</sub>, the active fraction is exactly k/E. So:</p>
+    <table class="table">
+      <thead><tr><th>Configuration</th><th>k/E</th><th>Reading</th></tr></thead>
+      <tbody>
+        <tr><td>E = 64, k = 6</td><td>0.094</td><td>a token uses 9.4% of routed capacity</td></tr>
+        <tr><td>E = 160, k = 8</td><td>0.050</td><td>5.0% &mdash; more total capacity, same or less active compute</td></tr>
+      </tbody>
+    </table>
+    <p>Going from (64, 6) to (160, 8) at the same per-expert width multiplies total routed parameters by 160/64 = 2.5&times;
+    and multiplies active routed parameters by 8/6 = 1.33&times; &mdash; so active <em>per parameter</em> falls from 9.4% to 5.0%.
+    You buy 2.5&times; the knowledge for 1.33&times; the compute per token. That is the trade, and it is why 2026 frontier MoEs
+    sit at 3&ndash;5% activation.</p>
+
+    <h3>What the verified 2026 numbers say</h3>
+    <table class="table">
+      <thead><tr><th>Model <span class="asof">state as of 2026-10</span></th><th>Total / active</th><th>Design note</th></tr></thead>
+      <tbody>
+        <tr><td>DeepSeek-V3 <span class="asof">arXiv:2412.19437</span></td><td>671B / 37B</td><td>MLA + DeepSeekMoE with fine-grained experts, shared experts, auxiliary-loss-free balancing, MTP</td></tr>
+        <tr><td>DeepSeek-V4-Flash</td><td>284B / 13B</td><td>4.6% activation</td></tr>
+        <tr><td>DeepSeek-V4-Pro</td><td>1.6T / 49B</td><td>3.1% activation</td></tr>
+        <tr><td>DeepSeek-V4.1-Flash</td><td>552B / 8B input, 16B output</td><td>2.9% on the output side; asymmetric active width per phase</td></tr>
+      </tbody>
+    </table>
+
+    <p>V4.1-Flash's asymmetry is the most interesting structural fact: the same model has two active-parameter counts
+    because input processing and output generation are limited by different resources. It is the same principle as shared
+    experts &mdash; do not pay for capacity you are not using in this phase &mdash; applied at the phase level instead of the
+    expert level (L37).</p>
+
+    <div class="callout audit">
+      <p>Specify an MoE with five numbers or you cannot cost it: E, k, per-expert width, number of shared experts, and
+      capacity factor. From those, N<sub>total</sub>, N<sub>active</sub>, memory and per-token FLOPs are all deterministic. A
+      spec sheet with only &ldquo;total parameters&rdquo; is a memory spec, not a model spec.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b32-s4">4 &middot; Your hands <a class="hook" href="#b32-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; mixture counts and why your intuition fails</h4>
+      <p>Compute C(E, k) for the configurations people actually propose. The point is to see how badly sublinear human
+      intuition is here, and at what E the combinatorial count stops being the binding constraint.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> math
+<span class="kw">def</span> <span class="fn">comb</span>(n, k):
+    <span class="kw">return</span> math.comb(n, k)
+
+<span class="kw">for</span> E, k <span class="kw">in</span> [(<span class="nm">8</span>,<span class="nm">2</span>), (<span class="nm">16</span>,<span class="nm">2</span>), (<span class="nm">64</span>,<span class="nm">6</span>), (<span class="nm">160</span>,<span class="nm">8</span>), (<span class="nm">256</span>,<span class="nm">8</span>)]:
+    c = <span class="fn">comb</span>(E, k)
+    <span class="fn">print</span>(<span class="st">f"E={E:3d} k={k:2d}  C(E,k)={c:,}  active fraction k/E={k/E:.3f}"</span>)
+      </div>
+      <p class="expect">Measured: E = 8,k = 2 &rarr; 28; E = 16,k = 2 &rarr; 120; E = 64,k = 6 &rarr; 74,974,368;
+      E = 160,k = 8 &rarr; 8,917,061,687,820; E = 256,k = 8 &rarr; 409,663,695,276,000. Past E &asymp; 160 the mixture count is
+      astronomically larger than the number of distinct token types, so the binding constraint moves elsewhere &mdash; to
+      per-expert batch size and to routing quality.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; split a dense FFN into shared + routed under a fixed budget</h4>
+      <p>The design calculation: given a target active FFN parameter count and a target total, solve for E, k and width.
+      This is what you would actually do when sizing a model.</p>
+      <div class="code" data-lang="python">
+d = <span class="nm">4096</span>
+<span class="kw">def</span> <span class="fn">expert_params</span>(w): <span class="kw">return</span> <span class="nm">3</span> * d * w
+
+<span class="cm"># dense baseline: one FFN of width 8192</span>
+<span class="fn">print</span>(<span class="st">"dense w=8192 :"</span>, <span class="fn">expert_params</span>(<span class="nm">8192</span>)/<span class="nm">1e6</span>, <span class="st">"M params, all active"</span>)
+
+<span class="cm"># fine-grained: 64 routed experts of width 1024, k=6, plus 2 shared of width 1024</span>
+w = <span class="nm">1024</span>; E = <span class="nm">64</span>; k = <span class="nm">6</span>; ns = <span class="nm">2</span>
+tot = (E + ns) * <span class="fn">expert_params</span>(w)
+act = (k + ns) * <span class="fn">expert_params</span>(w)
+<span class="fn">print</span>(<span class="st">f"64r+2s w=1024: total={tot/1e9:.3f}B active={act/1e9:.3f}B ratio={act/tot:.3f}"</span>)
+
+<span class="cm"># how many shared experts does it take to cover the dense baseline's active compute?</span>
+<span class="kw">for</span> ns <span class="kw">in</span> (<span class="nm">0</span>, <span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">4</span>):
+    act = (k + ns) * <span class="fn">expert_params</span>(w)
+    <span class="fn">print</span>(<span class="st">f"ns={ns}: active={act/1e9:.3f}B ({act/<span class="fn">expert_params</span>(<span class="nm">8192</span>)/1e9:.2f}x a w=8192 dense FFN)"</span>)
+      </div>
+      <p class="expect">Measured: dense w = 8192 is 100,663,296 &asymp; 0.1007B params, all active. With 64 routed + 2 shared experts of width
+      1024, total is 0.830B and active is 0.1007B &mdash; an active/total ratio of 0.121, and an active count that is
+      <em>exactly 1.00&times; the dense baseline</em> (0.101B vs 0.1007B). So the fine-grained design holds the dense model's
+      compute fixed while growing memory 8.2&times; (0.830 / 0.1007). Each shared expert adds 12.58M active params; the
+      &ldquo;ns&rdquo; rows show 0, 1, 2, 4 shared experts giving 0.75&times;, 0.88&times;, 1.00&times;, 1.25&times; the dense
+      active count.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; what redundant knowledge would cost without shared experts</h4>
+      <p>Price the redundancy directly. If a fraction f of each routed expert's capacity is spent on knowledge every token needs,
+      the model is paying f&times;E&times; for it. This is the number shared experts eliminate.</p>
+      <div class="code" data-lang="bash">
+python -c "
+E, w, d = 64, 1024, 4096
+per = 3*d*w
+for f in (0.05, 0.15, 0.30):
+    redundant = f*E*per
+    print(f'if {f:.0%} of each expert is common knowledge: {redundant/1e9:.2f}B params paid {E}x for the same thing')
+print('one shared expert of width 1024 =', per/1e6, 'M params, learned once')
+"
+      </div>
+      <p class="expect">With width 1024 (12,582,912 params per expert) and 64 routed experts: at 5% redundancy you pay 40.3M parameters
+      for duplicated knowledge; at 15%, 120.8M; at 30%, 241.6M. One shared expert of the same width is 12.58M params, learned
+      once. The ratio is simply redundancy fraction &times; E: at 15% and E = 64 you spend 9.6 experts' worth of capacity on
+      the same knowledge twice over. This
+      is the quantitative case for shared experts, and it is why the DeepSeekMoE ablation isolates redundancy as a major loss
+      term on its own.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b32-s5">5 &middot; Failure modes <a class="hook" href="#b32-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Splitting without raising k.</strong> Symptom: you compare a fine-grained model to a coarse one at the same k
+        and it loses &mdash; because you cut each expert's width by E<sub>new</sub>/E<sub>old</sub> without restoring the active
+        budget. The comparison is invalid; always hold active parameters constant when evaluating granularity.</li>
+        <li><strong>Too many shared experts.</strong> Symptom: the model behaves like a dense model of (k + |S|) experts and
+        routed specialisation never develops; routed experts look interchangeable in the load histogram. Shared experts are a
+        minority by design.</li>
+        <li><strong>Routing overhead at large E.</strong> Symptom: throughput drops as E grows even though active FLOPs are
+        constant &mdash; the router matmul (d_model &times; E), the sort over E scores and the all-to-all volume per token
+        (k&times;d) grow with E and k. At E = 256 with k = 8 the communication volume is 4&times; that of k = 2.</li>
+        <li><strong>Expert-parallel imbalance.</strong> Symptom: with E = 160 spread over 8 or 16 GPUs, one GPU holds experts that
+        happen to be hot and becomes the straggler. Per-rank timing variance, not global average load, is the metric.</li>
+        <li><strong>Reproducing from a paper's E and k without its width.</strong> Symptom: your parameter counts do not match the
+        published total/active pair even though you used the same E and k. E and k alone do not determine size &mdash; width and
+        the count of dense layers do, and papers differ on whether embeddings are counted.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b32-s6">6 &middot; Connects to <a class="hook" href="#b32-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L30 (MoE mechanics) and L31 (balancing, including the auxiliary-loss-free bias that V3
+    introduced). &nbsp; <strong>Unlocks:</strong> the MLA + MoE + MTP stack of V3 and the V4 family.</p>
+    <ul>
+      <li><a class="tag-b" href="30-moe.html">L30 &middot; Mixture of Experts</a> &mdash; the vanilla design being refined.</li>
+      <li><a class="tag-b" href="31-moe-routing.html">L31 &middot; Router design &amp; balancing</a> &mdash; auxiliary-loss-free bias first shipped with this architecture.</li>
+      <li><a class="tag-b" href="33-mla.html">L33 &middot; MLA</a> &mdash; the other half of the V2/V3 design (attention side).</li>
+      <li><a class="tag-b" href="36-mtp.html">L36 &middot; Multi-token prediction</a> &mdash; V3's third structural change.</li>
+      <li><a class="tag-b" href="37-encoder-decoder.html">L37 &middot; Encoder&ndash;decoder &amp; the V4.1 asymmetric split</a> &mdash; the same &ldquo;don't pay for unused capacity&rdquo; idea at phase level.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b32-s7">7 &middot; Self-check <a class="hook" href="#b32-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> One coarse expert of width 8192 is split into four fine experts of width 2048. What is the parameter change, and what must you change about routing to exploit the split?</p>
+        <details><summary>Reveal answer</summary><p>Coarse: 3&times;4096&times;8192 = 100,663,296. Four fine: 4 &times; 3&times;4096&times;2048 = 100,663,296. Exactly zero
+        parameter change. To exploit it you must raise k so a token can take more than one fine expert; with k = 1 there are 4 mixtures
+        versus 1, but the expert each token sees is narrower, so the net effect is not automatically positive. The gain comes from
+        choosing <em>different subsets</em> at a fixed total active width.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A model has 160 routed experts (width 2048, d = 4096), k = 8, plus 2 shared experts. Compute total routed parameters, active routed parameters, and the active fraction of routed capacity.</p>
+        <details><summary>Reveal answer</summary><p>Per expert: 3 &times; 4096 &times; 2048 = 25,165,824 &asymp; 25.17M. Total routed:
+        160 &times; 25.17M = 4.027B. Active routed: 8 &times; 25.17M = 201.3M. Active fraction = 8/160 = 5.0%. Shared experts add
+        2 &times; 25.17M = 50.3M always-active. So the FFN sublayer of one layer is 4.03B of memory for 251.7M of work &mdash; a
+        16&times; gap at the layer level.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: your fine-grained MoE has a flat load histogram, healthy entropy, and lower quality than the coarse baseline at equal active FLOPs. Name two candidate causes.</p>
+        <details><summary>Reveal answer</summary><p>(a) The active budget was not held constant &mdash; narrower experts with the same k means less total active width,
+        so you are comparing a smaller model. (b) Too few training tokens for the granularity: more experts means each sees fewer tokens, so
+        specialisation cannot form; the fix is more data or fewer experts. A third possibility is routing overhead being paid in dropped
+        tokens because capacity was computed for the old E.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why do shared experts specifically help fine-grained MoE more than coarse MoE?</p>
+        <details><summary>Reveal answer</summary><p>Fine-grained experts are narrow, so each sees fewer tokens and has less capacity to spend on common
+        knowledge; without a shared expert, the redundancy cost scales with E and the specialisation quality collapses because every small expert
+        must still be a generalist. In a coarse MoE, each expert is large enough to absorb common knowledge cheaply, so the shared-expert gain
+        is smaller. The two design moves are complementary, not independent.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your spec says &ldquo;284B total, 13B active.&rdquo; List the three numbers you still need to reproduce its cost model, and what each decides.</p>
+        <details><summary>Reveal answer</summary><p>(1) Layer count and hidden size &mdash; needed for KV cache and activation memory; (2) KV-cache scheme and
+        per-token cache bytes (MLA vs GQA vs token-wise compression) &mdash; usually the dominant term at long context (L33); (3) expert-parallel
+        topology and interconnect bandwidth &mdash; decides whether all-to-all is affordable. Total/active alone tells you memory and per-token FLOPs
+        but not concurrency, latency or throughput.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="31-moe-routing.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L31 &middot; Router design &amp; load balancing</span></a>
+    <a class="next" href="33-mla.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L33 &middot; MLA: KV compression as low-rank cache</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

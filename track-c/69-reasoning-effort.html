@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c69">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L69 &middot; Thinking mode, reasoning effort, and thinking-in-tool-use &mdash; AILearn</title>
+<meta name="description" content="Effort as a knapsack: greedy allocation across low/high/max with a token and latency budget, per-band marginal accuracy, and loop-level budget leaks.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L69</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L69 &middot; Thinking mode, reasoning effort, and thinking-in-tool-use</h1>
+  <p class="lede">Always thinking hard is unshippable; always thinking fast never solves the hard 5%. Effort is a per-request budget decision with a measurable objective, and the allocator is a knapsack you can compute in twenty lines.</p>
+  <div class="chips">
+    <span class="chip">~25 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: effort-router policy</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">reasoning_effort</span>
+  <span class="pill">thinking tokens</span>
+  <span class="pill">per-band accuracy</span>
+  <span class="pill">marginal accuracy per token</span>
+  <span class="pill">latency ceiling</span>
+  <span class="pill">knapsack routing</span>
+  <span class="pill">thinking in tool-use</span>
+  <span class="pill">escalation</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c69-s1">1 &middot; Why it exists <a class="hook" href="#c69-s1">#</a></h2>
+
+    <p>A model that always thinks as hard as it can is unshippable. A routing question gets 4,000 reasoning
+    tokens; an incident triage call that needs an answer in 300 ms queues behind it. The failure is not
+    accuracy, it is <strong>uncontrolled spend and latency on the majority of traffic that does not need
+    it</strong> &mdash; and the mirror failure: forcing everything to be fast so the hard 5% never gets solved.</p>
+
+    <p><span class="asof">state as of 2026-10</span> Serving stacks expose this directly. The DeepSeek API's
+    <code>deepseek-flash</code> model has a thinking mode with <code>reasoning_effort</code> set to
+    <strong>low</strong>, <strong>high</strong>, or <strong>max</strong>, with thinking tokens billed even though
+    users never see them. That triple is a product interface to a policy decision, and it exists because the
+    cost difference between the levels is large enough to change which workloads are viable.</p>
+
+    <div class="callout boss">
+      <p>Reasoning effort is a budget parameter, and choosing it per request is a routing problem with a
+      measurable objective: maximise accuracy per unit cost under a latency ceiling. The interesting part is
+      that the right level is a property of the <em>request</em>, not of the model &mdash; so effort policy is a
+      classifier you own, not a setting you pick.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c69-s2">2 &middot; The mental model <a class="hook" href="#c69-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> three levels are three points on a cost/accuracy curve. Low is
+    cheap and shallow; high is the default; max is expensive and best only where depth matters. Two things
+    about that curve are routinely forgotten:</p>
+    <ul>
+      <li><strong>It is not monotone in usefulness per dollar.</strong> On easy traffic, max and low give the
+          same answer; on hard traffic, low can be much worse. The gap between levels is the only quantity
+          that matters for routing, and it is band-dependent.</li>
+      <li><strong>Thinking interacts with tools.</strong> The current generation integrates thinking into
+          tool-use: a turn can include reasoning, a tool call, its result, and more reasoning. That means the
+          "effort" budget is spent <em>across</em> a tool loop, not in one block, and a tool call's latency adds
+          to it.</li>
+    </ul>
+
+    <table class="table">
+      <thead><tr><th>Level</th><th>What it is for</th><th>Typical failure if misused</th><th>What to measure</th></tr></thead>
+      <tbody>
+        <tr><td><strong>low</strong></td><td>Classification, extraction, routing, short lookups, latency-critical</td><td>Silently wrong on items that needed multi-step reasoning; errors are confident</td><td>Accuracy on the hard band, not the average</td></tr>
+        <tr><td><strong>high</strong></td><td>Default for analysis and most user-facing reasoning</td><td>Cost on easy traffic where low would have been identical</td><td>Marginal accuracy over low, per 1k tokens</td></tr>
+        <tr><td><strong>max</strong></td><td>Hard problems where depth pays: proofs, multi-constraint planning, debugging</td><td>Latency SLO breach; length inflation without gain</td><td>Accuracy on the hardest band; p95 latency</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "three points on a curve" gets right</h4><p>It makes effort a measurement
+      question. Fit per-band accuracy and cost for each level, and the router falls out of the arithmetic.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>The levels are coarse and the model's behaviour changes with
+      context length and tool availability, so a curve fitted on short single-turn prompts may not describe the
+      same model inside a 40-turn agent loop. Refit per workload, not per model version.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c69-s3">3 &middot; The mechanism <a class="hook" href="#c69-s3">#</a></h2>
+
+    <p>The effort policy, as an optimisation with an explicit constraint:</p>
+
+    <div class="formula">
+      max<sub>e(q)</sub> &nbsp;&Sigma;<sub>q</sub> acc( q, e(q) ) &nbsp;&nbsp;s.t.&nbsp;&nbsp; &Sigma;<sub>q</sub> cost( q, e(q) ) &le; C &nbsp;and&nbsp; p95( latency ) &le; L
+      <span class="note">e(q) is the effort chosen for query q. This is a knapsack: pick the level per request whose marginal accuracy per token is highest, until the budget binds.</span>
+    </div>
+
+    <p>The greedy version is what you implement: sort (queries &times; levels) by marginal accuracy per token
+    and take levels while the budget lasts. The key input is <code>&Delta;acc / &Delta;tokens</code> between
+    adjacent levels on the same band &mdash; if going low &rarr; high buys 2 points for 3,000 extra tokens on a band,
+    that is 0.67 points per 1k tokens, and it competes against every other band's option.</p>
+
+    <p>Below is the whole allocator: a banded table of measured accuracy and cost per effort level, a budget,
+    and a greedy selection. Run it with the default table and then with a different budget.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L69: reasoning effort as a knapsack. Measured per-band table in, per-request levels out.</span>
+<span class="cm"># Pure stdlib.</span>
+TRAFFIC = {<span class="st">"extract"</span>: <span class="nm">0.62</span>, <span class="st">"classify"</span>: <span class="nm">0.24</span>, <span class="st">"analyse"</span>: <span class="nm">0.11</span>, <span class="st">"prove"</span>: <span class="nm">0.03</span>}
+<span class="cm"># (accuracy, TOTAL tokens per request including reasoning tokens)</span>
+LEVELS = {
+    <span class="st">"extract"</span>:  {<span class="st">"low"</span>: (<span class="nm">0.98</span>,   <span class="nm">180</span>), <span class="st">"high"</span>: (<span class="nm">0.98</span>,  <span class="nm">1500</span>), <span class="st">"max"</span>: (<span class="nm">0.98</span>,  <span class="nm">5200</span>)},
+    <span class="st">"classify"</span>: {<span class="st">"low"</span>: (<span class="nm">0.91</span>,   <span class="nm">240</span>), <span class="st">"high"</span>: (<span class="nm">0.93</span>,  <span class="nm">1800</span>), <span class="st">"max"</span>: (<span class="nm">0.93</span>,  <span class="nm">6000</span>)},
+    <span class="st">"analyse"</span>:  {<span class="st">"low"</span>: (<span class="nm">0.61</span>,   <span class="nm">900</span>), <span class="st">"high"</span>: (<span class="nm">0.76</span>,  <span class="nm">4200</span>), <span class="st">"max"</span>: (<span class="nm">0.79</span>, <span class="nm">11000</span>)},
+    <span class="st">"prove"</span>:    {<span class="st">"low"</span>: (<span class="nm">0.18</span>,  <span class="nm">1400</span>), <span class="st">"high"</span>: (<span class="nm">0.44</span>,  <span class="nm">9000</span>), <span class="st">"max"</span>: (<span class="nm">0.52</span>, <span class="nm">24000</span>)},
+}
+BUDGET = <span class="nm">2500.0</span>           <span class="cm"># mean tokens per request you are willing to spend</span>
+
+
+<span class="kw">def</span> evaluate(policy):
+    acc = sum(TRAFFIC[b] * LEVELS[b][policy[b]][<span class="nm">0</span>] <span class="kw">for</span> b <span class="kw">in</span> TRAFFIC)
+    tok = sum(TRAFFIC[b] * LEVELS[b][policy[b]][<span class="nm">1</span>] <span class="kw">for</span> b <span class="kw">in</span> TRAFFIC)
+    <span class="kw">return</span> acc, tok
+
+
+<span class="kw">print</span>(f<span class="st">"{'band':&lt;10}{'share':&gt;7}{'acc low':&gt;9}{'acc high':&gt;9}{'acc max':&gt;8}"</span>
+      f<span class="st">"{'pts/1k low-&gt;high':&gt;19}{'pts/1k high-&gt;max':&gt;19}"</span>)
+<span class="kw">for</span> b, share <span class="kw">in</span> TRAFFIC.items():
+    lo, hi, mx = LEVELS[b][<span class="st">"low"</span>], LEVELS[b][<span class="st">"high"</span>], LEVELS[b][<span class="st">"max"</span>]
+    d1 = (hi[<span class="nm">0</span>] - lo[<span class="nm">0</span>]) / ((hi[<span class="nm">1</span>] - lo[<span class="nm">1</span>]) / <span class="nm">1000</span>)
+    d2 = (mx[<span class="nm">0</span>] - hi[<span class="nm">0</span>]) / ((mx[<span class="nm">1</span>] - hi[<span class="nm">1</span>]) / <span class="nm">1000</span>)
+    <span class="kw">print</span>(f<span class="st">"{b:&lt;10}{share:&gt;7.2f}{lo[0]:&gt;9.2f}{hi[0]:&gt;9.2f}{mx[0]:&gt;8.2f}{d1:&gt;19.3f}{d2:&gt;19.3f}"</span>)
+
+policy = {b: <span class="st">"low"</span> <span class="kw">for</span> b <span class="kw">in</span> TRAFFIC}
+acc, tok = evaluate(policy)
+<span class="kw">print</span>(f<span class="st">"\nall-low baseline: accuracy {acc:.4f} at {tok:.0f} mean tokens/request"</span>)
+
+<span class="cm"># every possible single-level upgrade, ranked by accuracy gained per 1k tokens added</span>
+options = []
+<span class="kw">for</span> b <span class="kw">in</span> TRAFFIC:
+    <span class="kw">for</span> prev, target <span class="kw">in</span> ((<span class="st">"low"</span>, <span class="st">"high"</span>), (<span class="st">"high"</span>, <span class="st">"max"</span>)):
+        a0, t0 = LEVELS[b][prev]
+        a1, t1 = LEVELS[b][target]
+        gain = TRAFFIC[b] * (a1 - a0)
+        add = TRAFFIC[b] * (t1 - t0)
+        <span class="kw">if</span> gain &gt; <span class="nm">1e-12</span>:
+            options.append((gain / (add / <span class="nm">1000</span>), b, prev, target, gain, add))
+options.sort(key=<span class="kw">lambda</span> o: -o[<span class="nm">0</span>])
+
+<span class="kw">print</span>(f<span class="st">"\n{'upgrade':&lt;24}{'pts/1k':&gt;9}{'accuracy':&gt;10}{'mean tok':&gt;10}{'':&gt;4}"</span>)
+<span class="kw">for</span> ratio, b, prev, target, gain, add <span class="kw">in</span> options:
+    <span class="kw">if</span> policy[b] != prev:
+        <span class="kw">continue</span>
+    <span class="kw">if</span> tok + add &gt; BUDGET:
+        <span class="kw">print</span>(f<span class="st">"{b + ' ' + prev + ' -&gt; ' + target:&lt;24}{ratio:&gt;9.3f}{'':&gt;10}{tok + add:&gt;10.0f}   over budget"</span>)
+        <span class="kw">continue</span>
+    policy[b] = target
+    acc += gain
+    tok += add
+    <span class="kw">print</span>(f<span class="st">"{b + ' ' + prev + ' -&gt; ' + target:&lt;24}{ratio:&gt;9.3f}{acc:&gt;10.4f}{tok:&gt;10.0f}   accepted"</span>)
+
+<span class="kw">print</span>(f<span class="st">"\nfinal policy {policy}"</span>)
+<span class="kw">print</span>(f<span class="st">"accuracy {acc:.4f} at {tok:.0f} mean tokens/request (ceiling {BUDGET:.0f})"</span>)
+all_high = {b: <span class="st">"high"</span> <span class="kw">for</span> b <span class="kw">in</span> TRAFFIC}
+a_hi, t_hi = evaluate(all_high)
+<span class="kw">print</span>(f<span class="st">"for comparison, everything on high: accuracy {a_hi:.4f} at {t_hi:.0f} tokens"</span>)
+</div><div class="code out-block" data-lang="output">
+band        share  acc low acc high acc max   pts/1k low-&gt;high   pts/1k high-&gt;max
+extract      0.62     0.98     0.98    0.98              0.000              0.000
+classify     0.24     0.91     0.93    0.93              0.013              0.000
+analyse      0.11     0.61     0.76    0.79              0.045              0.004
+prove        0.03     0.18     0.44    0.52              0.034              0.005
+
+all-low baseline: accuracy 0.8985 at 310 mean tokens/request
+
+upgrade                    pts/1k  accuracy  mean tok    
+analyse low -&gt; high         0.045    0.9150       673   accepted
+prove low -&gt; high           0.034    0.9228       901   accepted
+classify low -&gt; high        0.013    0.9276      1276   accepted
+prove high -&gt; max           0.005    0.9300      1726   accepted
+analyse high -&gt; max         0.004    0.9333      2474   accepted
+
+final policy {'extract': 'low', 'classify': 'high', 'analyse': 'max', 'prove': 'max'}
+accuracy 0.9333 at 2474 mean tokens/request (ceiling 2500)
+for comparison, everything on high: accuracy 0.9276 at 2094 tokens
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c69-s4">4 &middot; Your hands <a class="hook" href="#c69-s4">#</a></h2>
+
+    <p>Three labs: allocate a token budget greedily across bands and levels, price a latency ceiling, and
+    compute the marginal return of the third level on your own traffic.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; run the allocator on a four-band traffic mix</h4>
+      <p>A measured table of accuracy and total tokens per request for each band and level, a 2,500-token mean budget, and every possible single-level upgrade ranked by accuracy gained per 1k tokens added.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L69: reasoning effort as a knapsack. Measured per-band table in, per-request levels out.</span>
+<span class="cm"># Pure stdlib.</span>
+TRAFFIC = {<span class="st">"extract"</span>: <span class="nm">0.62</span>, <span class="st">"classify"</span>: <span class="nm">0.24</span>, <span class="st">"analyse"</span>: <span class="nm">0.11</span>, <span class="st">"prove"</span>: <span class="nm">0.03</span>}
+<span class="cm"># (accuracy, TOTAL tokens per request including reasoning tokens)</span>
+LEVELS = {
+    <span class="st">"extract"</span>:  {<span class="st">"low"</span>: (<span class="nm">0.98</span>,   <span class="nm">180</span>), <span class="st">"high"</span>: (<span class="nm">0.98</span>,  <span class="nm">1500</span>), <span class="st">"max"</span>: (<span class="nm">0.98</span>,  <span class="nm">5200</span>)},
+    <span class="st">"classify"</span>: {<span class="st">"low"</span>: (<span class="nm">0.91</span>,   <span class="nm">240</span>), <span class="st">"high"</span>: (<span class="nm">0.93</span>,  <span class="nm">1800</span>), <span class="st">"max"</span>: (<span class="nm">0.93</span>,  <span class="nm">6000</span>)},
+    <span class="st">"analyse"</span>:  {<span class="st">"low"</span>: (<span class="nm">0.61</span>,   <span class="nm">900</span>), <span class="st">"high"</span>: (<span class="nm">0.76</span>,  <span class="nm">4200</span>), <span class="st">"max"</span>: (<span class="nm">0.79</span>, <span class="nm">11000</span>)},
+    <span class="st">"prove"</span>:    {<span class="st">"low"</span>: (<span class="nm">0.18</span>,  <span class="nm">1400</span>), <span class="st">"high"</span>: (<span class="nm">0.44</span>,  <span class="nm">9000</span>), <span class="st">"max"</span>: (<span class="nm">0.52</span>, <span class="nm">24000</span>)},
+}
+BUDGET = <span class="nm">2500.0</span>           <span class="cm"># mean tokens per request you are willing to spend</span>
+
+
+<span class="kw">def</span> evaluate(policy):
+    acc = sum(TRAFFIC[b] * LEVELS[b][policy[b]][<span class="nm">0</span>] <span class="kw">for</span> b <span class="kw">in</span> TRAFFIC)
+    tok = sum(TRAFFIC[b] * LEVELS[b][policy[b]][<span class="nm">1</span>] <span class="kw">for</span> b <span class="kw">in</span> TRAFFIC)
+    <span class="kw">return</span> acc, tok
+
+
+<span class="kw">print</span>(f<span class="st">"{'band':&lt;10}{'share':&gt;7}{'acc low':&gt;9}{'acc high':&gt;9}{'acc max':&gt;8}"</span>
+      f<span class="st">"{'pts/1k low-&gt;high':&gt;19}{'pts/1k high-&gt;max':&gt;19}"</span>)
+<span class="kw">for</span> b, share <span class="kw">in</span> TRAFFIC.items():
+    lo, hi, mx = LEVELS[b][<span class="st">"low"</span>], LEVELS[b][<span class="st">"high"</span>], LEVELS[b][<span class="st">"max"</span>]
+    d1 = (hi[<span class="nm">0</span>] - lo[<span class="nm">0</span>]) / ((hi[<span class="nm">1</span>] - lo[<span class="nm">1</span>]) / <span class="nm">1000</span>)
+    d2 = (mx[<span class="nm">0</span>] - hi[<span class="nm">0</span>]) / ((mx[<span class="nm">1</span>] - hi[<span class="nm">1</span>]) / <span class="nm">1000</span>)
+    <span class="kw">print</span>(f<span class="st">"{b:&lt;10}{share:&gt;7.2f}{lo[0]:&gt;9.2f}{hi[0]:&gt;9.2f}{mx[0]:&gt;8.2f}{d1:&gt;19.3f}{d2:&gt;19.3f}"</span>)
+
+policy = {b: <span class="st">"low"</span> <span class="kw">for</span> b <span class="kw">in</span> TRAFFIC}
+acc, tok = evaluate(policy)
+<span class="kw">print</span>(f<span class="st">"\nall-low baseline: accuracy {acc:.4f} at {tok:.0f} mean tokens/request"</span>)
+
+<span class="cm"># every possible single-level upgrade, ranked by accuracy gained per 1k tokens added</span>
+options = []
+<span class="kw">for</span> b <span class="kw">in</span> TRAFFIC:
+    <span class="kw">for</span> prev, target <span class="kw">in</span> ((<span class="st">"low"</span>, <span class="st">"high"</span>), (<span class="st">"high"</span>, <span class="st">"max"</span>)):
+        a0, t0 = LEVELS[b][prev]
+        a1, t1 = LEVELS[b][target]
+        gain = TRAFFIC[b] * (a1 - a0)
+        add = TRAFFIC[b] * (t1 - t0)
+        <span class="kw">if</span> gain &gt; <span class="nm">1e-12</span>:
+            options.append((gain / (add / <span class="nm">1000</span>), b, prev, target, gain, add))
+options.sort(key=<span class="kw">lambda</span> o: -o[<span class="nm">0</span>])
+
+<span class="kw">print</span>(f<span class="st">"\n{'upgrade':&lt;24}{'pts/1k':&gt;9}{'accuracy':&gt;10}{'mean tok':&gt;10}{'':&gt;4}"</span>)
+<span class="kw">for</span> ratio, b, prev, target, gain, add <span class="kw">in</span> options:
+    <span class="kw">if</span> policy[b] != prev:
+        <span class="kw">continue</span>
+    <span class="kw">if</span> tok + add &gt; BUDGET:
+        <span class="kw">print</span>(f<span class="st">"{b + ' ' + prev + ' -&gt; ' + target:&lt;24}{ratio:&gt;9.3f}{'':&gt;10}{tok + add:&gt;10.0f}   over budget"</span>)
+        <span class="kw">continue</span>
+    policy[b] = target
+    acc += gain
+    tok += add
+    <span class="kw">print</span>(f<span class="st">"{b + ' ' + prev + ' -&gt; ' + target:&lt;24}{ratio:&gt;9.3f}{acc:&gt;10.4f}{tok:&gt;10.0f}   accepted"</span>)
+
+<span class="kw">print</span>(f<span class="st">"\nfinal policy {policy}"</span>)
+<span class="kw">print</span>(f<span class="st">"accuracy {acc:.4f} at {tok:.0f} mean tokens/request (ceiling {BUDGET:.0f})"</span>)
+all_high = {b: <span class="st">"high"</span> <span class="kw">for</span> b <span class="kw">in</span> TRAFFIC}
+a_hi, t_hi = evaluate(all_high)
+<span class="kw">print</span>(f<span class="st">"for comparison, everything on high: accuracy {a_hi:.4f} at {t_hi:.0f} tokens"</span>)
+</div><div class="code out-block" data-lang="output">
+band        share  acc low acc high acc max   pts/1k low-&gt;high   pts/1k high-&gt;max
+extract      0.62     0.98     0.98    0.98              0.000              0.000
+classify     0.24     0.91     0.93    0.93              0.013              0.000
+analyse      0.11     0.61     0.76    0.79              0.045              0.004
+prove        0.03     0.18     0.44    0.52              0.034              0.005
+
+all-low baseline: accuracy 0.8985 at 310 mean tokens/request
+
+upgrade                    pts/1k  accuracy  mean tok    
+analyse low -&gt; high         0.045    0.9150       673   accepted
+prove low -&gt; high           0.034    0.9228       901   accepted
+classify low -&gt; high        0.013    0.9276      1276   accepted
+prove high -&gt; max           0.005    0.9300      1726   accepted
+analyse high -&gt; max         0.004    0.9333      2474   accepted
+
+final policy {'extract': 'low', 'classify': 'high', 'analyse': 'max', 'prove': 'max'}
+accuracy 0.9333 at 2474 mean tokens/request (ceiling 2500)
+for comparison, everything on high: accuracy 0.9276 at 2094 tokens
+</div>
+      <p class="expect">Greedy buys analyse low &rarr; high first (0.045 pts/1k), then prove low &rarr; high, classify, then the two max upgrades at less than 0.005 pts/1k. The result: 0.9333 accuracy at 2,474 tokens, against 0.9276 at 2,094 for everything-on-high. The router spends 18% more and buys 0.6 points &mdash; and if your budget is the binding constraint, the honest answer is that neither is obviously right until you price the accuracy point.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; no budget increase, different traffic mix</h4>
+      <p>Set <code>BUDGET = 1200</code> and re-run. Then change <code>TRAFFIC</code> so <code>prove</code> is 20% of requests and <code>extract</code> is 40%.</p>
+<div class="code" data-lang="python">
+BUDGET = <span class="nm">1200.0</span>
+TRAFFIC = {<span class="st">"extract"</span>: <span class="nm">0.40</span>, <span class="st">"classify"</span>: <span class="nm">0.19</span>, <span class="st">"analyse"</span>: <span class="nm">0.21</span>, <span class="st">"prove"</span>: <span class="nm">0.20</span>}
+</div>
+      <p class="expect">With a 1,200-token budget the greedy list stops after the first two upgrades, and max never appears &mdash; the allocator refuses the expensive level because it cannot afford it, which is the correct behaviour and a useful thing to be able to show in a design review. With 'prove' at 20% of traffic, the prove upgrade becomes the single most valuable item, because its weight in the objective changed.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; find the loop-level leak</h4>
+      <p>Effort is set per turn, but the budget you care about is per task. Measure both, for the same workload.</p>
+      <div class="code" data-lang="text">
+single-turn probe   :  mean 2,100 tokens/request at effort=low
+agent loop, 5 turns :  mean 11,400 tokens/task   at effort=low   &lt;- 5.4x
+per-turn reasoning  :  turn 1 3,100  turn 2 2,400  turn 3 2,100  turn 4 1,900  turn 5 1,900
+re-derivation share :  turns 3-5 restate context that turn 1 already established
+      </div>
+      <p class="expect">The leak is in turns 3-5, which re-derive established context. Budget the task, not the request: cap total"
+      " reasoning tokens across the loop, and lower effort on continuation turns where the context is already in the window. A"
+      " single-turn measurement would have told you the workload was cheap.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c69-s5">5 &middot; Failure modes <a class="hook" href="#c69-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Uniform 'high'.</strong> Symptom: cost scales with traffic while accuracy on the easy bands was already at ceiling; the marginal accuracy over low is under one standard error.</li>
+        <li><strong>Effort chosen by the model's self-report.</strong> Symptom: the model says the question is easy and gets it wrong; the classifier was never validated against outcomes.</li>
+        <li><strong>Thinking tokens unaccounted.</strong> Symptom: the cost model and the invoice disagree by a factor; reasoning tokens are billed but absent from the response the cost model counted.</li>
+        <li><strong>Latency p95 breach from max.</strong> Symptom: a small fraction of max-effort requests dominate p95 and blow the SLO for everyone; measure per-level latency, not the average.</li>
+        <li><strong>Tool-loop budget leak.</strong> Symptom: an agent asked for 'low' effort still burns 30k tokens because each tool turn re-reasons; the effort setting applies per turn, not per task.</li>
+        <li><strong>Refusal to escalate.</strong> Symptom: hard items stay on low because the router cannot detect them; the fix is a cheap confidence check and one escalation step, not a global bump.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Report accuracy and cost per effort level per band, plus p95 latency per level. A single "we reduced
+      cost 40% by defaulting to low" is not a result until the per-band accuracy table is beside it &mdash; the
+      reduction may be entirely on the band where accuracy fell 15 points.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c69-s6">6 &middot; Connects to <a class="hook" href="#c69-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="61-test-time-compute.html">L61 &middot; Test-time compute</a>,
+    <a class="tag-c" href="62-long-cot-r1.html">L62 &middot; Long CoT</a>,
+    <a class="tag-c" href="70-tool-use-training.html">L70 &middot; Tool-use training</a>.</p>
+    <p><strong>Unlocks:</strong> production routing and cascade design.</p>
+
+    <ul>
+      <li><a class="tag-d" href="../track-d/91-cost-latency.html">L91 &middot; Cost &amp; latency</a> &mdash; the serving-level view of the same decision.</li>
+      <li><a class="tag-d" href="../track-d/79-context-engineering.html">L79 &middot; Context engineering</a> &mdash; how thinking tokens interact with a context budget.</li>
+      <li><a class="tag-c" href="61-test-time-compute.html">L61 &middot; Test-time compute</a> &mdash; the allocator this page specialises.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c69-s7">7 &middot; Self-check <a class="hook" href="#c69-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Three levels, a band where low/high/max give 0.61/0.72/0.74 accuracy at 300/2800/9000 tokens. Which level do you default to for that band and why?</p>
+        <details><summary>Reveal answer</summary><p>It depends on the budget, but the marginal numbers are the argument: low &rarr; high costs 2,500 tokens for 11 points(4.4 points per 1k tokens); high &rarr; max costs 6,200 tokens for 2 points (0.32 points per 1k tokens). Max is 14x lessefficient on this band. Unless the budget is slack and the band is critical, the default is high with max reserved for aflagged subset.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why must reasoning tokens be in the cost model even though the user never sees them?</p>
+        <details><summary>Reveal answer</summary><p>Because they are billed and they occupy the context and the latency. A cost model built from response length underestimatesspend by the reasoning/reply ratio, which can be an order of magnitude. The practical consequence: cascade economics computedfrom visible tokens can recommend a configuration that loses money.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: p95 latency breached, mean latency fine, after enabling max effort. What is the mechanism and what do you measure?</p>
+        <details><summary>Reveal answer</summary><p>A small tail of requests consumes a large fraction of the total time: max effort has a long-tailed token distribution, so a fewrequests produce multi-second generations and dominate p95. Measure latency per effort level and per band, and the share ofrequests at max. The fix is a concurrency cap on max-effort requests or a stricter routing rule, not a faster model.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> In a multi-turn agent loop, what does 'low effort' actually control, and what is the trap?</p>
+        <details><summary>Reveal answer</summary><p>It applies per turn, not per task. An agent that uses five tool calls spends the effort budget five times, and each turn'sreasoning may re-derive context it already had. The trap is budgeting from a single-turn measurement: a workload that measured2k tokens per request may cost 12k per task in a loop. Measure per task.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> How would you validate an effort router that predicts difficulty?</p>
+        <details><summary>Reveal answer</summary><p>Hold out a labelled set, let the router pick the level, and compare end-to-end accuracy and cost against two baselines: always-highand always-low. The router only earns its complexity if it beats always-high on cost without losing accuracy, and beats always-lowon accuracy without exceeding the cost budget. Report per-band confusion between predicted and actual difficulty; the failure thatmatters is sending hard items to low.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="68-self-feedback.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L68 &middot; RL with self-feedback and its failure modes</span></a>
+    <a class="next" href="70-tool-use-training.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L70 &middot; Training tool use: format, execution feedback, recovery</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

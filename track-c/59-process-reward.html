@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c59">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L59 &middot; Process rewards and step-level verification &mdash; AILearn</title>
+<meta name="description" content="Outcome vs process reward, potential-based credit assignment, PRM failure modes, and the adversarial test every step scorer needs.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L59</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L59 &middot; Process rewards and step-level verification</h1>
+  <p class="lede">Outcome reward cannot tell a 90%-correct trace from nonsense, so it pushes on both equally. Process reward can assign credit to the step that failed &mdash; and can also teach rhetorical form instead of reasoning. This page does the credit arithmetic and then attacks the verifier.</p>
+  <div class="chips">
+    <span class="chip">~26 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: a process verifier</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">outcome reward</span>
+  <span class="pill">process reward</span>
+  <span class="pill">potential-based shaping</span>
+  <span class="pill">step-level labels</span>
+  <span class="pill">credit assignment</span>
+  <span class="pill">PRM</span>
+  <span class="pill">MCTS-derived targets</span>
+  <span class="pill">step definition</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c59-s1">1 &middot; Why it exists <a class="hook" href="#c59-s1">#</a></h2>
+
+    <p>Outcome-only reward has a specific, structural blind spot: <strong>credit assignment over the steps of a
+    trajectory with a single scalar at the end</strong>. Four reasoning steps, one of which is wrong, give the
+    same reward as a lucky guess that happens to land on the right answer. The estimator cannot tell them
+    apart, so the policy gradient pushes on all four steps equally &mdash; leaving promising prefixes that
+    later fail with no reward, and forcing promising prefixes that later succeed with equal weight.</p>
+
+    <p>The failure this lesson is about is subtler than "sparse reward is hard". It is that <em>outcome reward is
+    systematically wrong about credit</em>, which has two named consequences:</p>
+    <ul>
+      <li><strong>Wasted prefixes.</strong> A reasoning trace that is 90% correct and fails at the last step scores
+        0, exactly like a trace that was nonsense from the first token. The gradient pushes both down.</li>
+      <li><strong>Learned bad habits that succeed.</strong> If a shortcut occasionally reaches the right answer, outcome
+        reward reinforces the shortcut at every step that preceded it. Process reward can object at the step
+        where the shortcut appeared; outcome reward cannot see it.</li>
+    </ul>
+
+    <div class="callout boss">
+      <p>Outcome reward answers "was the answer right?". Process reward answers "was each step warranted by the
+      steps before it?". Only the second can assign credit, but only the first is verifiable from a program's
+      output. That asymmetry &mdash; process reward must be <em>learned</em> or machine-checked, outcome reward can be
+      <em>computed</em> &mdash; is the whole tradeoff.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c59-s2">2 &middot; The mental model <a class="hook" href="#c59-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> a reward is a function on a trajectory; a process reward defines a
+    potential on states, and credit is the difference of potentials along the path.</p>
+
+    <div class="formula">
+      R<sub>outcome</sub>(&tau;) = r(x, y<sub>T</sub>)<br>
+      R<sub>process</sub>(&tau;) = &Sigma;<sub>t</sub> &gamma;<sup>t</sup> r<sub>step</sub>(s<sub>t</sub>, a<sub>t</sub>) &nbsp;&nbsp;or&nbsp;&nbsp; A&#770;<sub>t</sub> = &gamma;V(s<sub>t+1</sub>) &minus; V(s<sub>t</sub>) &nbsp;(potential-based)
+      <span class="note">r<sub>step</sub> scores a single step. Potential-based shaping (difference of a value function) is the only form that provably does not change the optimal policy.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Signal</th><th>How you obtain it</th><th>What it fixes</th><th>What it introduces</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Outcome</strong></td><td>Run the grader on the final answer</td><td>Nothing. It is the ground truth you want.</td><td>Sparse, uninformative credit</td></tr>
+        <tr><td><strong>Learned step model (PRM)</strong></td><td>Train a classifier on step-level labels or on search-derived labels</td><td>Assigns credit to steps, and is queryable at inference as a verifier</td><td>The reward-model problem moved one level down; step labels are expensive and ambiguous</td></tr>
+        <tr><td><strong>Machine-checked step rules</strong></td><td>A checker per step type (type errors, impossible arithmetic, citation mismatch)</td><td>Cheap, exact, deterministic on what it covers</td><td>Only covers the step types you thought of &mdash; a whitelist, not a judge</td></tr>
+        <tr><td><strong>Search-derived step targets (MCTS-style)</strong></td><td>Value of each prefix = success rate of rollouts continuing from it</td><td>No step labels needed; targets are empirical</td><td>Cost is exponential in branching; targets are noisy at low sample counts</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>What "denser signal is better" gets right</h4><p>Credit assignment is a variance problem.
+      A per-step potential cuts the variance of the advantage estimate by orders of magnitude on long traces,
+      and that is measurable in the lab below.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Dense signal can be <em>wrong</em> in a way sparse signal cannot be.
+      An outcome is checkable; a step judgement is an opinion, and the policy will optimise the opinion. A
+      process reward that prefers "looks like careful logic" teaches rhetorical form, not reasoning.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c59-s3">3 &middot; The mechanism <a class="hook" href="#c59-s3">#</a></h2>
+
+    <p>The potential-based formulation is the one to use when you can compute a per-step value, because it is
+    the only shaping that is guaranteed not to change the optimal policy:</p>
+
+    <div class="formula">
+      r&prime;(s<sub>t</sub>, a<sub>t</sub>) = r(s<sub>t</sub>, a<sub>t</sub>) &minus; V<sub>ref</sub>(s<sub>t</sub>) + &gamma;V<sub>ref</sub>(s<sub>t+1</sub>)
+      <span class="note">V<sub>ref</sub> is any potential; the discounted sum telescopes, so total shaping over a full trajectory equals &minus;V(s<sub>0</sub>), which does not depend on the policy.</span>
+    </div>
+
+    <p>Prerequisite for the lab: a "step" must be defined. In a reasoning trace a step is a sentence or a
+    line; in an agent trajectory it is a tool call plus its observation. Choose it explicitly, because the
+    reward's resolution is exactly the step size.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L59 Lab 1: outcome vs process reward. Frozen numbers, hand-checkable, no simulation.</span>
+steps = [
+    <span class="st">"s0 restate the constraint"</span>,
+    <span class="st">"s1 convert units: 45 min = 0.75 h"</span>,
+    <span class="st">"s2 distance = speed * time"</span>,
+    <span class="st">"s3 multiply 60 * 0.25 instead of 60 * 0.75  &lt;-- error"</span>,
+    <span class="st">"s4 report 15 km"</span>,
+]
+V = [<span class="nm">0.95</span>, <span class="nm">0.90</span>, <span class="nm">0.80</span>, <span class="nm">0.25</span>, <span class="nm">1.0</span>]     <span class="cm"># potential = success rate of continuing from here</span>
+GAMMA = <span class="nm">1.0</span>
+OUTCOME = <span class="nm">0.0</span>                          <span class="cm"># the final answer is wrong</span>
+PRM = [<span class="nm">0.90</span>, <span class="nm">0.80</span>, <span class="nm">0.75</span>, <span class="nm">0.20</span>, <span class="nm">0.10</span>]   <span class="cm"># learned step scores</span>
+
+<span class="kw">print</span>(f<span class="st">"{'step':&lt;48}{'shaped r':&gt;9}{'PRM':&gt;7}"</span>)
+<span class="kw">for</span> t <span class="kw">in</span> range(len(steps) - <span class="nm">1</span>):
+    <span class="kw">print</span>(f<span class="st">"{steps[t]:&lt;48}{GAMMA * V[t + 1] - V[t]:&gt;9.2f}{PRM[t]:&gt;7.2f}"</span>)
+<span class="kw">print</span>(f<span class="st">"{steps[-1]:&lt;48}{OUTCOME:&gt;9.2f}{PRM[-1]:&gt;7.2f}  &lt;- terminal"</span>)
+
+total = sum(GAMMA * V[t + <span class="nm">1</span>] - V[t] <span class="kw">for</span> t <span class="kw">in</span> range(len(steps) - <span class="nm">1</span>))
+<span class="kw">print</span>(f<span class="st">"\nsum of potential differences = {total:+.2f}"</span>)
+<span class="kw">print</span>(f<span class="st">"state potential V(s0) = {V[0]:.2f}, so with gamma=1 the terminal potential cancels exactly."</span>)
+<span class="kw">print</span>(<span class="st">"outcome reward credits all 5 steps with 0.0; potential-based credit lands at s3."</span>)
+</div><div class="code out-block" data-lang="output">
+step                                             shaped r    PRM
+s0 restate the constraint                           -0.05   0.90
+s1 convert units: 45 min = 0.75 h                   -0.10   0.80
+s2 distance = speed * time                          -0.55   0.75
+s3 multiply 60 * 0.25 instead of 60 * 0.75  &lt;-- error     0.75   0.20
+s4 report 15 km                                      0.00   0.10  &lt;- terminal
+
+sum of potential differences = +0.05
+state potential V(s0) = 0.95, so with gamma=1 the terminal potential cancels exactly.
+outcome reward credits all 5 steps with 0.0; potential-based credit lands at s3.
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c59-s4">4 &middot; Your hands <a class="hook" href="#c59-s4">#</a></h2>
+
+    <p>Three labs. The first shows the credit-assignment arithmetic on a declared sequence of steps so there is
+    nothing to simulate; the second runs a 12-line PRM; the third runs the adversarial test that you should
+    write before trusting any step scorer.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; localise the error with potentials</h4>
+      <p>Five declared steps, one of which is wrong. The potentials are success rates of continuing from that point; the outcome reward is a single 0 at the end.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L59 Lab 1: outcome vs process reward. Frozen numbers, hand-checkable, no simulation.</span>
+steps = [
+    <span class="st">"s0 restate the constraint"</span>,
+    <span class="st">"s1 convert units: 45 min = 0.75 h"</span>,
+    <span class="st">"s2 distance = speed * time"</span>,
+    <span class="st">"s3 multiply 60 * 0.25 instead of 60 * 0.75  &lt;-- error"</span>,
+    <span class="st">"s4 report 15 km"</span>,
+]
+V = [<span class="nm">0.95</span>, <span class="nm">0.90</span>, <span class="nm">0.80</span>, <span class="nm">0.25</span>, <span class="nm">1.0</span>]     <span class="cm"># potential = success rate of continuing from here</span>
+GAMMA = <span class="nm">1.0</span>
+OUTCOME = <span class="nm">0.0</span>                          <span class="cm"># the final answer is wrong</span>
+PRM = [<span class="nm">0.90</span>, <span class="nm">0.80</span>, <span class="nm">0.75</span>, <span class="nm">0.20</span>, <span class="nm">0.10</span>]   <span class="cm"># learned step scores</span>
+
+<span class="kw">print</span>(f<span class="st">"{'step':&lt;48}{'shaped r':&gt;9}{'PRM':&gt;7}"</span>)
+<span class="kw">for</span> t <span class="kw">in</span> range(len(steps) - <span class="nm">1</span>):
+    <span class="kw">print</span>(f<span class="st">"{steps[t]:&lt;48}{GAMMA * V[t + 1] - V[t]:&gt;9.2f}{PRM[t]:&gt;7.2f}"</span>)
+<span class="kw">print</span>(f<span class="st">"{steps[-1]:&lt;48}{OUTCOME:&gt;9.2f}{PRM[-1]:&gt;7.2f}  &lt;- terminal"</span>)
+
+total = sum(GAMMA * V[t + <span class="nm">1</span>] - V[t] <span class="kw">for</span> t <span class="kw">in</span> range(len(steps) - <span class="nm">1</span>))
+<span class="kw">print</span>(f<span class="st">"\nsum of potential differences = {total:+.2f}"</span>)
+<span class="kw">print</span>(f<span class="st">"state potential V(s0) = {V[0]:.2f}, so with gamma=1 the terminal potential cancels exactly."</span>)
+<span class="kw">print</span>(<span class="st">"outcome reward credits all 5 steps with 0.0; potential-based credit lands at s3."</span>)
+</div><div class="code out-block" data-lang="output">
+step                                             shaped r    PRM
+s0 restate the constraint                           -0.05   0.90
+s1 convert units: 45 min = 0.75 h                   -0.10   0.80
+s2 distance = speed * time                          -0.55   0.75
+s3 multiply 60 * 0.25 instead of 60 * 0.75  &lt;-- error     0.75   0.20
+s4 report 15 km                                      0.00   0.10  &lt;- terminal
+
+sum of potential differences = +0.05
+state potential V(s0) = 0.95, so with gamma=1 the terminal potential cancels exactly.
+outcome reward credits all 5 steps with 0.0; potential-based credit lands at s3.
+</div>
+      <p class="expect">Outcome reward gives every step 0.0. Potential-based credit is roughly &minus;0.05, &minus;0.10, then &minus;0.55 at the step that collapses the potential, then positive at the fix. The sum over the episode equals &minus;V(s0) plus the terminal value, which is the telescoping guarantee &mdash; check it by hand, it is two lines.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; does the PRM track logic or confidence?</h4>
+      <p>Ten traces described by two features: logic validity and confident-sounding wording. Fit a PRM on each feature set and compare its probability of correctness.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L59 Lab 2 + adversarial test: is a step verifier a proxy for correctness, or for confidence?</span>
+<span class="cm"># Pure stdlib. Logistic regression on step-level features.</span>
+<span class="kw">import</span> math
+
+<span class="cm"># Each trace: logic quality (fraction of valid steps), flourish (confident/careful wording), correct?</span>
+TRACES = [
+    (<span class="nm">0.95</span>, <span class="nm">0.20</span>, <span class="kw">True</span>),
+    (<span class="nm">0.90</span>, <span class="nm">0.30</span>, <span class="kw">True</span>),
+    (<span class="nm">0.85</span>, <span class="nm">0.10</span>, <span class="kw">True</span>),
+    (<span class="nm">0.75</span>, <span class="nm">0.90</span>, <span class="kw">False</span>),    <span class="cm"># confident-sounding AND wrong -- the adversarial case</span>
+    (<span class="nm">0.70</span>, <span class="nm">0.95</span>, <span class="kw">False</span>),
+    (<span class="nm">0.40</span>, <span class="nm">0.20</span>, <span class="kw">False</span>),
+    (<span class="nm">0.35</span>, <span class="nm">0.10</span>, <span class="kw">False</span>),
+    (<span class="nm">0.60</span>, <span class="nm">0.50</span>, <span class="kw">True</span>),
+    (<span class="nm">0.55</span>, <span class="nm">0.60</span>, <span class="kw">False</span>),
+    (<span class="nm">0.80</span>, <span class="nm">0.40</span>, <span class="kw">True</span>),
+]
+
+
+<span class="kw">def</span> fit(feats, labels, ridge=<span class="nm">1e-2</span>, steps=<span class="nm">4000</span>, lr=<span class="nm">0.5</span>):
+    w = [<span class="nm">0.0</span>] * len(feats[<span class="nm">0</span>])
+    <span class="kw">for</span> _ <span class="kw">in</span> range(steps):
+        g = [<span class="nm">0.0</span>] * len(w)
+        <span class="kw">for</span> f, y <span class="kw">in</span> zip(feats, labels):
+            z = sum(wi * fi <span class="kw">for</span> wi, fi <span class="kw">in</span> zip(w, f))
+            p = <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z))
+            <span class="kw">for</span> i <span class="kw">in</span> range(len(w)):
+                g[i] += (y - p) * f[i]
+        <span class="kw">for</span> i <span class="kw">in</span> range(len(w)):
+            w[i] += lr * (g[i] / len(feats) - ridge * w[i])
+    <span class="kw">return</span> w
+
+
+<span class="kw">def</span> s(w, f):
+    z = sum(wi * fi <span class="kw">for</span> wi, fi <span class="kw">in</span> zip(w, f))
+    <span class="kw">return</span> <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z))
+
+
+y = [<span class="nm">1.0</span> <span class="kw">if</span> t[<span class="nm">2</span>] <span class="kw">else</span> <span class="nm">0.0</span> <span class="kw">for</span> t <span class="kw">in</span> TRACES]
+w_logic = fit([(t[<span class="nm">0</span>],) <span class="kw">for</span> t <span class="kw">in</span> TRACES], y)
+w_full = fit([(t[<span class="nm">0</span>], t[<span class="nm">1</span>]) <span class="kw">for</span> t <span class="kw">in</span> TRACES], y)
+
+<span class="kw">print</span>(<span class="st">"PRM(logic)           : weights ="</span>, [round(x, <span class="nm">3</span>) <span class="kw">for</span> x <span class="kw">in</span> w_logic])
+<span class="kw">print</span>(<span class="st">"PRM(logic + flourish): weights ="</span>, [round(x, <span class="nm">3</span>) <span class="kw">for</span> x <span class="kw">in</span> w_full], <span class="st">"&lt;- flourish learned as a NEGATIVE predictor"</span>)
+<span class="kw">print</span>(f<span class="st">"\n{'trace':&lt;34}{'PRM(logic)':&gt;12}{'PRM(both)':&gt;11}"</span>)
+<span class="kw">for</span> lg, fl, ok <span class="kw">in</span> TRACES:
+    <span class="kw">print</span>(f<span class="st">"logic={lg:.2f} flourish={fl:.2f} {'right' if ok else 'WRONG':&lt;6}"</span>
+          f<span class="st">"{s(w_logic, (lg,)):&gt;12.3f}{s(w_full, (lg, fl)):&gt;11.3f}"</span>)
+
+a = (<span class="nm">0.75</span>, <span class="nm">0.90</span>)      <span class="cm"># confident and wrong</span>
+b = (<span class="nm">0.85</span>, <span class="nm">0.10</span>)      <span class="cm"># plain and right</span>
+<span class="kw">print</span>(f<span class="st">"\nadversarial pair: confident-WRONG={s(w_full, a):.3f} vs plain-RIGHT={s(w_full, b):.3f}"</span>)
+<span class="kw">print</span>(<span class="st">"rank correlation between PRM(both) and correctness, over the 10 traces:"</span>)
+sa = sorted(range(len(TRACES)), key=<span class="kw">lambda</span> i: s(w_full, TRACES[i][:<span class="nm">2</span>]))
+sb = sorted(range(len(TRACES)), key=<span class="kw">lambda</span> i: y[i])
+<span class="kw">import</span> statistics
+ra = [<span class="nm">0</span>] * <span class="nm">10</span>
+rb = [<span class="nm">0</span>] * <span class="nm">10</span>
+<span class="kw">for</span> rank, i <span class="kw">in</span> enumerate(sa):
+    ra[i] = rank
+<span class="kw">for</span> rank, i <span class="kw">in</span> enumerate(sb):
+    rb[i] = rank
+<span class="kw">print</span>(<span class="st">"  Spearman-style rank agreement:"</span>, round(statistics.correlation(ra, rb), <span class="nm">3</span>))
+</div><div class="code out-block" data-lang="output">
+PRM(logic)           : weights = [0.499]
+PRM(logic + flourish): weights = [2.089, -2.859] &lt;- flourish learned as a NEGATIVE predictor
+
+trace                               PRM(logic)  PRM(both)
+logic=0.95 flourish=0.20 right        0.616      0.804
+logic=0.90 flourish=0.30 right        0.611      0.735
+logic=0.85 flourish=0.10 right        0.605      0.816
+logic=0.75 flourish=0.90 WRONG        0.593      0.268
+logic=0.70 flourish=0.95 WRONG        0.587      0.222
+logic=0.40 flourish=0.20 WRONG        0.550      0.566
+logic=0.35 flourish=0.10 WRONG        0.544      0.609
+logic=0.60 flourish=0.50 right        0.574      0.456
+logic=0.55 flourish=0.60 WRONG        0.568      0.362
+logic=0.80 flourish=0.40 right        0.599      0.629
+
+adversarial pair: confident-WRONG=0.268 vs plain-RIGHT=0.816
+rank correlation between PRM(both) and correctness, over the 10 traces:
+  Spearman-style rank agreement: 0.624
+</div>
+      <p class="expect">The model that sees wording learns a large NEGATIVE weight for flourish &mdash; and still mis-ranks the plainly stated right answer against the wrong one on rank correlation 0.62. A PRM fitted on traces with both features is a joint model of reasoning and style, and style is much easier to learn.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the adversarial perturbation test</h4>
+      <p>Three perturbations that should not change the score if the scorer measures the answer. Anything that raises the score is a path an optimiser will find.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L59 Lab 3: the adversarial test that belongs in CI for any step scorer.</span>
+<span class="cm"># Any perturbation that RAISES the score is a path the optimiser will find. Pure stdlib.</span>
+GOOD_TRACE = [
+    <span class="st">"s0 restate: 45 minutes at 60 km/h"</span>,
+    <span class="st">"s1 45 min = 0.75 h"</span>,
+    <span class="st">"s2 d = v * t = 60 * 0.75"</span>,
+    <span class="st">"s3 d = 45 km"</span>,
+]
+
+
+<span class="kw">def</span> toy_scorer(trace):
+    <span class="st">""</span><span class="st">"Stand-in for a real PRM: rewards arithmetic-looking steps and a numeric finish."</span><span class="st">""</span>
+    score = <span class="nm">0.0</span>
+    <span class="kw">for</span> step <span class="kw">in</span> trace:
+        <span class="kw">if</span> any(tok <span class="kw">in</span> step <span class="kw">for</span> tok <span class="kw">in</span> (<span class="st">"="</span>, <span class="st">"*"</span>, <span class="st">"+"</span>)):
+            score += <span class="nm">0.25</span>
+        <span class="kw">if</span> step.strip()[-<span class="nm">1</span>].isdigit():
+            score += <span class="nm">0.10</span>
+    <span class="kw">return</span> round(score, <span class="nm">2</span>)
+
+
+<span class="kw">def</span> pad(trace):
+    <span class="cm"># plausible-looking extra steps the answer does not need</span>
+    <span class="kw">return</span> trace + [<span class="st">"s4 check: 45 min = 0.75 h (again)"</span>,
+                    <span class="st">"s5 check: d = 60 * 0.75 = 45"</span>]
+
+
+<span class="kw">def</span> shuffle(trace):
+    <span class="kw">return</span> [trace[<span class="nm">0</span>]] + trace[<span class="nm">2</span>:][::-<span class="nm">1</span>] + [trace[<span class="nm">1</span>]]
+
+
+<span class="kw">def</span> restyle(trace):
+    <span class="kw">return</span> [s.replace(<span class="st">"="</span>, <span class="st">"is equal to"</span>).replace(<span class="st">"*"</span>, <span class="st">"times"</span>) <span class="kw">for</span> s <span class="kw">in</span> trace]
+
+
+base = toy_scorer(GOOD_TRACE)
+<span class="kw">print</span>(f<span class="st">"{'variant':&lt;32}{'score':&gt;7}{'delta':&gt;8}  verdict"</span>)
+<span class="kw">print</span>(f<span class="st">"{'original trace':&lt;32}{base:&gt;7.2f}{0.0:&gt;+8.2f}  reference"</span>)
+<span class="kw">for</span> name, fn <span class="kw">in</span> ((<span class="st">"padded with redundant checks"</span>, pad),
+                 (<span class="st">"steps reordered"</span>, shuffle),
+                 (<span class="st">"arithmetic restyled as prose"</span>, restyle)):
+    v = toy_scorer(fn(GOOD_TRACE))
+    <span class="kw">print</span>(f<span class="st">"{name:&lt;32}{v:&gt;7.2f}{v - base:&gt;+8.2f}  {'EXPLOITABLE' if v &gt; base else 'robust'}"</span>)
+<span class="kw">print</span>(<span class="st">"\nthe padded trace contains the same answer plus two redundant checks, and scores higher."</span>)
+<span class="kw">print</span>(<span class="st">"a real RL run will discover exactly that, at scale, without being told to."</span>)
+</div><div class="code out-block" data-lang="output">
+variant                           score   delta  verdict
+original trace                     0.85   +0.00  reference
+padded with redundant checks       1.45   +0.60  EXPLOITABLE
+steps reordered                    0.85   +0.00  robust
+arithmetic restyled as prose       0.10   -0.75  robust
+
+the padded trace contains the same answer plus two redundant checks, and scores higher.
+a real RL run will discover exactly that, at scale, without being told to.
+</div>
+      <p class="expect">Padding with redundant checks raises the score by 0.60 while the answer is unchanged. That is the review question in one line: what happens to the score when the answer is held fixed? Run this against your real PRM before RL ever touches it.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c59-s5">5 &middot; Failure modes <a class="hook" href="#c59-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Step-boundary mismatch.</strong> Symptom: the PRM scores at different granularity from what RL optimises; tricks emerge that add plausible-looking steps without changing the answer. The step definition must be identical in the PRM and the RL environment.</li>
+        <li><strong>Flattered prefixes.</strong> Symptom: a PRM gives high step scores to visibly wrong reasoning because the wording is confident. This is a reward model at step level with all of lesson 58's failure modes plus a smaller data set.</li>
+        <li><strong>Non-potential shaping.</strong> Symptom: with an arbitrary per-step bonus, the optimal policy becomes one that farms the bonus &mdash; e.g. producing more steps. Test: does optimal behaviour change when you turn shaping off? If yes, it was not potential-based.</li>
+        <li><strong>Step-label ambiguity.</strong> Symptom: annotators cannot agree whether a step is "correct" when the intermediate result is right for the wrong reason. Store the rubric's step definition and measure agreement at step level, not answer level.</li>
+        <li><strong>Cost blow-up.</strong> Symptom: PRM training data costs grow with trace length squared (every prefix needs a label), and you silently end up with far less data per token than you planned.</li>
+        <li><strong>Verifier gaming at inference.</strong> Symptom: best-of-n with a PRM steers toward whatever the PRM likes, not what is right &mdash; detectable by comparing best-of-n-with-PRM against best-of-n-with-outcome-grader on the same samples.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>For every process reward, report three numbers: step-level agreement with a held-out human sample,
+      the correlation between PRM score and final-answer correctness on fresh traces, and the best-of-n
+      gap versus the outcome grader. If the PRM's ranking of solutions disagrees with the grader's ranking,
+      the PRM will eventually be optimised into that disagreement.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c59-s6">6 &middot; Connects to <a class="hook" href="#c59-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="58-reward-modeling.html">L58 &middot; Reward models</a>,
+    <a class="tag-c" href="60-chain-of-thought.html">L60 &middot; Chain of thought</a>,
+    <a class="tag-c" href="63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a>.</p>
+    <p><strong>Unlocks:</strong> test-time verifiers, distillation of reasoning traces, and multi-step agentic RL.</p>
+
+    <ul>
+      <li><a class="tag-c" href="61-test-time-compute.html">L61 &middot; Test-time compute</a> &mdash; where a PRM is used as a reranker rather than as a reward.</li>
+      <li><a class="tag-c" href="66-distilling-reasoning.html">L66 &middot; Distilling reasoning</a> &mdash; rejection sampling is outcome-gated; PRMs let you rescue failed traces.</li>
+      <li><a class="tag-c" href="71-agentic-rl.html">L71 &middot; Agentic RL</a> &mdash; the multi-step credit problem in its hardest form.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; step-level hacks are just hacks with finer granularity.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c59-s7">7 &middot; Self-check <a class="hook" href="#c59-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Four steps, only the last is wrong, outcome reward is 0. Under a potential-based shaper with V = [0.9, 0.8, 0.7, 0.1] and &gamma; = 1, what reward does each step receive before the terminal outcome?</p>
+        <details><summary>Reveal answer</summary><p>Shaped reward for step t is &gamma;V(s<sub>t+1</sub>) &minus; V(s<sub>t</sub>): step 0 gets 0.8 &minus; 0.9 = &minus;0.1; step 1 gets0.7 &minus; 0.8 = &minus;0.1; step 2 gets 0.1 &minus; 0.7 = &minus;0.6; step 3 gets V(terminal) &minus; 0.1. The collapse is localised at thestep where the potential drops &mdash; that is the entire point of potential-based credit assignment.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why is potential-based shaping provably policy-invariant while a per-step bonus is not?</p>
+        <details><summary>Reveal answer</summary><p>Because the shaped returns telescope: &Sigma;<sub>t</sub> (&gamma;V(s<sub>t+1</sub>) &minus; V(s<sub>t</sub>)) = &minus;V(s<sub>0</sub>) for a fullepisode, which is constant with respect to the policy, so the ranking of policies is unchanged. An arbitrary bonus does nottelescope, so a policy can increase its return by generating more bonused steps, regardless of the answer.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Quantitative: outcome reward gives advantage &plusmn;1 on a trace of 40 scored steps. What is the per-step advantage magnitude, and what does a PRM with per-step accuracy 0.85 change?</p>
+        <details><summary>Reveal answer</summary><p>If the same &plusmn;1 advantage is spread over 40 steps uniformly, each step sees a credit of about &plusmn;0.025 &mdash; but thevariance is what matters, and it is now 40 correlated noisy terms instead of one. The PRM replaces that with 40 independentestimates at 85% accuracy: the <em>signal</em> per step is better, but it is wrong 15% of the time on exactly the steps thepolicy will learn from, and those errors are systematic (confident-sounding wrong steps), so they are optimised against.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: best-of-n reranked by a PRM does worse than best-of-n reranked by the outcome grader. What is the first thing you check?</p>
+        <details><summary>Reveal answer</summary><p>Whether the PRM is scoring a different quantity: granularity mismatch (steps defined differently), optimistic bias(it likes confident wording), or simply that its step labels came from a different task family. Measure rank correlationbetween PRM score and grader score on the same candidate set; anything below about 0.5 means the PRM is not a proxyfor the thing you care about.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> When is outcome reward the correct choice despite the wasted prefixes?</p>
+        <details><summary>Reveal answer</summary><p>When the outcome grader is exact and cheap and the step-level judgement is not: a coding task with unit tests has aperfect outcome signal, and a learned process reward adds an attack surface without adding verifiable information. Thegeneral rule is that process reward pays when the outcome signal is either sparse per unit cost (long agent trajectories)or noisy (open-ended quality).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="58-reward-modeling.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L58 &middot; Reward models: Bradley&ndash;Terry and its hacking surface</span></a>
+    <a class="next" href="60-chain-of-thought.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L60 &middot; Chain of thought: why intermediate tokens buy compute</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

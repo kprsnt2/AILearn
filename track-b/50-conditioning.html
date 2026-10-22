@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html data-theme="dark" lang="en" data-page="b50">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L50 · Conditioning, In-Context Learning, and Why Prompts Work — AILearn</title>
+<meta name="description" content="A prompt is not a question, it is a conditioning signal written into a causal model's context. That framing explains why few-shot works, why distractor examples hurt, why order matters, and where in-context learning stops.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L50</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L50 &middot; Conditioning, In-Context Learning, and Why Prompts Work</h1>
+  <p class="lede">A prompt is not an instruction the model obeys &mdash; it is a prefix that the model conditions on, writing features into the residual stream that later layers read. That distinction predicts exactly when few-shot examples help, when a distractor destroys a task, and when you need fine-tuning instead.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: in-context task with distractors</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">conditioning</span>
+  <span class="pill">in-context learning</span>
+  <span class="pill">few-shot examples</span>
+  <span class="pill">distractor sensitivity</span>
+  <span class="pill">order effects</span>
+  <span class="pill">task vectors</span>
+  <span class="pill">prompt vs fine-tune</span>
+  <span class="pill">prefill cost per shot</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b50-s1">1 &middot; Why it exists <a class="hook" href="#b50-s1">#</a></h2>
+
+    <p>The failure this lesson kills is the mental model itself. If a prompt were an instruction, then adding more clarifications
+    would monotonically improve output, examples would always help, and the order of sections would not matter. None of that is
+    true, and teams spend weeks reordering words to chase effects they cannot explain.</p>
+
+    <p>What is actually happening <span class="asof">state as of 2026-10</span>: the model is a causal sequence predictor, and the prompt is the sequence. Every token in it
+    writes into the residual stream (L48) and changes the distribution over the next token at every subsequent position. There is
+    no separate "instruction channel" &mdash; a system prompt that says &ldquo;answer as a JSON object with keys a and b&rdquo;
+    helps because the model has seen that pattern in pretraining and because the tokens prime the format, not because the model
+    reads it as a specification.</p>
+
+    <p>The cost side is equally concrete. Each few-shot example is ordinary prompt tokens: at 150 tokens per example, five
+    examples cost 750 tokens of prefill, and at 13B active that is 2 &times; 13&times;10<sup>9</sup> &times; 750 =
+    1.95&times;10<sup>13</sup> FLOPs on every single call, plus 750 &times; 70,272 = 52.7 MB of cache. Prompt engineering is
+    therefore also a <em>cost</em> discipline, and the two trade off &mdash; more examples cost more and do not monotonically help.</p>
+
+    <div class="callout boss">
+      <p>Prompts work by conditioning, not by instructing. So more text is not more control: what matters is whether the context
+      contains a pattern the model has learned to complete, and whether competing patterns are present.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b50-s2">2 &middot; The mental model <a class="hook" href="#b50-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a tapestry weaver who has studied thousands of patterns. You show them a fragment of
+    pattern and they continue it in that style. Showing one clean fragment sets the pattern more reliably than describing it in
+    words; showing a fragment that is <em>almost</em> the right pattern sets the wrong one.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Completion of a demonstrated pattern is more reliable than a verbal
+      description, and near-miss demonstrations steer toward the wrong pattern. It also explains why the <em>first</em> fragment
+      matters most &mdash; it sets what the rest is read against.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A weaver has intentions and understands what you want. There is no such channel
+      here: the model is doing weighted next-token prediction, so "instruction" and "example" and "data" all compete as tokens in
+      one causal context. That is why a long document with an instruction buried in the middle can be worse than the instruction
+      alone.</p></div>
+    </div>
+
+    <h3>The three mechanisms behind in-context learning</h3>
+    <table class="table">
+      <thead><tr><th>Mechanism</th><th>What it does</th><th>Evidence / observable</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Pattern completion</strong></td><td>Induction circuits copy the mapping from the demonstrated examples</td><td>Induction score (L49) is high; accuracy collapses with ambiguous examples</td></tr>
+        <tr><td><strong>Task identification</strong></td><td>Examples select among behaviours the model already has in its weights</td><td>Performance jumps between 1 and a few examples, then flattens</td></tr>
+        <tr><td><strong>Format priming</strong></td><td>The shape of the output is copied from the last example seen</td><td>Output style tracks the final example, not the average</td></tr>
+      </tbody>
+    </table>
+    <p>All three are the same underlying phenomenon &mdash; context changes the conditional distribution &mdash; but they have
+    different consequences. Task identification explains why zero-shot sometimes beats one-shot (if the single example misleads),
+    and format priming explains why the <em>last</em> example in a prompt disproportionately sets style.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b50-s3">3 &middot; The mechanism <a class="hook" href="#b50-s3">#</a></h2>
+
+    <div class="formula">
+      p(y | prompt) = p<sub>&theta;</sub>(y | x<sub>1</sub>, &hellip;, x<sub>k</sub>, x<sub>query</sub>)
+      &nbsp;&mdash;&nbsp; conditioned, not instructed
+      <span class="note">Every prompt token shifts the model's conditional distribution. Formally there is no distinction between "system instruction", "example" and "user data" except their position in one causal chain. That is the entire mechanism; everything below is a consequence.</span>
+    </div>
+
+    <h3>Worked: the few-shot cost, and where it stops paying</h3>
+    <p>Take 150 tokens per example, a 13B-active model, and a 70,272 B/token cache:</p>
+    <table class="table">
+      <thead><tr><th>Shots</th><th>Prompt tokens</th><th>Prefill FLOPs</th><th>Cache</th><th>Cost vs zero-shot</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td>0</td><td>0</td><td>0</td><td>1.0&times;</td></tr>
+        <tr><td>1</td><td>150</td><td>3.90&times;10<sup>12</sup></td><td>10.5 MB</td><td>&mdash;</td></tr>
+        <tr><td>3</td><td>450</td><td>1.17&times;10<sup>13</sup></td><td>31.6 MB</td><td>&mdash;</td></tr>
+        <tr><td>5</td><td>750</td><td>1.95&times;10<sup>13</sup></td><td>52.7 MB</td><td>&mdash;</td></tr>
+        <tr><td>10</td><td>1,500</td><td>3.90&times;10<sup>13</sup></td><td>105.4 MB</td><td>&mdash;</td></tr>
+        <tr><td>20</td><td>3,000</td><td>7.80&times;10<sup>13</sup></td><td>210.8 MB</td><td>&mdash;</td></tr>
+      </tbody>
+    </table>
+    <p>The cost is linear and completely predictable, which means the decision rule is too: <strong>add shots only while the
+    accuracy gain exceeds the cost and, crucially, while it does not add ambiguity.</strong> In practice task identification
+    saturates by 3&ndash;5 examples, and beyond that you are paying for tokens that mostly act as competitors to the induction
+    match (L49, Experiment 2) &mdash; which is why the accuracy curve often declines past ~10 shots before flattening.</p>
+
+    <h3>Why distractors are worse than missing examples</h3>
+    <p>A missing example leaves the pattern under-specified, so the model falls back on priors &mdash; usually the safest
+    behaviour. A <em>wrong</em> example actively writes the wrong pattern into the context and gives the induction circuit a
+    competing match. That is why one off-format example can cost more than removing all examples, and why curated few-shot beats
+    plentiful few-shot for anything with a strict output contract.</p>
+
+    <h3>Order effects and the recency gradient</h3>
+    <p>Because attention is positional and the stream is causal, tokens near the end of the prompt are read by more layers as
+    &ldquo;recent context&rdquo; and have disproportionate influence on formatting. Two measurable consequences:</p>
+    <ul>
+      <li><strong>Style follows the last example.</strong> Put your canonical example last.</li>
+      <li><strong>The instruction should be near the end, not the beginning, when both compete</strong> &mdash; but putting it
+      first maximises prefix-cache hits (L45). This is a real trade: cache savings versus conditioning strength. For a stable
+      system prompt the cache win usually dominates; for an instruction that must beat conflicting context, place it late.</li>
+    </ul>
+
+    <h3>When in-context learning is the wrong tool</h3>
+    <div class="grid2">
+      <div class="card"><h4>Use conditioning when&hellip;</h4><p>The task is a pattern the model has seen in pretraining, the
+      contract is simple, and the data changes per request. Few-shot and clear format examples genuinely work here, and iteration
+      is cheap.</p></div>
+      <div class="card"><h4>Fine-tune when&hellip;</h4><p>The behaviour must be reliable under adversarial input, the output contract
+      is strict and machine-validated, or per-call token cost matters at volume. Every demonstration is repaying prefill on every
+      call; a fine-tune pays once and moves the pattern into the weights, which is the difference between conditioning and
+      learning (L41, L51&ndash;L52).</p></div>
+    </div>
+
+    <div class="callout audit">
+      <p>Treat a prompt as a versioned artifact with a measured contract. The artifact is: prompt text hash, number of shots, shot
+      ordering, token count, per-case output validity (does it parse? does it match schema?), and an accuracy figure with a
+      confidence interval. Any of those changing without a version bump is an unreproducible result waiting to happen.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b50-s4">4 &middot; Your hands <a class="hook" href="#b50-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; measure the shot curve and find the saturation point</h4>
+      <p>The experiment that replaces prompt folklore. Start at zero shots, add one at a time, and stop where the curve stops
+      paying. Report cost on the same axis.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># Pseudo-API: replace with your client. The structure is the point.</span>
+<span class="kw">def</span> <span class="fn">evaluate</span>(n_shots, cases, make_prompt, call):
+    correct = <span class="nm">0</span>; tokens_used = <span class="nm">0</span>
+    <span class="kw">for</span> c <span class="kw">in</span> cases:
+        prompt = <span class="fn">make_prompt</span>(n_shots, c)
+        out = <span class="fn">call</span>(prompt)
+        tokens_used += <span class="fn">len</span>(prompt)
+        correct += <span class="fn">int</span>(out.strip() == c[<span class="st">"gold"</span>].strip())
+    <span class="kw">return</span> correct / <span class="fn">len</span>(cases), tokens_used / <span class="fn">len</span>(cases)
+
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">0</span>, <span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">3</span>, <span class="nm">5</span>, <span class="nm">8</span>, <span class="nm">12</span>, <span class="nm">20</span>):
+    acc, toks = <span class="fn">evaluate</span>(n, cases, make_prompt, call)
+    <span class="fn">print</span>(<span class="st">f"shots={n:2d}  acc={acc:.3f}  prompt_tokens={toks:7.0f}  "
+          f"FLOPs/call={2*13e9*toks:.2e}  \$index={2*13e9*toks:.2e}"</span>)
+      </div>
+      <p class="expect">Expect accuracy to rise sharply from 0 to 2&ndash;3 shots and then flatten or wobble. The decision rule:
+      pick the smallest shot count within one standard error of the best &mdash; the extra shots buy nothing and cost prefill on
+      every call. If accuracy <em>declines</em> at high shot counts, you are seeing induction competition, and the fix is curation
+      (fewer, cleaner examples), not more examples.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; quantify distractor damage</h4>
+      <p>A controlled test of the claim that a wrong example is worse than no example. Run all four conditions on the same case
+      set so the comparison is fair.</p>
+      <div class="code" data-lang="bash">
+python -c "
+conditions = [
+    ('zero-shot',          0, 0),
+    ('3 clean shots',      3, 0),
+    ('3 clean + 1 partial',3, 1),
+    ('1 partial only',     0, 1),
+]
+for name, clean, partial in conditions:
+    tokens = clean*150 + partial*150
+    print(f'{name:22s} clean={clean} partial={partial}  tokens={tokens:4d}  prefill FLOPs={2*13e9*tokens:.2e}')
+print()
+print('prediction: partial-only < zero-shot < 3 clean + 1 partial < 3 clean')
+"
+      </div>
+      <p class="expect">The prediction to falsify is the ordering: a partially-correct example should damage performance more than
+      no example at all (it writes the wrong pattern and competes for the induction match), and a good set plus one bad example
+      should be worse than the good set alone. If your results do not show that ordering, either the task is too easy for
+      conditioning to matter or your "partial" example is not actually near-matching the target pattern.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the position/order sensitivity check</h4>
+      <p>Test whether the same prompt content in different orders gives materially different results. This is cheap to run and is
+      the single best argument for versioning prompts.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> random, itertools
+random.seed(<span class="nm">50</span>)
+shots = [<span class="st">"ex1"</span>, <span class="st">"ex2"</span>, <span class="st">"ex3"</span>, <span class="st">"ex4"</span>]
+
+<span class="kw">def</span> <span class="fn">score</span>(order, cases):
+    <span class="cm"># placeholder: replace with real evaluation</span>
+    <span class="kw">return</span> <span class="fn">len</span>(order), order
+
+accs = []
+<span class="kw">for</span> perm <span class="kw">in</span> itertools.permutations(shots):
+    n, order = <span class="fn">score</span>(perm, cases=<span class="kw">None</span>)
+    accs.append(n)
+<span class="fn">print</span>(<span class="st">f"orderings tested: {len(accs)} (4! = 24)"</span>)
+<span class="fn">print</span>(<span class="st">f"prompt token count identical across orders? {len(set(accs)) == 1}"</span>)
+      </div>
+      <p class="expect">All 24 orderings have identical token counts and identical prefill cost &mdash; and, in real evaluations,
+      meaningfully different accuracy. That is the experiment to run before blaming a model: if your best and worst orderings
+      differ by more than your percentile noise, your prompt's reliability is partly luck of ordering, and it will not survive a
+      model upgrade.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b50-s5">5 &middot; Failure modes <a class="hook" href="#b50-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Prompt-as-specification.</strong> Symptom: adding more clarifying sentences makes output longer and no more
+        correct, and the important constraint gets ignored because it is buried. Move the constraint near the end and make it a
+        demonstrated format, not a description.</li>
+        <li><strong>Shot bloat.</strong> Symptom: token cost per call grows every sprint while accuracy is flat. The shot curve has
+        saturated; every added example now costs prefill on every request for no gain.</li>
+        <li><strong>Distractor contamination.</strong> Symptom: accuracy drops after someone adds a "helpful" edge-case example that
+        is only half on-format. Audit examples for format fidelity, not just correctness.</li>
+        <li><strong>Order dependence shipped as reliability.</strong> Symptom: accuracy collapses when examples are shuffled by the
+        prompt builder, which some frameworks do automatically. Pin the ordering, and test the shuffle.</li>
+        <li><strong>Conditioning where learning is needed.</strong> Symptom: prompt tweaks plateau at 85% while the requirement is
+        99.5% with schema validation. That plateau is the ceiling of conditioning; move to fine-tuning on validated examples (L52)
+        or add a deterministic validator.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b50-s6">6 &middot; Connects to <a class="hook" href="#b50-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L48 (stream) and L49 (induction). &nbsp; <strong>Unlocks:</strong> Track C post-training and
+    Track D context engineering &mdash; this is the bridge out of Track B.</p>
+    <ul>
+      <li><a class="tag-b" href="49-components-circuits.html">L49 &middot; Induction heads</a> &mdash; the circuit that performs in-context copying.</li>
+      <li><a class="tag-b" href="48-residual-stream.html">L48 &middot; Residual stream</a> &mdash; where conditioning is written.</li>
+      <li><a class="tag-b" href="45-caching.html">L45 &middot; Context caching</a> &mdash; why instruction placement trades against cache hits.</li>
+      <li><a class="tag-c" href="../track-c/51-post-training.html">L51 &middot; Post-training map</a> &mdash; where conditioning stops and learning begins.</li>
+      <li><a class="tag-c" href="../track-c/52-sft.html">L52 &middot; SFT</a> &mdash; moving a prompt contract into weights.</li>
+      <li><a class="tag-d" href="../track-d/79-context-engineering.html">L79 &middot; Context engineering</a> &mdash; budgets, compaction, ordering at scale.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b50-s7">7 &middot; Self-check <a class="hook" href="#b50-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Eight shots at 150 tokens each on a 13B-active model. What is the prefill cost per call, and what fraction of a 1,000-token prompt is that?</p>
+        <details><summary>Reveal answer</summary><p>Tokens = 8 &times; 150 = 1,200, so prefill = 2 &times; 13&times;10<sup>9</sup> &times; 1,200 = <strong>3.12&times;10<sup>13</sup>
+        FLOPs</strong>. Against a 1,000-token base prompt (2.6&times;10<sup>13</sup> FLOPs), the examples add 120% &mdash; more than doubling the
+        prefill cost of every call. Cache cost: 1,200 &times; 70,272 = 84.3 MB per concurrent request.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Why can one wrong example be worse than zero examples?</p>
+        <details><summary>Reveal answer</summary><p>Zero examples leave the conditional distribution close to the model's prior, which is usually reasonable. A wrong example
+        actively writes the wrong pattern into the context and gives the induction circuit a high-scoring competing match, so it steers
+        toward the wrong format with confidence. The failure is not dilution but mis-conditioning &mdash; and it is why curated
+        few-shot beats plentiful few-shot for strict output contracts.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a prompt is 94% accurate in testing and 71% in production, same model version, and the input distribution looks similar. Name three prompt-level suspects.</p>
+        <details><summary>Reveal answer</summary><p>(a) Prompt-component ordering differs in production because the framework assembles sections dynamically (order effects);
+        (b) production inputs trigger distractor competition &mdash; real data contains near-duplicates or off-format rows and the test set does
+        not; (c) the production prompt injects variable content (retrieved chunks, timestamps) at the <em>front</em>, displacing the
+        conditioning pattern and also destroying prefix cache hits. Compare full prompt bytes, not just templates.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> You need 99.5% schema-valid output on a structured extraction task. Explain why conditioning alone will not get you there and what the two-part fix is.</p>
+        <details><summary>Reveal answer</summary><p>Conditioning shifts a probability distribution; it cannot guarantee a hard constraint, so some fraction of
+        outputs will violate the schema regardless of prompt quality. The fix is (a) make the contract mechanical &mdash; constrained
+        decoding / grammar-validated output (L18) &mdash; and (b) where accuracy still falls short, fine-tune on validated examples so
+        the pattern lives in the weights rather than depending on per-call conditioning. Prompt engineering plus a validator is the
+        engineering answer; prompt engineering alone is a hope.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Summarise Track B in three sentences: what governed model cost and capability from L26 to L50?</p>
+        <details><summary>Reveal answer</summary><p>(1) Capability follows a smooth power law in compute and data, with one right
+        spend ratio &mdash; and once data runs out, deliberate over-training trades training dollars for cheaper serving.
+        (2) The dominating operational cost shifted from parameters to memory traffic: sparse activation (MoE), compressed caches
+        (MLA, token compression), sparse reads (DSA) and bandwidth-aware kernels (FlashAttention) all attack the same bytes-per-token term.
+        (3) Architecture is now chosen against the serving bill rather than the loss alone &mdash; asymmetric phases, block paging, prefix
+        caching and load balancing are all cost model entries, and the model's behaviour inside that budget (L48&ndash;L50) is conditioning,
+        not instruction.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="49-components-circuits.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L49 &middot; Induction heads, circuits &amp; reliability</span></a>
+    <a class="next" href="../track-c/51-post-training.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L51 &middot; Post-training map</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

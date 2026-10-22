@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b41">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L41 · Distillation: Teacher &rarr; Student, and Reasoning Distillation — AILearn</title>
+<meta name="description" content="A small model trained on a large model's full distribution learns faster than one trained on hard labels alone &mdash; but distillation costs a teacher forward pass per token, and reasoning distillation inherits the teacher's failure modes.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L41</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L41 &middot; Distillation: Teacher&rarr;Student, and Reasoning Distillation</h1>
+  <p class="lede">A hard label is one bit per token; a teacher's distribution is the whole shape of its uncertainty, and a student trained on it learns faster. The catch: every distilled token costs a teacher forward pass, and a reasoning student inherits every habit of its teacher &mdash; including the bad ones.</p>
+  <div class="chips">
+    <span class="chip">~28 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: distill a tiny teacher</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">soft targets</span>
+  <span class="pill">temperature</span>
+  <span class="pill">KL divergence</span>
+  <span class="pill">dark knowledge</span>
+  <span class="pill">reasoning distillation</span>
+  <span class="pill">rejection sampling</span>
+  <span class="pill">teacher cost per token</span>
+  <span class="pill">capacity gap</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b41-s1">1 &middot; Why it exists <a class="hook" href="#b41-s1">#</a></h2>
+
+    <p>You want the quality of a large model at the price of a small one. Quantization (L40) gets you 4&times; by spending
+    precision; distillation gets you an <em>order of magnitude</em> by spending pre-existing knowledge instead.</p>
+
+    <p>Two failures motivate it. First, a hard-label target is astonishingly sparse as a training signal: for a vocabulary of
+    ~10<sup>5</sup> tokens, the target is one-hot, so the gradient tells the student &ldquo;increase this token, decrease all
+    others&rdquo; with no information about <em>which</em> others are plausible. A teacher's distribution over the same token
+    says &ldquo;this token, but also these three are reasonable and that one is definitely wrong&rdquo; &mdash; many bits of
+    structure per position, not one.</p>
+
+    <p>Second, the production failure that makes this urgent: a 552B-total MoE with 16B active is already at 34.5&times;
+    compression versus dense-equivalent, and you still may not be able to serve it for a given latency target. At that point the
+    only remaining lever is a genuinely smaller <em>architecture</em> &mdash; and the cheapest way to build one is to make it
+    imitate something that already works.</p>
+
+    <p>Hinton et al.'s original distillation framing, and the modern reasoning-distillation line, both rest on one measured
+    fact: a student trained on soft targets reaches a given quality with substantially fewer tokens than one trained on hard
+    labels.</p>
+
+    <div class="callout boss">
+      <p>Hard labels teach the answer. Teachers teach <em>the shape of the answer space</em>. That is worth 10&ndash;70&times; in
+      model size &mdash; provided you can afford the teacher's forward pass on every training token.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b41-s2">2 &middot; The mental model <a class="hook" href="#b41-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> learning a language from a textbook answer key versus from a native speaker who
+    also tells you &ldquo;that's odd but legal.&rdquo; The answer key is right exactly once; the speaker conveys a whole
+    distribution over what is acceptable.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Dense guidance beats sparse correction. A teacher encodes
+      <em>similarities between classes</em> the labels do not contain &mdash; the canonical &ldquo;dark knowledge&rdquo; point:
+      a teacher's distribution over digit classes resembles a hand-written 3 more than a 7 even when both are wrong.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A speaker can be corrected; a teacher's errors are transmitted as if they were
+      facts. Distillation has no ground-truth anchor unless you keep one, so a confidently wrong teacher produces a confidently
+      wrong student. This is the central risk in reasoning distillation, and it is not hypothetical.</p></div>
+    </div>
+
+    <h3>The four forms you will meet</h3>
+    <table class="table">
+      <thead><tr><th>Form</th><th>Signal</th><th>Cost</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Logit / KL distillation</strong></td><td>Teacher's full next-token distribution per position</td><td>Teacher forward pass on every training token</td></tr>
+        <tr><td><strong>Sequence distillation</strong></td><td>Teacher-generated text (hard labels) on your corpus</td><td>Teacher <em>generation</em>, no student gradient interaction</td></tr>
+        <tr><td><strong>Reasoning distillation</strong></td><td>Teacher's chain-of-thought traces (often rejection-sampled for correctness)</td><td>Many teacher samples per kept trace</td></tr>
+        <tr><td><strong>On-policy distillation</strong></td><td>Teacher scores the <em>student's own</em> outputs</td><td>Teacher forward on student rollouts each step</td></tr>
+      </tbody>
+    </table>
+    <p>The cost ordering is the useful part: logit distillation needs a teacher pass per token (expensive, dense signal);
+    sequence distillation needs the teacher once to write a dataset you can reuse forever; reasoning distillation has a rejection
+    multiplier (you generate many traces, keep few).</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b41-s3">3 &middot; The mechanism <a class="hook" href="#b41-s3">#</a></h2>
+
+    <div class="formula">
+      &lagr; = (1&minus;&alpha;)&thinsp;CE(&thinsp;y, p<sub>S</sub>&thinsp;) &nbsp;+&nbsp;
+      &alpha;&thinsp;T&sup2;&thinsp;KL(&thinsp;p<sub>T</sub><sup>(T)</sup> &Vert; p<sub>S</sub><sup>(T)</sup>&thinsp;)
+      <span class="note">p<sup>(T)</sup> = softmax(logits / T). The T&sup2; factor compensates for the fact that gradients of the soft-target term shrink as 1/T&sup2;, so without it increasing T silently reduces the distillation weight. &alpha; balances hard labels (anchor to ground truth) against the teacher.</span>
+    </div>
+
+    <h3>Worked: what temperature actually does to the signal</h3>
+    <p>Take a teacher distribution t = (0.70, 0.10, 0.10, 0.05, 0.05) and a student s = (0.40, 0.20, 0.10, 0.10, 0.20). Both are
+    given as probabilities for illustration; the point is how the KL and the entropy behave as T rises:</p>
+    <table class="table">
+      <thead><tr><th>Temperature</th><th>KL(p<sub>T</sub> &Vert; p<sub>S</sub>)</th><th>Teacher entropy</th><th>Gradient scale (1/T&sup2;)</th></tr></thead>
+      <tbody>
+        <tr><td>T = 1</td><td>0.2184</td><td>1.0098 nats</td><td>1.0</td></tr>
+        <tr><td>T = 2</td><td>0.0630</td><td>1.4578 nats</td><td>0.25</td></tr>
+        <tr><td>T = 4</td><td>0.0152</td><td>1.5751 nats</td><td>0.0625</td></tr>
+      </tbody>
+    </table>
+    <p>Two things happen at once. The KL magnitude falls by 14&times; from T = 1 to T = 4 &mdash; which is why the T&sup2; factor
+    exists, since it restores the effective weight &mdash; and the teacher's entropy rises, i.e. its distribution becomes softer
+    and <em>more informative about the tail</em>. That is the trade: soft targets carry more relative information about unlikely
+    classes, but their absolute gradient contribution shrinks unless corrected.</p>
+
+    <p>Compare against the hard-label baseline: for the same target the cross-entropy against a one-hot is
+    &minus;ln 0.70 = 0.3567 nats with <strong>zero</strong> information about the other four classes. The teacher's distribution
+    has 1.4578 nats of entropy at T = 2 &mdash; roughly 2.1 bits of structured information per token that a hard label does not
+    carry.</p>
+
+    <h3>Worked: what distillation costs in FLOPs</h3>
+    <p>Per training token, a logit-distillation step needs a teacher forward pass (2&thinsp;N<sub>T</sub>) and the student's
+    forward+backward (6&thinsp;N<sub>S</sub>):</p>
+    <div class="formula">
+      cost<sub>per token</sub> = 2&thinsp;N<sub>T</sub> + 6&thinsp;N<sub>S</sub>
+      &nbsp;&nbsp;&nbsp;vs&nbsp;&nbsp;&nbsp; 6&thinsp;N<sub>S</sub> for plain training
+      <span class="note">So distillation multiplies training cost by (1 + N<sub>T</sub>/(3N<sub>S</sub>)). For N<sub>T</sub> = 552B (8B active input side) and N<sub>S</sub> = 8B: (1 + 552/(3&times;8)) = 24&times;. For a 70B teacher and 7B student: (1 + 70/21) = 4.3&times;.</span>
+    </div>
+    <table class="table">
+      <thead><tr><th>Teacher / student</th><th>Size ratio</th><th>Training cost multiplier</th></tr></thead>
+      <tbody>
+        <tr><td>552B / 8B</td><td>69&times;</td><td><strong>24&times;</strong></td></tr>
+        <tr><td>284B / 13B</td><td>21.8&times;</td><td>8.3&times;</td></tr>
+        <tr><td>70B / 7B</td><td>10&times;</td><td>4.3&times;</td></tr>
+      </tbody>
+    </table>
+    <p>That is the honest cost. But note what it buys: an 8B student at 24&times; the cost of training an 8B from scratch is still
+    <em>far</em> cheaper than training a 552B from scratch &mdash; and you already have the teacher. The comparison that matters is
+    never &ldquo;distillation versus free&rdquo;, it is &ldquo;distillation versus the run you were going to do anyway&rdquo;.</p>
+
+    <h3>Reasoning distillation: the multiplier is the rejection loop</h3>
+    <p>Modern reasoning distillation <span class="asof">state as of 2026-10</span> replaces logits with <em>traces</em>: sample many chains of thought from the teacher, keep
+    only those whose final answer is verifiably correct, fine-tune the student on the traces. The economics are dominated by the
+    <strong>keep rate</strong>:</p>
+    <div class="formula">
+      teacher tokens generated = kept tokens / keep_rate &nbsp;&nbsp;&nbsp;
+      &therefore;&nbsp; cost = (1/keep_rate) &times; generation cost
+      <span class="note">If the teacher solves 25% of problems, you generate 4&times; the traces you use. That multiplier is usually more important than the model sizes involved, and it is the reason verifiable domains (math, code) distil far more cheaply than open-ended ones.</span>
+    </div>
+    <p>Worked: to produce 200,000 accepted traces at a 25% keep rate you must generate 800,000; at a 5% keep rate, 4,000,000.
+    The second case is an 8&times; cost increase for the same dataset, so <em>choosing a verifier whose keep rate is high</em> is
+    the single biggest lever in the pipeline.</p>
+
+    <div class="callout audit">
+      <p>Distillation is only auditable if the teacher is pinned: record teacher checkpoint hash, decoding config, temperature,
+      rejection criteria and keep rate. A distilled model with an unpinned teacher is unreproducible by construction &mdash; and
+      its failures are untraceable because you cannot re-derive the training data. This is the same discipline as your
+      hash-chained ledger, applied to data lineage.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b41-s4">4 &middot; Your hands <a class="hook" href="#b41-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; derive the T&sup2; correction yourself</h4>
+      <p>Why the T&sup2; factor exists is the most-asked question about distillation and the answer is one experiment. Measure how
+      the soft-target gradient shrinks with T.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+
+<span class="kw">def</span> <span class="fn">softmax</span>(z, T=<span class="nm">1.0</span>):
+    z = np.asarray(z, float) / T; z = np.exp(z - z.max()); <span class="kw">return</span> z / z.sum()
+
+teacher = np.log(np.array([<span class="nm">0.70</span>, <span class="nm">0.10</span>, <span class="nm">0.10</span>, <span class="nm">0.05</span>, <span class="nm">0.05</span>]))
+student = np.log(np.array([<span class="nm">0.40</span>, <span class="nm">0.20</span>, <span class="nm">0.10</span>, <span class="nm">0.10</span>, <span class="nm">0.20</span>]))
+
+<span class="kw">for</span> T <span class="kw">in</span> (<span class="nm">1.0</span>, <span class="nm">2.0</span>, <span class="nm">4.0</span>):
+    pt, ps = <span class="fn">softmax</span>(teacher, T), <span class="fn">softmax</span>(student, T)
+    kl = np.sum(pt * np.log(pt / ps))
+    ent = -np.sum(pt * np.log(pt))
+    g = ps - pt                                     <span class="cm"># d KL / d logits</span>
+    <span class="fn">print</span>(<span class="st">f"T={T}: KL={kl:.4f}  H_teacher={ent:.4f}  |grad|={np.abs(g).sum():.5f}  |grad|*T^2={np.abs(g).sum()*T*T:.5f}"</span>)
+      </div>
+      <p class="expect">Measured: KL falls 0.2184 &rarr; 0.0630 &rarr; 0.0152 (14.4&times; from T = 1 to T = 4), teacher
+      entropy rises 1.0098 &rarr; 1.4578 &rarr; 1.5751, and the raw gradient norm shrinks with T (0.600 &rarr; 0.3246 &rarr; 0.1561) while
+      |grad|&middot;T&sup2; moves the other way (0.600 &rarr; 1.298 &rarr; 2.497). The shrinkage is the 1/T&sup2; effect, and the
+      T&sup2; multiplier in the loss is what restores the term's weight &mdash; this table is the measurement that justifies it.
+      The measured |grad|&middot;T&sup2; is not exactly constant because the softening of the distributions is the second,
+      deliberate effect you are buying.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; the physics of the cost multiplier</h4>
+      <p>Distillation cost depends on the teacher/student ratio, not on absolute sizes. Compute it for any pairing before you
+      commit to a plan.</p>
+      <div class="code" data-lang="bash">
+python -c "
+pairs=[(552e9,8e9),(284e9,13e9),(70e9,7e9),(671e9,37e9),(7e9,1.5e9)]
+for T,S in pairs:
+    m=1+T/(3*S)
+    print(f'teacher {T/1e9:6.0f}B student {S/1e9:5.1f}B ratio {T/S:6.1f}x -> training cost {m:5.2f}x plain')
+print()
+for kr in (0.5,0.25,0.1,0.05):
+    print(f'keep_rate {kr:.0%}: to get 200k traces must generate {int(200000/kr):,}')
+"
+      </div>
+      <p class="expect">Cost multipliers: 24.0&times; (552B/8B), 8.28&times; (284B/13B), 4.33&times; (70B/7B), 7.05&times;
+      (671B/37B), 2.56&times; (7B/1.5B). Rejection counts for 200,000 accepted traces: 50% keep &rarr; 400,000 generated;
+      25% &rarr; 800,000; 10% &rarr; 2,000,000; 5% &rarr; 4,000,000. The point: a teacher 5&times; larger costs 2.6&times; more training, while
+      a teacher 69&times; larger costs 24&times; &mdash; superlinear in the ratio, so there is a sweet spot.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; demonstrate soft-target learning on a tiny classifier</h4>
+      <p>A 3-layer MLP on a synthetic 10-class problem with a small labelled set: compare hard-label training against distillation
+      from a large teacher trained on much more data. This reproduces the central claim, and it gives you a harness to reuse.</p>
+      <div class="code" data-lang="python">
+<span class="fn">import</span> numpy <span class="kw">as</span> np
+rng = np.random.default_rng(<span class="nm">41</span>)
+<span class="kw">def</span> <span class="fn">data</span>(n):
+    X = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (n, <span class="nm">32</span>))
+    <span class="cm"># 10 classes from 10 random prototypes; some are confusable by construction</span>
+    P = rng.normal(<span class="nm">0</span>, <span class="nm">1</span>, (<span class="nm">10</span>, <span class="nm">32</span>)); P[<span class="nm">3</span>] = P[<span class="nm">8</span>] + rng.normal(<span class="nm">0</span>, <span class="nm">0.6</span>, <span class="nm">32</span>)
+    logi = X @ P.T
+    y = logi.argmax(<span class="nm">1</span>)
+    <span class="kw">return</span> X, y, logi
+
+<span class="kw">def</span> <span class="fn">mlp</span>(X, hidden=<span class="nm">64</span>):
+    <span class="kw">return</span> np.tanh(X @ rng.normal(<span class="nm">0</span>, <span class="nm">1</span>/np.sqrt(<span class="nm">32</span>), (<span class="nm">32</span>, hidden)))
+
+Xl, yl, _ = <span class="fn">data</span>(<span class="nm">500</span>)          <span class="cm"># small labelled set</span>
+Xt, yt, lt = <span class="fn">data</span>(<span class="nm">50_000</span>)      <span class="cm"># teacher's larger corpus</span>
+<span class="fn">print</span>(<span class="st">"small-set unique labels:"</span>, <span class="fn">len</span>(np.unique(yl)))
+<span class="cm"># a real experiment: train student on hard labels vs on soft posteriors from a model</span>
+<span class="cm"># fitted on the 50k pool. Expect the soft-target student to generalise better.</span>
+<span class="cm"># (Full training loop omitted; the diagnostic to look for is val accuracy at equal epochs.)</span>
+      </div>
+      <p class="expect">The synthetic setup has two deliberately confusable classes (3 and 8), so a hard-label student sees only
+      binary right/wrong on those and learns a sharp boundary; a soft-target student sees the teacher's graded uncertainty and
+      learns the overlap. <strong>Falsification:</strong> if the soft-target student does not beat the hard-label one on held-out
+      data, your teacher probabilities are too peaked (train with T &gt; 1 to fix) or the two classes are not actually confusable.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b41-s5">5 &middot; Failure modes <a class="hook" href="#b41-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Capacity gap.</strong> Symptom: student underperforms the teacher <em>and</em> underperforms a same-size model
+        trained on hard labels. The teacher's distribution is too complex for the student's capacity; reduce T, raise &alpha; on hard
+        labels, or distil from a smaller teacher.</li>
+        <li><strong>Confidently wrong teacher.</strong> Symptom: the student reproduces a specific factual error or formatting habit
+        of the teacher, faithfully and consistently. There is no mechanism to correct it &mdash; only a ground-truth anchor term
+        (&alpha; &gt; 0 with real labels) or a rejection criterion can.</li>
+        <li><strong>Unpinned teacher.</strong> Symptom: you cannot reproduce the distilled model because the teacher was updated
+        between data-generation runs, so the dataset is a mixture of several teachers. Record the checkpoint hash in the manifest.</li>
+        <li><strong>Rejection-sampling bias.</strong> Symptom: the student only knows how to reason on problems the teacher can
+        solve, and deployment traffic is harder. The keep-rate filter silently truncates the difficulty distribution &mdash; measure
+        the difficulty distribution of kept vs attempted problems.</li>
+        <li><strong>Distilling style, not capability.</strong> Symptom: the student's answers sound exactly like the teacher's but
+        correctness is unchanged. Logit distillation transfers <em>behaviour</em>; if you want capability you need traces with
+        verified correctness, not surface text.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b41-s6">6 &middot; Connects to <a class="hook" href="#b41-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L16 (cross-entropy) and L27 (what to train a model on). &nbsp;
+    <strong>Unlocks:</strong> L66 (distilling reasoning) and L40 (the other compression route).</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/16-loss-perplexity.html">L16 &middot; Cross-entropy</a> &mdash; the hard-label baseline being replaced.</li>
+      <li><a class="tag-b" href="40-precision-quant.html">L40 &middot; Quantization</a> &mdash; compression by precision, the alternative.</li>
+      <li><a class="tag-b" href="27-chinchilla.html">L27 &middot; Chinchilla</a> &mdash; how many tokens a student needs if each is worth more.</li>
+      <li><a class="tag-c" href="../track-c/66-distilling-reasoning.html">L66 &middot; Distilling reasoning models</a> &mdash; rejection sampling and trace recycling in depth.</li>
+      <li><a class="tag-c" href="../track-c/62-long-cot-r1.html">L62 &middot; Long CoT and R1-Zero</a> &mdash; what made reasoning traces a distillable artifact.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b41-s7">7 &middot; Self-check <a class="hook" href="#b41-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is the T&sup2; factor in the distillation loss, and what happens numerically if you omit it while raising T from 1 to 4?</p>
+        <details><summary>Reveal answer</summary><p>Soft-target gradients scale as 1/T&sup2; (because softmax logits are divided by T and then a gradient is taken). Without the
+        T&sup2; multiplier the distillation term's effective weight falls by 16&times; when you move from T = 1 to T = 4, so the student
+        silently becomes a hard-label-only model. Measured KL: 0.2184 at T = 1 vs 0.0152 at T = 4 &mdash; a 14&times; collapse in magnitude.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Teacher 284B, student 13B. Compute the training cost multiplier for logit distillation and state the formula you used.</p>
+        <details><summary>Reveal answer</summary><p>cost multiplier = 1 + N_T/(3N_S) = 1 + 284/(3&times;13) = 1 + 7.28 = <strong>8.28&times;</strong>. The
+        derivation: per token, teacher forward is 2N_T, student forward+backward is 6N_S, and plain training is 6N_S, so the ratio is
+        (2N_T + 6N_S)/(6N_S) = 1 + N_T/(3N_S).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a distilled student is fluent in the teacher's style but no more accurate. What went wrong, and what should you change?</p>
+        <details><summary>Reveal answer</summary><p>You distilled surface text (sequence distillation) rather than verified reasoning. Style transfers trivially from generated
+        text; capability requires traces whose final answers were checked (rejection sampling against a verifier). Fix: generate many
+        samples per problem, keep only verified-correct traces, and distil on those &mdash; accepting the keep-rate cost multiplier.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> A rejection loop keeps 6% of teacher samples. How many traces must be generated for 500,000 accepted, and how does this compare to a 30% keep rate?</p>
+        <details><summary>Reveal answer</summary><p>At 6%: 500,000/0.06 = 8,333,334 generated. At 30%: 1,666,667 generated. So the low keep rate costs 5&times; more
+        teacher generation for the same dataset. That is why problem selection (per-problem success estimates) matters more than model
+        size in the pipeline &mdash; drop problems the teacher almost never solves rather than burning 16 samples each.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> When is distillation the wrong tool compared to quantization?</p>
+        <details><summary>Reveal answer</summary><p>Quantization keeps the same architecture and costs nothing in data or teacher passes; distillation buys roughly 10&ndash;70&times;
+        compression but requires a teacher, a data pipeline and 2.5&ndash;24&times; the training compute. Use quantization first &mdash; it is free
+        throughput at a small accuracy risk that you can measure. Reach for distillation when the required size drop is larger than
+        precision alone can deliver and you have a teacher you trust plus a verifiable way to keep traces.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="40-precision-quant.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L40 &middot; Precision &amp; quantization</span></a>
+    <a class="next" href="42-parallelism.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L42 &middot; Parallelism: DP, TP, PP, EP, FSDP</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="c58">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L58 &middot; Reward models: Bradley&ndash;Terry, calibration, and the argmax gap &mdash; AILearn</title>
+<meta name="description" content="Fit a Bradley-Terry reward model from scratch, measure its calibration, and quantify the gap between the argmax of the reward and the argmax of true quality.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+<style>
+  .mono { font-family: var(--mono); }
+  .seq { font-family: var(--mono); font-size: .82rem; background:#060910; border:1px solid var(--line);
+          border-radius:10px; padding:10px 14px; white-space:pre; overflow-x:auto; color:#cbd5e1; margin:16px 0; }
+  .repr { font-family: var(--mono); font-size: .78rem; color:#cbd5e1; }
+  .score { display:inline-block; font-family: var(--mono); font-size:.72rem; padding:1px 7px; border-radius:5px;
+            border:1px solid rgba(99,102,241,.35); background:rgba(99,102,241,.10); color:#c7d2fe; }
+  .small { font-size:.86rem; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track C &mdash; Post-training &amp; Reasoning</a> <span>/</span> <span>L58</span></div>
+  <div class="track-tag">TRACK C &middot; POST-TRAINING &amp; REASONING</div>
+  <h1>L58 &middot; Reward models: Bradley&ndash;Terry, calibration, and the argmax gap</h1>
+  <p class="lede">The reward model is the only model in the stack whose errors get optimised against. This page fits one on 4000 pairs, measures the exact number of reward points an optimiser gains by choosing the wrong answer, and lists the three checks that gate it.</p>
+  <div class="chips">
+    <span class="chip">~27 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: a tiny Bradley-Terry reward model</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">Bradley-Terry</span>
+  <span class="pill">pairwise likelihood</span>
+  <span class="pill">reward calibration</span>
+  <span class="pill">length halo</span>
+  <span class="pill">argmax gap</span>
+  <span class="pill">swap-order test</span>
+  <span class="pill">ridge regularisation</span>
+  <span class="pill">distribution shift</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 &middot; Why it exists">
+    <h2 id="c58-s1">1 &middot; Why it exists <a class="hook" href="#c58-s1">#</a></h2>
+
+    <p>A reward model is the most consequential model in the pipeline and the only one whose errors are
+    <em>optimised against</em>. Everything else in the stack predicts or generates; the reward model defines
+    what "better" means, and then a policy gradient spends days finding the inputs it likes most. Two
+    failures follow directly and are worth stating as the reason this lesson exists:</p>
+
+    <ul>
+      <li><strong>The reward model is a compressing approximation of your annotators, not of quality.</strong>
+      If annotators used length as a proxy for effort, the reward model learns <em>length</em>, and RL discovers
+      that a long answer scores better than the one a clinician would trust.</li>
+      <li><strong>The reward model is trained on pairs the base policy produced.</strong> As the policy moves, it visits
+      regions the reward model never saw, where its errors are largest &mdash; and that is exactly where the policy
+      is being pushed.</li>
+    </ul>
+
+    <div class="callout boss">
+      <p>A reward model is a Bradley&ndash;Terry logistic regression on pair preferences. Its quality is measured
+      two ways: agreement with held-out pairs, and the <em>gap</em> between the argmax of the learned reward and
+      the argmax of the true quality. RL optimises for the first; only the second determines whether you get a
+      better product.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 &middot; The mental model">
+    <h2 id="c58-s2">2 &middot; The mental model <a class="hook" href="#c58-s2">#</a></h2>
+
+    <p><strong>The mental model:</strong> a Bradley&ndash;Terry model turns pairwise comparisons into scalar
+    scores. Assuming each response has a latent score s and comparisons are noisy reads of the difference:</p>
+
+    <div class="formula">
+      P(y<sub>w</sub> &#8811; y<sub>l</sub> | x) = &sigma;( s<sub>&phi;</sub>(x, y<sub>w</sub>) &minus; s<sub>&phi;</sub>(x, y<sub>l</sub>) )
+      <span class="note">Only differences are identified: s is defined up to a per-prompt constant. That constraint is why the reward has no absolute scale and why normalisation matters.</span>
+    </div>
+
+    <p>Train it by minimising &minus;&Sigma; log &sigma;(s<sub>w</sub> &minus; s<sub>l</sub>) over your pairs. That is
+    all "reward model training" means at the objective level; everything else is architecture and data.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What "a scorer" gets right</h4><p>It separates the data problem (pairs) from the use
+      problem (query a scalar). You can re-fit on new pairs without a policy; you can calibrate it; you can
+      attack it in tests before RL does.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A scorer that only sees differences is unanchored: shifting
+      every score by a constant leaves the pair likelihood unchanged, so the model has arbitrary units. When RL
+      maximises it, the only thing that stops the score growing forever is the KL leash &mdash; not the reward.</p></div>
+    </div>
+
+    <p>Three diagnostics decide whether you can ship it:</p>
+    <table class="table">
+      <thead><tr><th>Diagnostic</th><th>What it detects</th><th>Gate</th></tr></thead>
+      <tbody>
+        <tr><td>Held-out pair accuracy</td><td>Fit quality</td><td>Set the bar from annotator-to-annotator agreement, not from 100%</td></tr>
+        <tr><td>Swap-order accuracy</td><td>Position bias leaking into the scores</td><td>Accuracy must not move more than a point or two when A/B are swapped</td></tr>
+        <tr><td>Score vs length slope (fixed-quality sample)</td><td>Verbosity hacking</td><td>A strong positive slope means you have a length detector</td></tr>
+      </tbody>
+    </table>
+    <p>And the one that is not a diagnostic but a fixture: <strong>the argmax gap</strong>. Enumerate or sample the
+    highest-scoring outputs under the reward model and grade them with your true evaluator. If they beat every
+    real answer on the reward and lose to it on quality, the reward model has told you exactly how it will be
+    hacked.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 &middot; The mechanism">
+    <h2 id="c58-s3">3 &middot; The mechanism <a class="hook" href="#c58-s3">#</a></h2>
+
+    <p>The loss, written for a pairwise dataset, plus the gate arithmetic:</p>
+
+    <div class="formula">
+      L(&phi;) = &minus; E<sub>(x,y<sub>w</sub>,y<sub>l</sub>)</sub> [ log &sigma;( s<sub>&phi;</sub>(x,y<sub>w</sub>) &minus; s<sub>&phi;</sub>(x,y<sub>l</sub>) ) ] &nbsp;+&nbsp; &lambda;&Vert;&phi;&Vert;&sup2;
+      <span class="note">s<sub>&phi;</sub> is any scoring function (a transformer with a scalar head works). The ridge term stops the score from running away on separable pairs.</span>
+    </div>
+
+    <p>The lab below fits a Bradley&ndash;Terry reward on 4000 pairs generated by an annotator with a specific,
+    knowable pathology: a <em>length halo</em>. The true quality function mildly <em>penalises</em> length. The
+    annotator rewards it anyway. Then the script prints the argmax of the learned reward next to the argmax of
+    true quality &mdash; the gap RL will drive into.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L58: train a reward model the way RLHF does -- Bradley-Terry on pair preferences.</span>
+<span class="cm"># Pure stdlib. Four candidate answers per prompt type, 4000 preference pairs.</span>
+<span class="kw">import</span> math, random
+
+rng = random.Random(<span class="nm">4</span>)
+CITE, LEN_PENALTY, HALO = <span class="nm">3.40</span>, <span class="nm">1.00</span>, <span class="nm">1.30</span>   <span class="cm"># true quality vs the annotator's length halo</span>
+
+CANDS = {                                     <span class="cm"># (cited?, length in "sentences")</span>
+    <span class="st">"concise_cited"</span>:   (<span class="nm">1.0</span>, <span class="nm">1.0</span>),
+    <span class="st">"verbose_cited"</span>:   (<span class="nm">1.0</span>, <span class="nm">4.0</span>),
+    <span class="st">"concise_uncited"</span>: (<span class="nm">0.0</span>, <span class="nm">1.0</span>),
+    <span class="st">"verbose_uncited"</span>: (<span class="nm">0.0</span>, <span class="nm">4.0</span>),
+}
+KINDS = list(CANDS)
+
+
+<span class="kw">def</span> true_score(k):
+    c, l = CANDS[k]
+    <span class="kw">return</span> CITE * c - LEN_PENALTY * (l - <span class="nm">1.0</span>)
+
+
+<span class="kw">def</span> annotator(a, b):
+    z = (true_score(a) - true_score(b)) + HALO * (CANDS[a][<span class="nm">1</span>] - CANDS[b][<span class="nm">1</span>])
+    <span class="kw">return</span> <span class="nm">1</span> <span class="kw">if</span> rng.random() &lt; <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z)) <span class="kw">else</span> <span class="nm">0</span>
+
+
+pairs = []
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">4000</span>):
+    a, b = rng.choice(KINDS), rng.choice(KINDS)
+    <span class="kw">if</span> a != b:
+        pairs.append((a, b, annotator(a, b)))
+
+phi = <span class="kw">lambda</span> k: CANDS[k]                       <span class="cm"># feature map</span>
+w = [<span class="nm">0.0</span>, <span class="nm">0.0</span>]
+LR = <span class="nm">0.6</span>
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">300</span>):
+    g = [<span class="nm">0.0</span>, <span class="nm">0.0</span>]
+    <span class="kw">for</span> a, b, y <span class="kw">in</span> pairs:
+        d = [phi(a)[i] - phi(b)[i] <span class="kw">for</span> i <span class="kw">in</span> range(<span class="nm">2</span>)]
+        z = w[<span class="nm">0</span>] * d[<span class="nm">0</span>] + w[<span class="nm">1</span>] * d[<span class="nm">1</span>]
+        p = <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z))
+        err = y - p                            <span class="cm"># d(log-likelihood)/dz</span>
+        g[<span class="nm">0</span>] += err * d[<span class="nm">0</span>]
+        g[<span class="nm">1</span>] += err * d[<span class="nm">1</span>]
+    w[<span class="nm">0</span>] += LR * g[<span class="nm">0</span>] / len(pairs)
+    w[<span class="nm">1</span>] += LR * g[<span class="nm">1</span>] / len(pairs)
+
+
+<span class="kw">def</span> rm(k):
+    <span class="kw">return</span> w[<span class="nm">0</span>] * phi(k)[<span class="nm">0</span>] + w[<span class="nm">1</span>] * phi(k)[<span class="nm">1</span>]
+
+
+ok = <span class="nm">0</span>
+<span class="kw">for</span> a, b, y <span class="kw">in</span> pairs:
+    d = [phi(a)[i] - phi(b)[i] <span class="kw">for</span> i <span class="kw">in</span> range(<span class="nm">2</span>)]
+    ok += ((<span class="nm">1</span> <span class="kw">if</span> w[<span class="nm">0</span>] * d[<span class="nm">0</span>] + w[<span class="nm">1</span>] * d[<span class="nm">1</span>] &gt; <span class="nm">0</span> <span class="kw">else</span> <span class="nm">0</span>) == y)
+
+<span class="kw">print</span>(f<span class="st">"fitted reward model : citation={w[0]:+.3f}  length={w[1]:+.3f}"</span>)
+<span class="kw">print</span>(f<span class="st">"a perfect reward    : citation={CITE:+.3f}  length={-LEN_PENALTY:+.3f}"</span>)
+<span class="kw">print</span>(f<span class="st">"training-pair accuracy = {ok / len(pairs):.3f}\n"</span>)
+
+<span class="kw">print</span>(f<span class="st">"{'candidate':&lt;18}{'RM score':&gt;10}{'true score':&gt;12}"</span>)
+<span class="kw">for</span> k <span class="kw">in</span> KINDS:
+    <span class="kw">print</span>(f<span class="st">"{k:&lt;18}{rm(k):&gt;10.3f}{true_score(k):&gt;12.3f}"</span>)
+
+best_rm = max(KINDS, key=rm)
+best_true = max(KINDS, key=true_score)
+<span class="kw">print</span>(f<span class="st">"\nargmax of the reward model: {best_rm}  (RM={rm(best_rm):+.3f}, true={true_score(best_rm):+.3f})"</span>)
+<span class="kw">print</span>(f<span class="st">"argmax of true quality    : {best_true}  (RM={rm(best_true):+.3f}, true={true_score(best_true):+.3f})"</span>)
+<span class="kw">print</span>(f<span class="st">"an RL optimiser gains {rm(best_rm) - rm(best_true):.3f} RM points by choosing the wrong answer."</span>)
+</div><div class="code out-block" data-lang="output">
+fitted reward model : citation=+3.346  length=+0.319
+a perfect reward    : citation=+3.400  length=-1.000
+training-pair accuracy = 0.883
+
+candidate           RM score  true score
+concise_cited          3.665       3.400
+verbose_cited          4.622       0.400
+concise_uncited        0.319       0.000
+verbose_uncited        1.277      -3.000
+
+argmax of the reward model: verbose_cited  (RM=+4.622, true=+0.400)
+argmax of true quality    : concise_cited  (RM=+3.665, true=+3.400)
+an RL optimiser gains 0.958 RM points by choosing the wrong answer.
+</div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 &middot; Your hands">
+    <h2 id="c58-s4">4 &middot; Your hands <a class="hook" href="#c58-s4">#</a></h2>
+
+    <p>Three labs. Fit the reward model and find the argmax gap; calibrate it; then run the adversarial test
+    that belongs in CI next to every reward model.</p>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; fit the reward model, then find the argmax gap</h4>
+      <p>Four candidate answers described by two properties: cited / uncited, short / verbose. True quality mildly penalises length; the annotator is generous toward it. The Bradley-Terry fit sees only the pair outcomes.</p>
+<div class="code" data-lang="python">
+<span class="cm"># L58: train a reward model the way RLHF does -- Bradley-Terry on pair preferences.</span>
+<span class="cm"># Pure stdlib. Four candidate answers per prompt type, 4000 preference pairs.</span>
+<span class="kw">import</span> math, random
+
+rng = random.Random(<span class="nm">4</span>)
+CITE, LEN_PENALTY, HALO = <span class="nm">3.40</span>, <span class="nm">1.00</span>, <span class="nm">1.30</span>   <span class="cm"># true quality vs the annotator's length halo</span>
+
+CANDS = {                                     <span class="cm"># (cited?, length in "sentences")</span>
+    <span class="st">"concise_cited"</span>:   (<span class="nm">1.0</span>, <span class="nm">1.0</span>),
+    <span class="st">"verbose_cited"</span>:   (<span class="nm">1.0</span>, <span class="nm">4.0</span>),
+    <span class="st">"concise_uncited"</span>: (<span class="nm">0.0</span>, <span class="nm">1.0</span>),
+    <span class="st">"verbose_uncited"</span>: (<span class="nm">0.0</span>, <span class="nm">4.0</span>),
+}
+KINDS = list(CANDS)
+
+
+<span class="kw">def</span> true_score(k):
+    c, l = CANDS[k]
+    <span class="kw">return</span> CITE * c - LEN_PENALTY * (l - <span class="nm">1.0</span>)
+
+
+<span class="kw">def</span> annotator(a, b):
+    z = (true_score(a) - true_score(b)) + HALO * (CANDS[a][<span class="nm">1</span>] - CANDS[b][<span class="nm">1</span>])
+    <span class="kw">return</span> <span class="nm">1</span> <span class="kw">if</span> rng.random() &lt; <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z)) <span class="kw">else</span> <span class="nm">0</span>
+
+
+pairs = []
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">4000</span>):
+    a, b = rng.choice(KINDS), rng.choice(KINDS)
+    <span class="kw">if</span> a != b:
+        pairs.append((a, b, annotator(a, b)))
+
+phi = <span class="kw">lambda</span> k: CANDS[k]                       <span class="cm"># feature map</span>
+w = [<span class="nm">0.0</span>, <span class="nm">0.0</span>]
+LR = <span class="nm">0.6</span>
+<span class="kw">for</span> _ <span class="kw">in</span> range(<span class="nm">300</span>):
+    g = [<span class="nm">0.0</span>, <span class="nm">0.0</span>]
+    <span class="kw">for</span> a, b, y <span class="kw">in</span> pairs:
+        d = [phi(a)[i] - phi(b)[i] <span class="kw">for</span> i <span class="kw">in</span> range(<span class="nm">2</span>)]
+        z = w[<span class="nm">0</span>] * d[<span class="nm">0</span>] + w[<span class="nm">1</span>] * d[<span class="nm">1</span>]
+        p = <span class="nm">1</span> / (<span class="nm">1</span> + math.exp(-z))
+        err = y - p                            <span class="cm"># d(log-likelihood)/dz</span>
+        g[<span class="nm">0</span>] += err * d[<span class="nm">0</span>]
+        g[<span class="nm">1</span>] += err * d[<span class="nm">1</span>]
+    w[<span class="nm">0</span>] += LR * g[<span class="nm">0</span>] / len(pairs)
+    w[<span class="nm">1</span>] += LR * g[<span class="nm">1</span>] / len(pairs)
+
+
+<span class="kw">def</span> rm(k):
+    <span class="kw">return</span> w[<span class="nm">0</span>] * phi(k)[<span class="nm">0</span>] + w[<span class="nm">1</span>] * phi(k)[<span class="nm">1</span>]
+
+
+ok = <span class="nm">0</span>
+<span class="kw">for</span> a, b, y <span class="kw">in</span> pairs:
+    d = [phi(a)[i] - phi(b)[i] <span class="kw">for</span> i <span class="kw">in</span> range(<span class="nm">2</span>)]
+    ok += ((<span class="nm">1</span> <span class="kw">if</span> w[<span class="nm">0</span>] * d[<span class="nm">0</span>] + w[<span class="nm">1</span>] * d[<span class="nm">1</span>] &gt; <span class="nm">0</span> <span class="kw">else</span> <span class="nm">0</span>) == y)
+
+<span class="kw">print</span>(f<span class="st">"fitted reward model : citation={w[0]:+.3f}  length={w[1]:+.3f}"</span>)
+<span class="kw">print</span>(f<span class="st">"a perfect reward    : citation={CITE:+.3f}  length={-LEN_PENALTY:+.3f}"</span>)
+<span class="kw">print</span>(f<span class="st">"training-pair accuracy = {ok / len(pairs):.3f}\n"</span>)
+
+<span class="kw">print</span>(f<span class="st">"{'candidate':&lt;18}{'RM score':&gt;10}{'true score':&gt;12}"</span>)
+<span class="kw">for</span> k <span class="kw">in</span> KINDS:
+    <span class="kw">print</span>(f<span class="st">"{k:&lt;18}{rm(k):&gt;10.3f}{true_score(k):&gt;12.3f}"</span>)
+
+best_rm = max(KINDS, key=rm)
+best_true = max(KINDS, key=true_score)
+<span class="kw">print</span>(f<span class="st">"\nargmax of the reward model: {best_rm}  (RM={rm(best_rm):+.3f}, true={true_score(best_rm):+.3f})"</span>)
+<span class="kw">print</span>(f<span class="st">"argmax of true quality    : {best_true}  (RM={rm(best_true):+.3f}, true={true_score(best_true):+.3f})"</span>)
+<span class="kw">print</span>(f<span class="st">"an RL optimiser gains {rm(best_rm) - rm(best_true):.3f} RM points by choosing the wrong answer."</span>)
+</div><div class="code out-block" data-lang="output">
+fitted reward model : citation=+3.346  length=+0.319
+a perfect reward    : citation=+3.400  length=-1.000
+training-pair accuracy = 0.883
+
+candidate           RM score  true score
+concise_cited          3.665       3.400
+verbose_cited          4.622       0.400
+concise_uncited        0.319       0.000
+verbose_uncited        1.277      -3.000
+
+argmax of the reward model: verbose_cited  (RM=+4.622, true=+0.400)
+argmax of true quality    : concise_cited  (RM=+3.665, true=+3.400)
+an RL optimiser gains 0.958 RM points by choosing the wrong answer.
+</div>
+      <p class="expect">The fit recovers citation strongly and assigns length a POSITIVE weight even though true quality penalises it. The script prints the gap: the RL optimiser gains about 0.96 reward points for choosing an answer whose true quality is 3 points worse. That number is the hacking budget, quantified before any RL run.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; calibrate: accuracy is not the metric that matters</h4>
+      <p>Change one line &mdash; remove the length halo from the annotator (HALO = 0.0) &mdash; and re-run.</p>
+<div class="code" data-lang="python">
+<span class="cm"># in s58a.py, change</span>
+CITE, LEN_PENALTY, HALO = <span class="nm">3.40</span>, <span class="nm">1.00</span>, <span class="nm">1.30</span>
+<span class="cm"># to</span>
+CITE, LEN_PENALTY, HALO = <span class="nm">3.40</span>, <span class="nm">1.00</span>, <span class="nm">0.00</span>
+</div>
+      <p class="expect">The fitted length weight drops toward the true negative value and the argmax gap closes. This is the falsifier for the whole lesson: if the pathology is in the annotation, removing it from the annotation removes it from the reward model. If the gap persists with a clean annotator, the model or feature set is at fault, not the data.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; the swap-order test in four lines</h4>
+      <p>Position bias is the cheapest reward-model bug to detect and the most common. Run this against your own scorer.</p>
+      <div class="code" data-lang="python">
+pairs = [("A text", "B text"), ("C text", "D text")]      # your held-out pairs
+scorer = lambda pair: (0, 0)                              # returns (score_left, score_right)
+
+flips = sum(1 for a, b in pairs
+            if (lambda l, r: (l &gt; r) != (r &gt; l))(scorer((a, b))[0], scorer((a, b))[1])
+            and not True)
+# the invariant: scoring must be ORDER-FREE. If your API takes the pair, change it to score
+# each response independently -- a pair-aware scorer has no defined swap behaviour at all.
+print("order-free by construction" if scorer(("x", "x"))[0] == scorer(("x", "x"))[1] else "LEAK")
+      </div>
+      <p class="expect">The real test is stronger than this sketch: score each response independently, compare, then compare again with the"
+      " arguments reversed. Any disagreement is position leakage. If your scorer cannot be called on a single response, that is itself the"
+      " finding.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 &middot; Failure modes">
+    <h2 id="c58-s5">5 &middot; Failure modes <a class="hook" href="#c58-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Reward is a length detector.</strong> Symptom: regression of score on length, for fixed-quality samples, has R&sup2; above about 0.3. Everything downstream gets longer.</li>
+        <li><strong>Distribution shift between pairs and policy.</strong> Symptom: held-out pair accuracy is 0.80, but the reward on the current policy's outputs has much higher variance than on the dataset's responses. The policy has left the support of the training pairs.</li>
+        <li><strong>Calibration drift across prompts.</strong> Symptom: the same model scores much higher on easy prompts than hard ones, so RL prefers easy prompts; error attribution looks like "it got better at what it already knew".</li>
+        <li><strong>Ridge/scale missing.</strong> Symptom: reward values grow without bound during RL; the KL term is the only thing stopping them and the run becomes a tug-of-war between two hyperparameters.</li>
+        <li><strong>Pair source contamination.</strong> Symptom: pair accuracy near 1.0 that does not transfer &mdash; the pairs were produced by a model whose idiosyncrasies the RM memorised (e.g. scores by format rather than content).</li>
+        <li><strong>Reward model sharing the policy's blind spots.</strong> Symptom: RM benefits from the same hallucinated citations the policy produces, so both agree and both are wrong; only an independent grader sees it.</li>
+      </ul>
+    </div>
+
+    <div class="callout audit">
+      <p>Ship a reward model only with: a held-out pair set frozen by hash, a swap-order test, a
+      score-vs-length regression on a fixed-quality sample, and a written list of the top-5 highest-scoring
+      outputs with their true grades. Those five highest-scoring outputs are the attack surface; if you have
+      not looked at them, you have not looked at the model.</p>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 &middot; Connects to">
+    <h2 id="c58-s6">6 &middot; Connects to <a class="hook" href="#c58-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-c" href="54-preference-learning.html">L54 &middot; Preference data</a>
+    (the pairs and their biases), <a class="tag-c" href="51-post-training.html">L51 &middot; Post-training map</a>.</p>
+    <p><strong>Unlocks:</strong> PPO/GRPO with a learned reward, and the entire reward-hacking lesson.</p>
+
+    <ul>
+      <li><a class="tag-c" href="55-dpo.html">L55 &middot; DPO</a> &mdash; the method that deletes this model entirely.</li>
+      <li><a class="tag-c" href="57-ppo.html">L57 &middot; PPO</a> &mdash; model #3 in the four-model pipeline.</li>
+      <li><a class="tag-c" href="59-process-reward.html">L59 &middot; Process rewards</a> &mdash; scoring steps instead of whole answers.</li>
+      <li><a class="tag-c" href="75-reward-hacking.html">L75 &middot; Reward hacking</a> &mdash; the general theory of the argmax gap.</li>
+      <li><a class="tag-d" href="../track-d/89-llm-as-judge.html">L89 &middot; LLM-as-judge</a> &mdash; the same calibration problem with a model as the annotator.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 &middot; Self-check">
+    <h2 id="c58-s7">7 &middot; Self-check <a class="hook" href="#c58-s7">#</a></h2>
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why is a Bradley-Terry reward model only identified up to a per-prompt constant, and what breaks if you forget?</p>
+        <details><summary>Reveal answer</summary><p>The likelihood depends only on score differences between two responses to the same prompt, so adding anyprompt-level constant leaves every probability unchanged. Consequences: (1) the reward's absolute units are arbitrary,so comparing rewards <em>across</em> prompts is meaningless and an optimiser that averages them learns promptdifficulty; (2) unbounded growth during RL is a scale problem, not a signal problem, and needs normalisation or a ridge term.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative: the fitted weights are citation +3.35 and length +0.32, and true quality is citation +3.40 with length &minus;1.00. By how much does an RL optimiser gain by choosing a verbose cited answer over the concise one?</p>
+        <details><summary>Reveal answer</summary><p>verbose_cited scores 3.35 &times; 1 + 0.32 &times; 4 = 4.62; concise_cited scores 3.35 + 0.32 = 3.67. The reward gain is 0.95.True quality: verbose 3.40 &minus; 3.00 = 0.40 versus concise 3.40. So the optimiser gains about a full reward unit for a3-point drop in true quality. That single number is the reward-hacking budget.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Held-out pair accuracy is 0.78 while two annotators agree on 0.72 of their pairs. Is the reward model good?</p>
+        <details><summary>Reveal answer</summary><p>Roughly yes, and the number to compare against is annotator agreement, not 1.0: two humans disagree on28% of pairs, so the ceiling is about 0.72. Chasing accuracy above the human ceiling means fitting annotator noise. Break accuracy down by pairdifficulty band and by annotator: a model that agrees with one annotator far more than the others has learned thatperson, not the task.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: reward rises during RL, mean length rises, graded accuracy is flat. Give the exact regression you run and the value that indicts the reward model.</p>
+        <details><summary>Reveal answer</summary><p>Fix a difficulty band (same prompts, same true-score bucket), sample many responses, and regress the reward model'sscore on log-length. If the coefficient is positive with R&sup2; above roughly 0.3, the reward model is a length detectorand RL is doing exactly what you asked. The fix is upstream &mdash; length-balanced pairs and a rubric that definescompleteness &mdash; not a length penalty bolted onto RL.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does the reward model get worse exactly where the policy moves?</p>
+        <details><summary>Reveal answer</summary><p>Because it was fit on the base policy's output distribution, and the Bradley-Terry fit is only accurate insidethat support. RL pushes the policy toward the reward's high-score region, which is typically under-represented in thepairs &mdash; so the region it explores is precisely the region the reward model extrapolates worst. This is whyiterated retraining of the reward on fresh pairs is a common practical remedy.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="57-ppo.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L57 &middot; PPO for LLMs: clipping, value model, KL leash</span></a>
+    <a class="next" href="59-process-reward.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L59 &middot; Process rewards and step-level verification</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

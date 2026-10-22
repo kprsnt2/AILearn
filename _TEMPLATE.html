@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="SAMPLE-TEMPLATE">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lxx · Title — AILearn</title>
+<meta name="description" content="One-line description of what this lesson proves.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>Lxx</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>Lxx &middot; Lesson Title Goes Here</h1>
+  <p class="lede">Two sentences maximum. The first names the production failure. The second names the mechanism that fixes it.</p>
+  <div class="chips">
+    <span class="chip">~25 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9675;&#9675;&#9675;</span>
+    <span class="chip">build: what you build in here</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">concept-one</span>
+  <span class="pill">concept-two</span>
+  <span class="pill">concept-three</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="HOOK-s1">1 &middot; Why it exists <a class="hook" href="#HOOK-s1">#</a></h2>
+
+    <p>State the real-world failure that forced this idea into existence. Concrete numbers where they are
+    definitional (e.g. "a 128k-token prompt re-encodes every token on every turn").</p>
+
+    <div class="callout boss">
+      <p>The one-sentence version for a stakeholder who will never read the math.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="HOOK-s2">2 &middot; The mental model <a class="hook" href="#HOOK-s2">#</a></h2>
+
+    <p>Smallest correct model. If you use an analogy, label it and say where it breaks.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>&hellip;</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>&hellip;</p></div>
+    </div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="HOOK-s3">3 &middot; The mechanism <a class="hook" href="#HOOK-s3">#</a></h2>
+
+    <div class="formula">
+      objective = &sum;<sub>t</sub> log p<sub>&theta;</sub>(x<sub>t</sub> | x<sub>&lt;t</sub>)
+      <span class="note">Say in one line what every symbol means and what it optimises.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># minimal reference implementation — runs as-is</span>
+<span class="kw">def</span> <span class="fn">mechanism</span>(x):
+    <span class="kw">return</span> x
+
+<span class="fn">print</span>(<span class="fn">mechanism</span>(<span class="nm">3</span>))
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="HOOK-s4">4 &middot; Your hands <a class="hook" href="#HOOK-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; short imperative title</h4>
+      <p>What you are testing and why this test is diagnostic.</p>
+      <div class="code" data-lang="bash">
+python -c "print('copy-paste runnable')"
+      </div>
+      <p class="expect">What you should see, and what result would falsify the claim.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="HOOK-s5">5 &middot; Failure modes <a class="hook" href="#HOOK-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Named failure.</strong> The observable symptom that tells you it happened.</li>
+        <li><strong>Second failure.</strong> Its symptom.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="HOOK-s6">6 &middot; Connects to <a class="hook" href="#HOOK-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> &hellip; &nbsp; <strong>Unlocks:</strong> &hellip;</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/05-x.html">L05 &middot; Lesson name</a> &mdash; why it matters here.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="HOOK-s7">7 &middot; Self-check <a class="hook" href="#HOOK-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Question text?</p>
+        <details><summary>Reveal answer</summary><p>Answer with the reasoning, not just the fact.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Quantitative question?</p>
+        <details><summary>Reveal answer</summary><p>Show the arithmetic.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic question?</p>
+        <details><summary>Reveal answer</summary><p>&hellip;</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> &hellip;</p>
+        <details><summary>Reveal answer</summary><p>&hellip;</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> &hellip;</p>
+        <details><summary>Reveal answer</summary><p>&hellip;</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="PREV-FILE.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">Lxx &middot; Title</span></a>
+    <a class="next" href="NEXT-FILE.html"><span class="dir">NEXT &rarr;</span><span class="ttl">Lxx &middot; Title</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

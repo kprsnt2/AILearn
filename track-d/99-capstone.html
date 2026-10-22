@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d99">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L99 · Capstone: ship an audited autonomous agent — AILearn</title>
+<meta name="description" content="16 acceptance criteria, each naming its artifact, its check, and its pass condition. The exact evidence bundle a reviewer demands, and the four-step review workflow that accepts or rejects without discussing quality.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L99</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L99 &middot; Capstone: ship an audited autonomous agent</h1>
+  <p class="lede">"Audited" is not an adjective you apply to a system; it is a bundle you produce. <strong>16 criteria</strong>, each naming an artifact, a check, and a pass condition &mdash; and a reviewer workflow that rejects on a missing artifact without ever discussing whether the agent is good.</p>
+  <div class="chips">
+    <span class="chip">~45 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: the acceptance bundle + reviewer script</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">acceptance criteria</span>
+  <span class="pill">evidence bundle</span>
+  <span class="pill">self-verifying SEAL</span>
+  <span class="pill">one variable per change</span>
+  <span class="pill">adversarial oracle suite</span>
+  <span class="pill">claim&ndash;oracle join</span>
+  <span class="pill">reviewer workflow</span>
+  <span class="pill">reject-on-absence</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d99-s1">1 &middot; Why it exists <a class="hook" href="#d99-s1">#</a></h2>
+
+    <p>The failure this capstone is designed to prevent: <strong>the demo was convincing and the review was a conversation.</strong>
+    Someone watched the agent run, asked a few questions, was satisfied, and approved it. No artifact was produced that a
+    second reviewer, six months later, could use to check the same claims. When the agent later produces a wrong answer in a
+    way nobody predicted, there is no baseline to compare against, no trace to inspect, and no way to tell whether it was
+    always broken.</p>
+
+    <p>The second failure is the inverse: <strong>the review never ends</strong> because every criterion is a judgement. "Is the eval
+    good enough?" "Are the tests comprehensive?" These questions have no terminating condition, so approval becomes a
+    matter of who is in the room.</p>
+
+    <p>A capstone is where these two problems meet, and the resolution is the same as everywhere else in this track:
+    <strong>replace judgement with recomputation</strong>. Every criterion must name an artifact whose correctness is checkable by a
+    script that does not trust any number the team reported. Then acceptance is: is the bundle complete, and does it verify?</p>
+
+    <div class="callout boss">
+      <p>Acceptance is <strong>an AND over 16 completeness checks plus a recomputation pass</strong>. The reviewer's first act is not to
+      read the results, it is to recompute the SEAL and the ledger. If either fails, the submission is rejected regardless of
+      how good the agent is &mdash; because the claim "the agent is good" is unsupported until the record is trustworthy.
+      Reject-on-absence, not reject-on-disagreement.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d99-s2">2 &middot; The mental model <a class="hook" href="#d99-s2">#</a></h2>
+
+    <p>Five groups, arranged so that each group depends on the previous one being trustworthy. The ordering is the design:</p>
+
+    <table class="table">
+      <thead><tr><th>Group</th><th>Establishes</th><th>Depends on</th><th>Criteria</th></tr></thead>
+      <tbody>
+        <tr><td><strong>A &mdash; Task &amp; measurement</strong></td><td>you can tell whether it works</td><td>&mdash;</td><td>A1&ndash;A4</td></tr>
+        <tr><td><strong>B &mdash; Integrity of claims</strong></td><td>success is measured, not asserted</td><td>A (the set exists)</td><td>B1&ndash;B3</td></tr>
+        <tr><td><strong>C &mdash; Containment</strong></td><td>damage is bounded</td><td>B (the oracle can be captured)</td><td>C1&ndash;C3</td></tr>
+        <tr><td><strong>D &mdash; Observability &amp; SLO</strong></td><td>you can see what happened and what it cost</td><td>C (what to log)</td><td>D1&ndash;D3</td></tr>
+        <tr><td><strong>E &mdash; Reproducibility &amp; seal</strong></td><td>the record is immutable and replayable</td><td>all of the above</td><td>E1&ndash;E3</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a clinical trial submission</h4><p>A trial submission is a bundle with a pre-registered protocol (the task spec and metric), a dataset (golden set), a statistical analysis plan (the CI rule), an independent monitoring record (the ledger), and an audit trail. The regulator does not assess whether the drug seems good; it checks whether the submission is complete and internally consistent.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>Trial submissions are reviewed by an institution with subpoena power and the ability to re-run analyses on raw data. An internal reviewer has neither, which is why E1 and E2 matter more here than in a trial: the bundle must be <em>self-verifying</em>, so that its integrity does not depend on trusting the submitter. The seal is the substitute for institutional authority.</p></div>
+    </div>
+
+    <p>The dependency ordering also gives the review a direction: if A fails, B through E are uninterpretable, because a
+    measurement problem makes every downstream claim meaningless. Reviewers should work top-down and stop at the first group
+    that fails.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d99-s3">3 &middot; The mechanism <a class="hook" href="#d99-s3">#</a></h2>
+
+    <p>The 16 criteria. Each row is an artifact plus a check plus a condition &mdash; and the check is something a script does, not
+    something a reader judges.</p>
+
+    <table class="table">
+      <thead><tr><th>ID</th><th>Criterion</th><th>Artifact</th><th>Check</th><th>Pass condition</th></tr></thead>
+      <tbody>
+        <tr><td><strong>A1</strong></td><td>Task defined with a measurable success predicate</td><td><code>task_spec.md</code></td><td>reader</td><td>predicate is a boolean function of artifacts, not prose</td></tr>
+        <tr><td><strong>A2</strong></td><td>Golden set &ge;150 items, stratified, versioned</td><td><code>items.jsonl</code> + <code>hash</code></td><td>count + hash</td><td>n &ge; 150; hash matches manifest</td></tr>
+        <tr><td><strong>A3</strong></td><td>Baseline on the same set with 95% CI</td><td><code>baseline_report.json</code></td><td>Wilson recompute</td><td>CI present and recomputes from per-item outcomes</td></tr>
+        <tr><td><strong>A4</strong></td><td>Pre/post delta: paired test or disjoint CIs</td><td><code>eval_report.json</code></td><td>McNemar / CI overlap</td><td>paired p &lt; 0.05 <em>or</em> CIs disjoint</td></tr>
+        <tr><td><strong>B1</strong></td><td>Oracle independent, adversarially tested</td><td><code>oracle_test_report.json</code></td><td>run suite</td><td>suite passes; oracle code hash pinned</td></tr>
+        <tr><td><strong>B2</strong></td><td>Zero overclaims</td><td><code>rake_report.json</code></td><td>claim&ndash;oracle join</td><td>uncovered claims = 0</td></tr>
+        <tr><td><strong>B3</strong></td><td>Reproducibility class declared with measured flip rate</td><td><code>seed_audit.json</code></td><td>recompute divergence</td><td>class declared; flip rate stated</td></tr>
+        <tr><td><strong>C1</strong></td><td>Capability inventory; sinks listed</td><td><code>capability_inventory.json</code></td><td>diff vs code</td><td>every tool maps to a declared capability</td></tr>
+        <tr><td><strong>C2</strong></td><td>Taint rule enforced; injection suite passes</td><td><code>injection_test_report.json</code></td><td>run suite</td><td>all adversarial cases denied at the sink</td></tr>
+        <tr><td><strong>C3</strong></td><td>Blast radius computed; irreversible actions gated</td><td><code>blast_radius.md</code> + <code>gate_test.json</code></td><td>recompute BR</td><td>BR stated; every irreversible action has a gate test</td></tr>
+        <tr><td><strong>D1</strong></td><td>Traces with per-span cost, latency, hashes</td><td><code>trace_sample.jsonl</code></td><td>schema check</td><td>all 13 required fields on every span</td></tr>
+        <tr><td><strong>D2</strong></td><td>p95 latency and cost per verified task</td><td><code>slo_report.json</code></td><td>recompute from traces</td><td>values recompute within 1%</td></tr>
+        <tr><td><strong>D3</strong></td><td>All degradation levels exercised</td><td><code>failure_injection_report.json</code></td><td>run injections</td><td>4/4 levels produce declared behaviour</td></tr>
+        <tr><td><strong>E1</strong></td><td>Ledger chained, outside workspace, verifies</td><td><code>ledger_verify.txt</code> + <code>events.jsonl</code></td><td>recompute chain</td><td>verifies from genesis; tamper test fails at the right index</td></tr>
+        <tr><td><strong>E2</strong></td><td>SEAL recomputes</td><td><code>SEAL</code></td><td>recompute</td><td>matches <code>manifest_hash + head + artifact hashes</code></td></tr>
+        <tr><td><strong>E3</strong></td><td>One variable per change</td><td><code>change_log.jsonl</code></td><td>reader</td><td>each delta changes exactly one pinned manifest field</td></tr>
+      </tbody>
+    </table>
+
+    <p>The reviewer's script. This is the whole review process &mdash; note it never asks whether the agent is good.</p>
+
+    <div class="code" data-lang="python">
+<span class="cm"># (id, criterion, artifact, check, pass_condition)</span>
+CRITERIA = [
+    (<span class="st">"A1"</span>, <span class="st">"measurable success predicate"</span>, <span class="st">"task_spec.md"</span>, <span class="st">"reader"</span>,
+     <span class="st">"predicate is boolean fn of artifacts"</span>),
+    (<span class="st">"A2"</span>, <span class="st">"golden set &gt;=150, versioned"</span>, <span class="st">"golden_set/items.jsonl"</span>, <span class="st">"count+hash"</span>,
+     <span class="st">"n&gt;=150 and hash matches"</span>),
+    (<span class="st">"A3"</span>, <span class="st">"baseline with CI"</span>, <span class="st">"baseline_report.json"</span>, <span class="st">"wilson recompute"</span>,
+     <span class="st">"CI recomputes from items"</span>),
+    (<span class="st">"A4"</span>, <span class="st">"pre/post delta"</span>, <span class="st">"eval_report.json"</span>, <span class="st">"mcnemar/CI"</span>,
+     <span class="st">"p&lt;0.05 or disjoint CIs"</span>),
+    (<span class="st">"B1"</span>, <span class="st">"adversarial oracle"</span>, <span class="st">"oracle/oracle_test_report.json"</span>, <span class="st">"run suite"</span>,
+     <span class="st">"suite passes"</span>),
+    (<span class="st">"B2"</span>, <span class="st">"zero overclaims"</span>, <span class="st">"rake_report.json"</span>, <span class="st">"claim-oracle join"</span>,
+     <span class="st">"uncovered == 0"</span>),
+    (<span class="st">"B3"</span>, <span class="st">"repro class declared"</span>, <span class="st">"seed_audit.json"</span>, <span class="st">"recompute"</span>,
+     <span class="st">"class + flip rate stated"</span>),
+    (<span class="st">"C1"</span>, <span class="st">"capability inventory"</span>, <span class="st">"safety/capability_inventory.json"</span>, <span class="st">"diff"</span>,
+     <span class="st">"every tool maps to a capability"</span>),
+    (<span class="st">"C2"</span>, <span class="st">"injection suite passes"</span>, <span class="st">"safety/injection_test_report.json"</span>, <span class="st">"run suite"</span>,
+     <span class="st">"all denied at sink"</span>),
+    (<span class="st">"C3"</span>, <span class="st">"blast radius + gates"</span>, <span class="st">"safety/blast_radius.md"</span>, <span class="st">"recompute"</span>,
+     <span class="st">"BR stated; gates tested"</span>),
+    (<span class="st">"D1"</span>, <span class="st">"trace schema complete"</span>, <span class="st">"traces/trace_sample.jsonl"</span>, <span class="st">"schema"</span>,
+     <span class="st">"13 fields on every span"</span>),
+    (<span class="st">"D2"</span>, <span class="st">"p95 + cost per verified"</span>, <span class="st">"slo_report.json"</span>, <span class="st">"recompute"</span>,
+     <span class="st">"within 1% of traces"</span>),
+    (<span class="st">"D3"</span>, <span class="st">"degradation exercised"</span>, <span class="st">"failure_injection_report.json"</span>, <span class="st">"run"</span>,
+     <span class="st">"4/4 levels"</span>),
+    (<span class="st">"E1"</span>, <span class="st">"ledger verifies"</span>, <span class="st">"ledger_verify.txt"</span>, <span class="st">"recompute"</span>,
+     <span class="st">"ok from genesis"</span>),
+    (<span class="st">"E2"</span>, <span class="st">"SEAL recomputes"</span>, <span class="st">"SEAL"</span>, <span class="st">"recompute"</span>, <span class="st">"matches"</span>),
+    (<span class="st">"E3"</span>, <span class="st">"one variable per change"</span>, <span class="st">"change_log.jsonl"</span>, <span class="st">"reader"</span>,
+     <span class="st">"one pinned field per delta"</span>),
+]
+
+<span class="kw">def</span> <span class="fn">review</span>(bundle, criteria=CRITERIA):
+    <span class="cm"># Step 0: integrity first. A broken seal rejects before anything is read.</span>
+    <span class="kw">if</span> <span class="st">"SEAL"</span> <span class="kw">in</span> bundle <span class="kw">and not</span> <span class="fn">seal_recomputes</span>(bundle):
+        <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">False</span>, <span class="st">"stage"</span>: <span class="st">"integrity"</span>,
+                <span class="st">"reason"</span>: <span class="st">"SEAL mismatch - bundle was modified"</span>}
+    missing = [cid <span class="kw">for</span> cid, _, art, _, _ <span class="kw">in</span> criteria <span class="kw">if</span> art <span class="kw">not in</span> bundle]
+    <span class="kw">if</span> missing:
+        <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">False</span>, <span class="st">"stage"</span>: <span class="st">"completeness"</span>, <span class="st">"missing"</span>: missing}
+    <span class="cm"># Step 2: re-derive every reported number from per-item artifacts.</span>
+    <span class="kw">for</span> cid, _, art, check, _ <span class="kw">in</span> criteria:
+        <span class="kw">if</span> check.<span class="fn">startswith</span>((<span class="st">"recompute"</span>, <span class="st">"wilson"</span>, <span class="st">"mcnemar"</span>)):
+            <span class="kw">if not</span> <span class="fn">rederives</span>(art, bundle):
+                <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">False</span>, <span class="st">"stage"</span>: <span class="st">"recomputation"</span>, <span class="st">"failed"</span>: cid}
+    <span class="cm"># Step 3: adversarial suites must actually run and pass.</span>
+    <span class="kw">for</span> cid <span class="kw">in</span> (<span class="st">"B1"</span>, <span class="st">"C2"</span>, <span class="st">"D3"</span>):
+        <span class="kw">if not</span> <span class="fn">run_suite</span>(cid, bundle):
+            <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">False</span>, <span class="st">"stage"</span>: <span class="st">"adversarial"</span>, <span class="st">"failed"</span>: cid}
+    <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">True</span>, <span class="st">"stage"</span>: <span class="st">"accepted"</span>, <span class="st">"criteria"</span>: <span class="fn">len</span>(criteria)}
+    </div>
+
+    <p>The ordering of the review stages is the whole mechanism. <strong>Integrity before completeness before recomputation before
+    adversarial re-running.</strong> Checking completeness first wastes effort on a bundle that was edited; re-running suites before
+    checking the seal wastes effort on results that may have been fabricated. Each stage is a cheaper filter than the next,
+    and each one can only reject.</p>
+
+    <div class="code" data-lang="text">
+bundle/
+  manifest.json                      18-field run manifest (L95)
+  SEAL                               sha256(manifest_hash + head + artifact hashes)
+  task_spec.md                       A1  success predicate
+  golden_set/items.jsonl             A2  + golden_set/hash
+  baseline_report.json               A3
+  eval_report.json                   A4
+  oracle/oracle_test_report.json     B1  + oracle/code_hash
+  rake_report.json                   B2
+  seed_audit.json                    B3
+  safety/capability_inventory.json   C1
+  safety/injection_test_report.json  C2
+  safety/blast_radius.md             C3  + safety/gate_test.json
+  traces/trace_sample.jsonl          D1
+  slo_report.json                    D2
+  failure_injection_report.json      D3
+  events.jsonl                       E1  hash-chained, append-only
+  ledger_verify.txt                  E1
+  change_log.jsonl                   E3
+    </div>
+
+    <div class="callout audit">
+      <p>The capstone's own audit question, applied to the bundle: <strong>can a stranger re-derive every number you reported,
+      using only files in this directory?</strong> If any number requires a dashboard, a database, or your memory, the bundle is a
+      summary &mdash; and a summary of an autonomous agent's work is precisely the artifact that overclaims.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d99-s4">4 &middot; Your hands <a class="hook" href="#d99-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Completeness is an AND, and one absence rejects</h4>
+      <p>The completeness check over the 16 criteria, with one artifact removed at a time. Every removal must flip the verdict.</p>
+      <div class="code" data-lang="python">
+CRITERIA = [
+  (<span class="st">"A1"</span>,<span class="st">"task_spec.md"</span>), (<span class="st">"A2"</span>,<span class="st">"golden_set/items.jsonl"</span>),
+  (<span class="st">"A3"</span>,<span class="st">"baseline_report.json"</span>), (<span class="st">"A4"</span>,<span class="st">"eval_report.json"</span>),
+  (<span class="st">"B1"</span>,<span class="st">"oracle/oracle_test_report.json"</span>), (<span class="st">"B2"</span>,<span class="st">"rake_report.json"</span>),
+  (<span class="st">"B3"</span>,<span class="st">"seed_audit.json"</span>),
+  (<span class="st">"C1"</span>,<span class="st">"safety/capability_inventory.json"</span>),
+  (<span class="st">"C2"</span>,<span class="st">"safety/injection_test_report.json"</span>),
+  (<span class="st">"C3"</span>,<span class="st">"safety/blast_radius.md"</span>),
+  (<span class="st">"D1"</span>,<span class="st">"traces/trace_sample.jsonl"</span>), (<span class="st">"D2"</span>,<span class="st">"slo_report.json"</span>),
+  (<span class="st">"D3"</span>,<span class="st">"failure_injection_report.json"</span>),
+  (<span class="st">"E1"</span>,<span class="st">"ledger_verify.txt"</span>), (<span class="st">"E2"</span>,<span class="st">"SEAL"</span>),
+  (<span class="st">"E3"</span>,<span class="st">"change_log.jsonl"</span>),
+]
+ALL = {a <span class="kw">for</span> _, a <span class="kw">in</span> CRITERIA}
+
+<span class="kw">def</span> <span class="fn">completeness</span>(bundle):
+    missing = [cid <span class="kw">for</span> cid, art <span class="kw">in</span> CRITERIA <span class="kw">if</span> art <span class="kw">not in</span> bundle]
+    <span class="kw">return</span> {<span class="st">"n"</span>: <span class="fn">len</span>(CRITERIA), <span class="st">"complete"</span>: <span class="kw">not</span> missing, <span class="st">"missing"</span>: missing}
+
+print(<span class="st">"full bundle:"</span>, <span class="fn">completeness</span>(ALL))
+<span class="kw">for</span> drop <span class="kw">in</span> (<span class="st">"SEAL"</span>, <span class="st">"rake_report.json"</span>, <span class="st">"seed_audit.json"</span>):
+    print(<span class="st">f"  minus {drop:34s} -&gt; {completeness(ALL - {drop})}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>full bundle: {'n': 16, 'complete': True, 'missing': []}</code>;
+      <code>minus SEAL &rarr; complete=False, missing=['E2']</code>;
+      <code>minus rake_report.json &rarr; missing=['B2']</code>;
+      <code>minus seed_audit.json &rarr; missing=['B3']</code>.
+      Every removal flips the verdict, which is the property that makes this a gate rather than a wish list. Note there is no
+      weighting and no score: 15 of 16 is a rejection. That is correct for a submission whose value depends on being
+      <em>complete</em> &mdash; a bundle missing its ledger verification cannot be partially trusted.
+      <strong>Falsifier:</strong> if you find yourself arguing that a particular artifact is optional, that is the signal to
+      either remove the criterion entirely (and say so) or restore the artifact &mdash; not to soften the check.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The reviewer's stages reject in the right order</h4>
+      <p>Four bundles: one intact, one with a broken seal, one complete but with a number that does not recompute, one complete
+      and consistent. Order matters because a cheap check should reject before an expensive one runs.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">review</span>(bundle, seal_ok=<span class="kw">True</span>, rederives_ok=<span class="kw">True</span>, suites_ok=<span class="kw">True</span>):
+    <span class="kw">if</span> <span class="st">"SEAL"</span> <span class="kw">in</span> bundle <span class="kw">and not</span> seal_ok:
+        <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">False</span>, <span class="st">"stage"</span>: <span class="st">"integrity"</span>}
+    missing = [cid <span class="kw">for</span> cid, art <span class="kw">in</span> CRITERIA <span class="kw">if</span> art <span class="kw">not in</span> bundle]
+    <span class="kw">if</span> missing:
+        <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">False</span>, <span class="st">"stage"</span>: <span class="st">"completeness"</span>, <span class="st">"missing"</span>: missing}
+    <span class="kw">if</span> <span class="kw">not</span> rederives_ok:
+        <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">False</span>, <span class="st">"stage"</span>: <span class="st">"recomputation"</span>}
+    <span class="kw">if</span> <span class="kw">not</span> suites_ok:
+        <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">False</span>, <span class="st">"stage"</span>: <span class="st">"adversarial"</span>}
+    <span class="kw">return</span> {<span class="st">"accept"</span>: <span class="kw">True</span>, <span class="st">"stage"</span>: <span class="st">"accepted"</span>}
+
+print(<span class="st">"intact      "</span>, <span class="fn">review</span>(ALL))
+print(<span class="st">"seal broken "</span>, <span class="fn">review</span>(ALL, seal_ok=<span class="kw">False</span>))
+print(<span class="st">"missing E1  "</span>, <span class="fn">review</span>(ALL - {<span class="st">"ledger_verify.txt"</span>}))
+print(<span class="st">"bad number  "</span>, <span class="fn">review</span>(ALL, rederives_ok=<span class="kw">False</span>))
+print(<span class="st">"suite fails "</span>, <span class="fn">review</span>(ALL, suites_ok=<span class="kw">False</span>))
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>intact &rarr; {accept: True, stage: 'accepted'}</code>;
+      <code>seal broken &rarr; stage 'integrity'</code>; <code>missing E1 &rarr; stage 'completeness', missing=['E1']</code>;
+      <code>bad number &rarr; stage 'recomputation'</code>; <code>suite fails &rarr; stage 'adversarial'</code>.
+      Five dispositions, five distinct stages, each naming <em>where</em> the submission failed. That is the difference between
+      "rejected" and "rejected because the ledger verification artifact is absent" &mdash; the latter is actionable in one line,
+      the former starts a meeting.
+      <strong>Falsifier:</strong> if a bundle with a broken seal reaches the recomputation stage, your reviewer is wasting
+      expensive work on a record that may have been edited &mdash; the seal check must come first, always.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Recompute the SEAL over the whole bundle (copy-paste)</h4>
+      <p>The integrity check a reviewer runs before reading anything. Two bundles, one with a single artifact swapped.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> hashlib, json
+<span class="kw">def</span> <span class="fn">canon</span>(o): <span class="kw">return</span> json.<span class="fn">dumps</span>(o, sort_keys=<span class="kw">True</span>, separators=(<span class="st">","</span>,<span class="st">":"</span>))
+
+<span class="kw">def</span> <span class="fn">seal</span>(manifest_hash, chain_head, artifact_hashes):
+    <span class="kw">return</span> hashlib.<span class="fn">sha256</span>(<span class="fn">canon</span>([manifest_hash, chain_head, <span class="fn">sorted</span>(artifact_hashes)])).<span class="fn">hexdigest</span>()
+
+MANIFEST = <span class="st">"8f3a1c2e9b04"</span>
+HEAD = <span class="st">"26e92581b66c"</span>
+ARTIFACTS_OK  = [<span class="st">"a1"</span>, <span class="st">"b2"</span>, <span class="st">"c3"</span>, <span class="st">"d1"</span>, <span class="st">"e1"</span>]
+ARTIFACTS_BAD = [<span class="st">"a1"</span>, <span class="st">"b2"</span>, <span class="st">"c3"</span>, <span class="st">"d1"</span>, <span class="st">"eX"</span>]   <span class="cm"># one swapped</span>
+
+s_ok  = <span class="fn">seal</span>(MANIFEST, HEAD, ARTIFACTS_OK)
+s_bad = <span class="fn">seal</span>(MANIFEST, HEAD, ARTIFACTS_BAD)
+print(<span class="st">"seal (intact)  "</span>, s_ok[:20])
+print(<span class="st">"seal (1 swap)  "</span>, s_bad[:20])
+print(<span class="st">"matches        "</span>, s_ok == s_bad)
+      </div>
+      <p class="expect">The seals differ, so a reviewer comparing the recorded SEAL against the recomputation detects the swap
+      without reading a single report. That is the property that makes E2 cheap and decisive: <strong>one hash comparison gates the
+      entire bundle</strong>, and it costs microseconds. Note the seal covers artifacts <em>sorted</em>, so listing order cannot
+      produce a false mismatch.
+      <strong>Falsifier:</strong> if swapping an artifact does not change the seal, the artifact hashes were not included in the
+      input &mdash; check that the seal covers <code>manifest_hash</code>, <code>chain_head</code>, and all artifact hashes.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d99-s5">5 &middot; Failure modes <a class="hook" href="#d99-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Review by demo.</strong> Approval granted after watching a run. Symptom: no bundle exists; the approval is unreproducible a month later.</li>
+        <li><strong>Partial bundle accepted.</strong> 14 of 16 criteria. Symptom: the missing two are exactly the ones that would have caught the later incident.</li>
+        <li><strong>Numbers reported, never recomputed.</strong> The reviewer reads the report and trusts it. Symptom: a baseline CI that cannot be derived from the per-item outcomes because the outcomes were discarded.</li>
+        <li><strong>Adversarial suites not re-run.</strong> A test report is submitted as evidence. Symptom: the suite would fail today; it was passing when the report was generated.</li>
+        <li><strong>Seal computed over a summary.</strong> Only the headline verdicts are hashed. Symptom: a report can be rewritten while the seal still matches.</li>
+        <li><strong>Bundled changes.</strong> E3's one-variable rule violated. Symptom: a quality delta attributable to nothing specific (L97, L88).</li>
+        <li><strong>Bundle built after the fact.</strong> Artifacts assembled retroactively from dashboards. Symptom: the ledger's timestamps do not line up with the reported run window; the manifest was written last.</li>
+        <li><strong>Acceptance with a waiver.</strong> "We'll add the injection report next sprint." Symptom: the waiver list grows monotonically; the gate is decorative after the second waiver.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d99-s6">6 &middot; Connects to <a class="hook" href="#d99-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> everything in Track D &mdash; the capstone is the composition test. &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="100-annual-plan.html">L100 &middot; The 12-month plan</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="76-agents.html">L76 &middot; Budgeted loop</a> &mdash; B2 and D2 (cost per verified task).</li>
+      <li><a class="tag-d" href="84-safety-sandboxing.html">L84 &middot; Sandboxing</a> &mdash; C1 and C3 (capability inventory, blast radius).</li>
+      <li><a class="tag-d" href="86-rag-reranking.html">L86 &middot; Reranking</a> and <a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG eval</a> &mdash; A2 and A3 when the task is retrieval-shaped.</li>
+      <li><a class="tag-d" href="88-evals.html">L88 &middot; Evals</a> &mdash; A2&ndash;A4; the CI machinery.</li>
+      <li><a class="tag-d" href="89-llm-as-judge.html">L89 &middot; Judges</a> &mdash; B1 when the oracle is a judge rather than a test.</li>
+      <li><a class="tag-d" href="93-safety-alignment.html">L93 &middot; Containment</a> &mdash; C2 (the injection suite).</li>
+      <li><a class="tag-d" href="94-determinism.html">L94 &middot; Determinism</a> &mdash; B3 and E3 (reproducibility class, one-variable changes).</li>
+      <li><a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a> &mdash; the harness that produces the bundle.</li>
+      <li><a class="tag-d" href="96-production-checklist.html">L96 &middot; Production checklist</a> &mdash; the operational gate that sits inside this acceptance gate.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d99-s7">7 &middot; Self-check <a class="hook" href="#d99-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does the reviewer check the SEAL before checking completeness?</p>
+        <details><summary>Reveal answer</summary><p>Because integrity is a precondition for the meaning of everything else. If the bundle was modified after sealing, then artifact presence is not evidence that the artifact is the one the run produced &mdash; the completeness check would be reading a possibly-edited table of contents. The seal is also the cheapest check (one hash recomputation over a small input), so putting it first is both logically correct and efficient: it rejects tampered bundles before the reviewer spends time on them. Order by (logical priority, then cost), which in this case agree.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A bundle is complete but its <code>baseline_report.json</code> claims <code>p=0.74, CI=[0.66, 0.81]</code> at <code>n=150</code>. Recompute and say whether the CI is plausible.</p>
+        <details><summary>Reveal answer</summary><p>Wilson at <code>p=0.74, n=150</code>: centre <code>0.7342</code>, half-width <code>0.0696</code>, so the CI should be approximately <strong>[0.664, 0.804]</strong>. The claimed <code>[0.66, 0.81]</code> is close and would pass a recomputation tolerance of ~1%, which is why D2's "values recompute within 1%" condition is the right test. If the claimed CI were, say, <code>[0.70, 0.78]</code> &mdash; much narrower than Wilson allows at that <code>n</code> &mdash; the reviewer would reject at the recomputation stage: the interval is inconsistent with the sample size, so either <code>n</code> is misreported or the interval was not computed from the outcomes.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Why is <code>change_log.jsonl</code> (E3) required when each individual eval report already carries its own numbers?</p>
+        <details><summary>Reveal answer</summary><p>Because a sequence of individually valid eval reports does not establish that the deltas are attributable. Two consecutive reports can both be correct and both show a 6-point gain, while the second one changed the index <em>and</em> the reranker (L97) &mdash; so the second 6 points belong to neither change. E3 forces each delta to touch exactly one pinned manifest field, which is what makes the history a chain of causal claims rather than a list of snapshots. Without it, a reviewer can verify every number and still be unable to say which intervention produced the improvement.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: your bundle passes all 16 criteria and the agent still fails in production on a class of input not in the golden set. What does that tell you about the acceptance gate?</p>
+        <details><summary>Reveal answer</summary><p>That the gate verified <em>process completeness</em>, not <em>coverage</em>. A complete bundle can be complete about the wrong distribution: A2 requires &ge;150 stratified items, and if the stratification missed a whole input class, all downstream criteria are satisfied while the system is blind to that class. The fix is not to add a 17th check but to make coverage a first-class part of A1 and A2 &mdash; the task spec must enumerate the input classes, and the golden set must have items in each. Then the post-incident action is concrete: the failing input class becomes a new stratum, and the bundle's A2 hash changes, forcing a re-baseline.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why does the reviewer re-run the adversarial suites rather than accept the submitted test report?</p>
+        <details><summary>Reveal answer</summary><p>Because a test report is an <em>assertion about a past execution</em>, and the bundle is meant to eliminate assertions in favour of recomputations. Three concrete reasons: the report may have been generated against a different code commit (B1 requires the oracle code hash be pinned precisely so this is checkable); the suite may have been passing then and failing now if any pinned artifact changed; and a report is the cheapest thing to fabricate. Re-running is what makes the bundle self-verifying &mdash; the same principle as recomputing the ledger instead of trusting a stored "verified: true" flag (L95).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="98-finetune-vs-rag.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L98 &middot; Fine-tune vs RAG</span></a>
+    <a class="next" href="100-annual-plan.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L100 &middot; The 12-month plan</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

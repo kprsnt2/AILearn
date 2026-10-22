@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="index">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AILearn — 100 lessons, from the tokenizer to the frontier</title>
+<meta name="description" content="A 100-lesson, build-first AI curriculum written for a systems engineer: foundations, scaling, post-training and reasoning, then agents, evals and production.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="_shell.css">
+<style>
+  .hero { padding: 58px 0 30px; max-width: 1000px; }
+  .hero h1 { font-size: clamp(2.1rem, 5vw, 3.5rem); line-height: 1.06; letter-spacing: -1.8px; }
+  .hero .lede { font-size: 1.12rem; max-width: 72ch; }
+  .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 26px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+    padding: 11px 22px; border-radius: 11px; font-weight: 600; font-size: .92rem;
+    border: 1px solid var(--line); color: var(--txt); background: var(--card);
+    transition: .2s; cursor: pointer; font-family: var(--sans);
+  }
+  .btn:hover { transform: translateY(-2px); border-color: rgba(99,102,241,.5); box-shadow: var(--shadow); }
+  .btn.primary { background: var(--grad); border: 0; color: #fff; }
+  .btn.primary:hover { filter: brightness(1.1); }
+
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin: 38px 0; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; }
+  .stat .v { font-family: var(--mono); font-size: 1.7rem; font-weight: 700;
+    background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .stat .l { font-size: .72rem; color: var(--txt-3); text-transform: uppercase; letter-spacing: .8px; margin-top: 2px; }
+
+  .searchbar { position: relative; margin: 30px 0 8px; }
+  .searchbar input {
+    width: 100%; padding: 14px 18px 14px 46px; border-radius: 13px;
+    background: var(--card); border: 1px solid var(--line); color: var(--txt);
+    font-size: .95rem; font-family: var(--sans); outline: none; transition: .2s;
+  }
+  .searchbar input:focus { border-color: rgba(99,102,241,.6); box-shadow: 0 0 0 3px rgba(99,102,241,.12); }
+  .searchbar .ico { position: absolute; left: 17px; top: 50%; transform: translateY(-50%); color: var(--txt-3); }
+  .hint { font-size: .76rem; color: var(--txt-3); font-family: var(--mono); margin-bottom: 26px; }
+
+  .track { margin: 44px 0; }
+  .track-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  .track-letter {
+    font-family: var(--mono); font-weight: 700; font-size: .8rem; letter-spacing: 2px;
+    padding: 3px 11px; border-radius: 8px; border: 1px solid currentColor;
+  }
+  .track h2 { margin: 0; font-size: 1.5rem; letter-spacing: -.6px; color: var(--txt); }
+  .track .tagline { color: var(--txt-3); font-size: .88rem; margin: 0 0 18px; }
+
+  .lessons { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 12px; }
+  .lesson {
+    display: flex; gap: 13px; align-items: flex-start; text-decoration: none;
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 13px 15px; transition: .18s; position: relative; overflow: hidden;
+  }
+  .lesson::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: currentColor; opacity: .0; transition: .18s;
+  }
+  .lesson:hover { border-color: rgba(99,102,241,.4); transform: translateY(-2px); background: var(--card-2); }
+  .lesson:hover::before { opacity: .8; }
+  .lesson .num {
+    font-family: var(--mono); font-size: .72rem; font-weight: 700; color: var(--txt-3);
+    min-width: 26px; padding-top: 2px;
+  }
+  .lesson .ttl { color: var(--txt); font-size: .9rem; font-weight: 550; line-height: 1.42; }
+  .lesson.done { border-color: rgba(16,185,129,.32); }
+  .lesson.done .ttl { color: var(--txt-2); }
+  .lesson.done .num::after { content: " ✓"; color: var(--emerald); }
+  .lesson[hidden] { display: none; }
+
+  .route { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin: 20px 0 10px; }
+  .route a { text-decoration: none; }
+  .route .r { height: 100%; }
+  .route .r .step { font-family: var(--mono); font-size: .66rem; color: var(--cyan); letter-spacing: 1.5px; }
+  .route .r h4 { margin: 6px 0 6px !important; color: var(--txt); font-size: .95rem; text-transform: none; letter-spacing: 0; }
+  .route .r p { font-size: .84rem; margin: 0; }
+
+  .progress-wrap { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 20px 22px; margin: 34px 0; }
+  .pbar { height: 7px; background: rgba(255,255,255,.07); border-radius: 99px; overflow: hidden; margin-top: 12px; }
+  .pbar i { display: block; height: 100%; width: 0; background: var(--grad); border-radius: 99px; transition: width .5s; }
+  .pmeta { display: flex; justify-content: space-between; font-family: var(--mono); font-size: .74rem; color: var(--txt-3); margin-top: 9px; flex-wrap: wrap; gap: 8px; }
+  .link-btn { background: none; border: 0; color: var(--txt-3); font-family: var(--mono); font-size: .72rem; cursor: pointer; text-decoration: underline; padding: 0; }
+  .link-btn:hover { color: var(--red); }
+
+  .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr)); gap: 18px; margin: 30px 0; }
+  .big-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 24px 26px; position: relative; overflow: hidden; }
+  .big-card::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(circle at 100% 0%, rgba(139,92,246,.14), transparent 55%);
+  }
+  .big-card h3 { margin: 0 0 8px; font-size: 1.15rem; color: var(--txt); letter-spacing: -.3px; }
+  .big-card .kicker { font-family: var(--mono); font-size: .66rem; letter-spacing: 2px; color: var(--violet); margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="index.html">Course</a>
+      <a href="resources/papers.html">Papers</a>
+      <a href="resources/blogs.html">Blogs</a>
+      <a href="resources/videos.html">Videos</a>
+      <a href="about/prashanth.html">Profile</a>
+      <a href="about/calibration.html">Level formula</a>
+      <a href="agi/index.html">AGI Lab</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="hero">
+  <div class="track-tag">100 LESSONS · 4 TRACKS · ZERO HAND-WAVING</div>
+  <h1>Learn how these machines actually work — from the tokenizer up to the swarm.</h1>
+  <p class="lede">
+    Written for a systems engineer who already ships autonomous agents. Every lesson names the
+    production failure that forced the idea into existence, gives you the real mechanism, and hands
+    you an experiment that can <strong>falsify</strong> what you just read. No metaphor that hides the math.
+    No "imagine the model as a brain". Just the machine, layer by layer.
+  </p>
+  <div class="hero-cta">
+    <a class="btn primary" href="about/prashanth.html">Start where I am →</a>
+    <a class="btn" href="track-a/01-tokenization.html">Begin at L01</a>
+    <a class="btn" href="agi/index.html">The AGI lab →</a>
+    <a class="btn" href="tools/index.html">Tools</a>
+  </div>
+</header>
+
+<div class="stat-row">
+  <div class="stat"><div class="v">100</div><div class="l">lessons</div></div>
+  <div class="stat"><div class="v">4</div><div class="l">tracks</div></div>
+  <div class="stat"><div class="v">500</div><div class="l">self-check questions</div></div>
+  <div class="stat"><div class="v">~200</div><div class="l">runnable experiments</div></div>
+  <div class="stat"><div class="v">~70</div><div class="l">papers, blogs &amp; talks</div></div>
+</div>
+
+<div class="progress-wrap">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px;">
+    <div><strong style="font-size:1rem;">Your progress</strong>
+      <span style="color:var(--txt-3);font-size:.84rem;">&nbsp;— tracked in this browser, no account, no server</span></div>
+    <div class="kpi" style="gap:6px;"><span class="kpi-val" id="done-count">0</span><span class="kpi-lab">/ 100 done</span></div>
+  </div>
+  <div class="pbar"><i id="main-pbar"></i></div>
+  <div class="pmeta">
+    <span id="next-up">Next up: L01 · Tokenization</span>
+    <button class="link-btn" id="reset-btn">reset progress</button>
+  </div>
+</div>
+
+<div class="searchbar">
+  <span class="ico">⌕</span>
+  <input id="search" type="search" placeholder="Filter lessons — try 'attention', 'reward', 'kv cache', 'eval', 'moE'…" autocomplete="off">
+</div>
+<div class="hint">Press <kbd>/</kbd> to search · click a lesson to open · ✓ marks appear when you open a lesson's self-check</div>
+
+<div id="tracks"></div>
+
+<h2 style="margin-top:56px;font-size:1.5rem;letter-spacing:-.6px;">Three ways through this</h2>
+<p style="color:var(--txt-2);max-width:76ch;">The default order is bottom-up because that is how it was built — but it is not how you should read it. Read bottom-up if you want to <em>build</em> a model. Read top-down if you need to <em>defend</em> a system this quarter. Read the paper-first route if you want to contribute.</p>
+
+<div class="route">
+  <a href="about/prashanth.html"><div class="card r">
+    <div class="step">ROUTE 1 — PRESCRIBED FOR YOU</div>
+    <h4>Blind spots first</h4>
+    <p>Starts at Track B (scaling arithmetic) and Track C (RL objectives), where your gap is widest, and only then goes back for the mechanisms. Reasons given per step in your profile page.</p>
+  </div></a>
+  <a href="track-a/01-tokenization.html"><div class="card r">
+    <div class="step">ROUTE 2 — BOTTOM-UP</div>
+    <h4>Build the machine</h4>
+    <p>L01 → L100 in order. Slowest and the most durable. Do this if you intend to train something from scratch someday.</p>
+  </div></a>
+  <a href="resources/papers.html"><div class="card r">
+    <div class="step">ROUTE 3 — PAPER-FIRST</div>
+    <h4>Read the canon, then the lesson</h4>
+    <p>Six weeks of papers in dependency order, with the matching lesson open beside each one. For producing work others cite.</p>
+  </div></a>
+</div>
+
+<div class="two-col" style="margin-top:52px;">
+  <div class="big-card">
+    <div class="kicker">PART TWO · THE DISCOVERY TRACK</div>
+    <h3>SKILLA — a proposed route toward autonomous discovery</h3>
+    <p style="color:var(--txt-2);font-size:.92rem;">
+      Your agents already run unattended, keep tamper-evident ledgers, and gate their own promotions.
+      What they cannot yet do is <em>decide what is worth doing</em>, and <em>prove it after the fact</em>
+      in a way a stranger would accept. SKILLA is a design for closing both gaps: a living skill library
+      that agents must extend or falsify every cycle, plus audit-certified autonomy where the agent's
+      authority is a function of its measured track record.
+    </p>
+    <a class="btn" style="margin-top:14px;" href="agi/index.html">Open the AGI lab →</a>
+  </div>
+  <div class="big-card">
+    <div class="kicker">TOOLS</div>
+    <h3>Things that do work, not things that show slides</h3>
+    <p style="color:var(--txt-2);font-size:.92rem;">
+      A flashcard trainer with real spaced repetition, a concept game that attacks weak spots,
+      a KV-cache cost calculator, a scaling-law explorer, and an agent-authority simulator that
+      runs the SKILLA economy so you can watch a swarm either learn or rot.
+    </p>
+    <a class="btn" style="margin-top:14px;" href="tools/index.html">Open the tools →</a>
+  </div>
+</div>
+
+</main>
+
+<footer>
+  AILearn · built for <a href="about/prashanth.html">Prashanth Kumar Kadasi</a> ·
+  facts dated <span class="asof">state as of 2026-10</span> ·
+  <a href="about/calibration.html">level formula</a>
+</footer>
+
+<script src="_data.js"></script>
+<script>window.AILEARN_TOTAL = 100;</script>
+<script src="_shell.js"></script>
+<script src="_index.js"></script>
+</body>
+</html>

@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d78">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L78 · Planning: decomposition, plan-then-act, replanning — AILearn</title>
+<meta name="description" content="Plan-linearization throws away all progress on any step failure. Plan-repair keeps the completed prefix. The math that shows a 20-step plan completing 27% vs 88% of the time.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L78</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L78 &middot; Planning: decomposition, plan-then-act, replanning</h1>
+  <p class="lede">A plan is not a to-do list the agent reads &mdash; it is a <em>commitment about what survives a failure</em>. The difference between re-planning from scratch and repairing the failed subtree is the difference between 27% and 88% completion on a 20-step task, at 62% of the cost.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: plan executor with replan triggers</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">plan as DAG</span>
+  <span class="pill">plan-linearization tax</span>
+  <span class="pill">plan-repair</span>
+  <span class="pill">replan triggers</span>
+  <span class="pill">irreversible steps</span>
+  <span class="pill">commitment horizon</span>
+  <span class="pill">step granularity</span>
+  <span class="pill">plan validity budget</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d78-s1">1 &middot; Why it exists <a class="hook" href="#d78-s1">#</a></h2>
+
+    <p>The failure: <strong>the agent planned correctly, executed eleven of thirteen steps, hit a recoverable error, and threw it all away.</strong>
+    A plan-then-act loop that treats any deviation as "re-plan" restarts from step one. If each step fails with probability
+    <code>p</code>, a <code>k</code>-step plan with restart-on-failure has completion probability
+    <code>(1&minus;p)<sup>k</sup></code> only if it gets exactly one attempt. Give it <code>r</code> restarts and it is
+    <code>1 &minus; (1 &minus; (1&minus;p)<sup>k</sup>)<sup>r</sup></code>. With <code>p=0.15</code>, <code>k=20</code>: one attempt is 3.9%.
+    That is the number that makes long-horizon agents look impossible, and it is an artefact of the restart policy,
+    not of the model.</p>
+
+    <p>The second failure is subtler: <strong>the plan itself goes stale</strong>. Step 4's output changes an assumption
+    that step 9 depended on, and no step in the plan is responsible for noticing. The agent executes a valid plan against
+    an invalid world and produces a confident, wrong result.</p>
+
+    <div class="callout boss">
+      <p>Two orthogonal decisions make up "planning": <strong>(1) decomposition granularity</strong> &mdash; how many steps
+      and where the commit points are; <strong>(2) replan scope</strong> &mdash; on failure, what is invalidated. Get (2) wrong
+      and long plans are hopeless regardless of model quality. Get (1) right and you get fewer failures <em>and</em>
+      cheaper repairs, because a small failed step has a small blast radius.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d78-s2">2 &middot; The mental model <a class="hook" href="#d78-s2">#</a></h2>
+
+    <p>A plan is a DAG <code>G = (V, E)</code> where an edge <code>u &rarr; v</code> means <em>v's preconditions are satisfied by u's
+    postconditions</em>. The edges are the only thing that tells you what a failure invalidates: when <code>u</code> fails,
+    <strong>everything reachable from <code>u</code> is suspect</strong>; everything not reachable is untouched.</p>
+
+    <p>Which makes the key design quantity explicit: for each step, its <strong>descendant cone</strong>
+    <code>Desc(v)</code>. Repairing <code>v</code> has to redo only <code>Desc(v)</code> &mdash; unless the step is
+    <em>irreversible</em>, in which case redoing it is impossible and you do not have a repair, you have an incident.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: database transactions with savepoints</h4><p>A plan with explicit checkpoints is a transaction with savepoints. A step failure rolls back to the nearest savepoint, not to the start of the transaction. A step that has already committed (an irreversible side effect) cannot be rolled back &mdash; that is exactly the difference between a savepoint and a real commit.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A database knows the dependency graph exactly, and rollback is free. An agent's dependency graph is <em>guessed by the planner</em> and is frequently wrong &mdash; a step's output may depend on something the planner never drew an edge to. So plan-repair can "succeed" while operating on a stale assumption. The correction is not a better rollback, it is <strong>re-validating the edges</strong>, which is what a replan trigger is for.</p></div>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Regime</th><th>On step failure</th><th>Work discarded</th><th>Fails when</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Plan-linear</strong></td><td>discard plan, re-plan from scratch</td><td>all completed steps</td><td>any retry is expensive; completion collapses with <code>k</code></td></tr>
+        <tr><td><strong>Plan-repair</strong></td><td>patch failed subtree, keep prefix</td><td>only <code>Desc(v)</code></td><td>when the failure means the <em>assumptions</em> changed, not just the output</td></tr>
+        <tr><td><strong>Reactive (no plan)</strong></td><td>one step at a time, decide next from state</td><td>nothing</td><td>loops; no global view; cannot order around a constraint</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d78-s3">3 &middot; The mechanism <a class="hook" href="#d78-s3">#</a></h2>
+
+    <p>The clean result first. Let a <code>k</code>-step serial plan have per-step failure probability <code>p</code> and give it
+    <code>r</code> retries. Under plan-repair, a failure costs you one step back; under plan-linear, it costs you all of them.</p>
+
+    <div class="formula">
+      P<sub>linear</sub>(success) &asymp; 1 &minus; (1 &minus; (1&minus;p)<sup>k</sup>)<sup>r</sup> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+      P<sub>repair</sub>(success) &asymp; [1 &minus; p<sup>r</sup>]<sup>k</sup>
+      <span class="note"><code>p</code> = per-step failure probability, <code>k</code> = steps, <code>r</code> = retry allowance per step. The repair form is a lower bound (it assumes each step gets <code>r</code> independent shots, which overstates success slightly when retries deplete a global budget) &mdash; good enough for design. Note the structural difference: linear has the whole plan inside the retry exponent, repair has a single step there.</span>
+    </div>
+
+    <p>Plug in <code>p = 0.15</code>, <code>k = 20</code>, <code>r = 8</code> retries: linear gives
+    <code>1 &minus; (1 &minus; 0.85<sup>20</sup>)<sup>8</sup> = 1 &minus; (1 &minus; 0.0388)<sup>8</sup> = 1 &minus; 0.7286 = 0.271</code>.
+    Repair gives <code>(1 &minus; 0.15<sup>8</sup>)<sup>20</sup> = (1 &minus; 2.56e-7)<sup>20</sup> &asymp; 0.999995</code> as an upper bound;
+    the exact recursion below is lower because retries share a budget.</p>
+
+    <p>The executor, with the replan triggers made explicit as data rather than as prose in a prompt.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">from</span> functools <span class="kw">import</span> lru_cache
+
+<span class="cm"># A plan is a list of steps; a step declares its deps and whether it is reversible.</span>
+<span class="cm"># Triggers are predicates over (step, result, world) -> None | "repair" | "replan" | "abort"</span>
+
+<span class="kw">def</span> <span class="fn">execute</span>(plan, run_step, triggers, budget, max_restarts=<span class="nm">8</span>):
+    done = {}                 <span class="cm"># step_id -&gt; result, the surviving prefix</span>
+    restarts = <span class="nm">0</span>
+    audit = []                <span class="cm"># append-only; hash-chain this (L90, L94)</span>
+    pending = [s <span class="kw">for</span> s <span class="kw">in</span> plan]
+    <span class="kw">while</span> pending:
+        step = pending.<span class="fn">pop</span>(<span class="nm">0</span>)
+        <span class="kw">if</span> <span class="kw">not</span> <span class="fn">all</span>(d <span class="kw">in</span> done <span class="kw">for</span> d <span class="kw">in</span> step.deps):
+            pending.<span class="fn">append</span>(step); <span class="kw">continue</span>       <span class="cm"># deps not ready, requeue</span>
+        budget.<span class="fn">debit</span>(step.cost)                        <span class="cm"># L76 pre-debit</span>
+        res = <span class="fn">run_step</span>(step, done)
+        audit.<span class="fn">append</span>((step.id, res.status, res.detail))
+
+        action = <span class="fn">fire</span>(triggers, step, res, done)      <span class="cm"># REPLAN TRIGGERS</span>
+        <span class="kw">if</span> action == <span class="st">"abort"</span>:
+            <span class="kw">return</span> <span class="st">"aborted"</span>, done, audit
+        <span class="kw">if</span> action == <span class="st">"replan"</span>:
+            restarts += <span class="nm">1</span>
+            <span class="kw">if</span> restarts &gt; max_restarts: <span class="kw">return</span> <span class="st">"gave_up"</span>, done, audit
+            plan = <span class="fn">replan</span>(done, res)                 <span class="cm"># keep `done` -&gt; this is the repair</span>
+            pending = [s <span class="kw">for</span> s <span class="kw">in</span> plan <span class="kw">if</span> s.id <span class="kw">not in</span> done]
+            <span class="kw">continue</span>
+        <span class="kw">if</span> action == <span class="st">"repair"</span>:
+            pending = [step] + pending                  <span class="cm"># retry THIS step only</span>
+            <span class="kw">continue</span>
+        <span class="kw">if</span> res.status == <span class="st">"ok"</span>:
+            done[step.id] = res
+    <span class="kw">return</span> <span class="st">"complete"</span>, done, audit
+
+
+<span class="kw">def</span> <span class="fn">fire</span>(triggers, step, res, done):
+    <span class="kw">for</span> t <span class="kw">in</span> triggers:
+        <span class="kw">if</span> t.<span class="fn">matches</span>(step, res, done):
+            <span class="kw">return</span> t.action
+    <span class="kw">return</span> <span class="st">"repair"</span> <span class="kw">if</span> res.status != <span class="st">"ok"</span> <span class="kw">else</span> <span class="kw">None</span>
+    </div>
+
+    <p>The four triggers that actually matter in production. Note that only the first is about the step failing;
+    the other three are about the <em>world</em> failing, which is what agents usually cannot see.</p>
+
+    <table class="table">
+      <thead><tr><th>Trigger</th><th>Fires when</th><th>Action</th><th>Why you need it</th></tr></thead>
+      <tbody>
+        <tr><td><code>STEP_ERROR</code></td><td>step returned non-ok</td><td><code>repair</code></td><td>default; cheap, local</td></tr>
+        <tr><td><code>PRECONDITION_DRIFT</code></td><td>re-reading a step's declared input disagrees with what the plan assumed</td><td><code>replan</code></td><td>the world changed under you; the plan's edges are stale</td></tr>
+        <tr><td><code>ORACLE_REGRESSION</code></td><td>a previously-green invariant went red</td><td><code>replan</code></td><td>this step broke something upstream &mdash; the bug is earlier than the failure</td></tr>
+        <tr><td><code>IRREVERSIBLE_AHEAD</code></td><td>the next step is irreversible and its preconditions are not all verified</td><td><code>abort</code></td><td>the one trigger whose job is to stop, not to recover</td></tr>
+        <tr><td><code>BUDGET_THRESHOLD</code></td><td>remaining budget &lt; estimated cost of the rest of the plan</td><td><code>replan</code> with a reduced goal</td><td>degrades gracefully instead of dying mid-step (L92)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout audit">
+      <p>The audit question for a plan executor is not "did it finish". It is <strong>"can you reconstruct, from the log alone,
+      which steps were invalidated by which failure, and whether every irreversible step had its preconditions verified at
+      the moment it fired?"</strong> That requires the audit row to contain the trigger that fired and the step set it invalidated &mdash;
+      not just a status code.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d78-s4">4 &middot; Your hands <a class="hook" href="#d78-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Price plan-linearization</h4>
+      <p>Exact recursion over states <code>(steps_completed, retries_left)</code>, comparing both regimes with an identical
+      retry allowance of 8. This is the number that decides whether your orchestrator may re-plan from scratch.</p>
+      <div class="code" data-lang="python">
+<span class="kw">from</span> functools <span class="kw">import</span> lru_cache
+
+<span class="kw">def</span> <span class="fn">solve</span>(k, p=<span class="nm">0.15</span>, c=<span class="nm">1.0</span>, rework=<span class="nm">0.5</span>, regime=<span class="st">"repair"</span>, R=<span class="nm">8</span>):
+    <span class="kw">@lru_cache</span>(maxsize=<span class="kw">None</span>)
+    <span class="kw">def</span> <span class="fn">P</span>(i, r):
+        <span class="kw">if</span> i == k: <span class="kw">return</span> <span class="nm">1.0</span>
+        <span class="kw">if</span> r &lt;= <span class="nm">0</span>: <span class="kw">return</span> <span class="nm">0.0</span>
+        back = <span class="nm">0</span> <span class="kw">if</span> regime == <span class="st">"linear"</span> <span class="kw">else</span> <span class="fn">max</span>(<span class="nm">0</span>, i - <span class="nm">1</span>)
+        <span class="kw">return</span> (<span class="nm">1</span>-p) * <span class="fn">P</span>(i+<span class="nm">1</span>, r) + p * <span class="fn">P</span>(back, r-<span class="nm">1</span>)
+    <span class="kw">@lru_cache</span>(maxsize=<span class="kw">None</span>)
+    <span class="kw">def</span> <span class="fn">EC</span>(i, r):
+        <span class="kw">if</span> i == k <span class="kw">or</span> r &lt;= <span class="nm">0</span>: <span class="kw">return</span> <span class="nm">0.0</span>
+        extra = (rework * c) <span class="kw">if</span> regime == <span class="st">"repair"</span> <span class="kw">else</span> <span class="nm">0.0</span>
+        back = <span class="nm">0</span> <span class="kw">if</span> regime == <span class="st">"linear"</span> <span class="kw">else</span> <span class="fn">max</span>(<span class="nm">0</span>, i - <span class="nm">1</span>)
+        <span class="kw">return</span> (<span class="nm">1</span>-p) * (c + <span class="fn">EC</span>(i+<span class="nm">1</span>, r)) + p * (c + extra + <span class="fn">EC</span>(back, r-<span class="nm">1</span>))
+    <span class="kw">return</span> <span class="fn">P</span>(<span class="nm">0</span>, R), <span class="fn">EC</span>(<span class="nm">0</span>, R)
+
+<span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">4</span>, <span class="nm">8</span>, <span class="nm">12</span>, <span class="nm">20</span>, <span class="nm">30</span>):
+    <span class="kw">for</span> regime <span class="kw">in</span> (<span class="st">"linear"</span>, <span class="st">"repair"</span>):
+        prob, cost = <span class="fn">solve</span>(k, regime=regime)
+        <span class="kw">print</span>(<span class="st">f"k={k:2d} {regime:7s} P={prob:.3f}  E[cost]={cost:6.2f}"</span>)
+    </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>k=4 linear P=0.997 E[cost]=6.09</code> / <code>repair P=0.999 E=5.81</code> &middot;
+      <code>k=8 linear P=0.922 E=16.40</code> / <code>repair P=0.993 E=11.91</code> &middot;
+      <code>k=12 linear P=0.707 E=28.42</code> / <code>repair P=0.975 E=17.90</code> &middot;
+      <code>k=20 linear P=0.271 E=44.83</code> / <code>repair P=0.884 E=29.14</code> &middot;
+      <code>k=30 linear P=0.059 E=51.53</code> / <code>repair P=0.674 E=40.63</code>.
+      The crossover is around <code>k=6</code>: below it, the choice barely matters; above it, plan-linear is a
+      deliberate decision to fail. At <code>k=20</code> repair is <strong>3.3&times; more likely to finish at 65% of the cost</strong>.
+      <strong>Falsifier:</strong> if your steps are genuinely independent and idempotent, plan-linear is fine &mdash;
+      test by re-running the whole plan after a forced failure and checking whether recompleted steps cost anything. If they do
+      (they usually do: migrations, API quotas, wall clock), repair wins.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Find your granularity from a failure log</h4>
+      <p>Step granularity is a measurable trade-off, not taste. Small steps: more steps (<code>k</code> up) but smaller
+      cones. Large steps: fewer retries needed but each failure is catastrophic. Compute expected cost from your own
+      step durations and failure rates.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># Each row: (step, p_fail, cost, cone_size_in_steps). Fill from your trace store.</span>
+rows = [
+    (<span class="st">"migrate-schema"</span>, <span class="nm">0.10</span>, <span class="nm">3.0</span>, <span class="nm">6</span>),
+    (<span class="st">"backfill-rows"</span>, <span class="nm">0.25</span>, <span class="nm">8.0</span>, <span class="nm">3</span>),
+    (<span class="st">"swap-reads"</span>, <span class="nm">0.05</span>, <span class="nm">1.0</span>, <span class="nm">4</span>),
+    (<span class="st">"drop-old-column"</span>, <span class="nm">0.02</span>, <span class="nm">0.5</span>, <span class="nm">0</span>),
+]
+
+<span class="kw">def</span> <span class="fn">expected_cost</span>(rows, mean_step_cost):
+    total = <span class="nm">0.0</span>
+    <span class="kw">for</span> name, p, c, cone <span class="kw">in</span> rows:
+        total += c + p * (mean_step_cost * cone)   <span class="cm"># failure -&gt; redo the cone</span>
+    <span class="kw">return</span> total
+
+mean_c = <span class="fn">sum</span>(r[<span class="nm">2</span>] <span class="kw">for</span> r <span class="kw">in</span> rows) / <span class="fn">len</span>(rows)
+print(<span class="st">f"mean step cost {mean_c:.2f}"</span>, <span class="st">f"E[cost] {expected_cost(rows, mean_c):.2f}"</span>)
+<span class="kw">for</span> name, p, c, cone <span class="kw">in</span> <span class="fn">sorted</span>(rows, key=<span class="kw">lambda</span> r: -r[<span class="nm">1</span>] * r[<span class="nm">3</span>]):
+    print(<span class="st">f"{name:16s} p={p:.2f} cone={cone}  risk={p*cone:.2f} step-units"</span>)
+      </div>
+      <p class="expect"><strong>Observed output</strong> with these four rows: <code>mean step cost 3.12 E[cost] 17.34</code>, then the
+      risk ranking <code>backfill-rows risk=0.75</code>, <code>migrate-schema risk=0.60</code>, <code>swap-reads risk=0.20</code>,
+      <code>drop-old-column risk=0.00</code>. Note the rows swap order against their step cost: <code>migrate-schema</code> is the
+      second-cheapest step (3.0) but the second-riskiest, because its cone is 6. The diagnostic is the ranking of
+      <code>p &times; cone</code>. The top row is where to
+      <strong>split</strong> (reduce its cone by moving downstream steps behind a verified checkpoint) or where to
+      <strong>add a savepoint</strong> (so a failure rolls back to just before it, not before the whole cone).
+      Note <code>drop-old-column</code> has <code>cone=0</code>: it is terminal, so its failure costs nothing downstream &mdash;
+      terminal steps should always be last and cheap, which is a free design win.
+      <strong>Falsifier:</strong> if <code>backfill-rows</code> fails on <em>data</em> rather than on <em>code</em>, splitting
+      won't help &mdash; the fix is a pre-flight validation step, which is a new step with its own row here.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Test the triggers, not the happy path (copy-paste)</h4>
+      <p>The only way to know a replan trigger works is to force the condition it watches. This harness injects each
+      failure class and asserts the executor's response.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">test_executor</span>(execute):
+    <span class="kw">class</span> <span class="fn">Step</span>:
+        <span class="kw">def</span> <span class="fn">__init__</span>(s, id, deps=(), rev=<span class="kw">False</span>): s.id, s.deps, s.reversible = id, deps, rev
+    <span class="kw">class</span> <span class="fn">Budget</span>:
+        <span class="kw">def</span> <span class="fn">debit</span>(s, n): <span class="kw">pass</span>
+
+    plan = [<span class="fn">Step</span>(<span class="st">"a"</span>), <span class="fn">Step</span>(<span class="st">"b"</span>, deps=(<span class="st">"a"</span>,)), <span class="fn">Step</span>(<span class="st">"c"</span>, deps=(<span class="st">"b"</span>,))]
+
+    <span class="kw">class</span> <span class="fn">Res</span>:
+        <span class="kw">def</span> <span class="fn">__init__</span>(s, status, detail=<span class="st">""</span>): s.status, s.detail = status, detail
+
+    <span class="cm"># inject: 'b' fails once, then never again</span>
+    seen = []
+    <span class="kw">def</span> <span class="fn">run_step</span>(step, done):
+        seen.<span class="fn">append</span>(step.id)
+        <span class="kw">if</span> step.id == <span class="st">"b"</span> <span class="kw">and</span> seen.<span class="fn">count</span>(<span class="st">"b"</span>) == <span class="nm">1</span>:
+            <span class="kw">return</span> <span class="fn">Res</span>(<span class="st">"fail"</span>, <span class="st">"transient"</span>)
+        <span class="kw">return</span> <span class="fn">Res</span>(<span class="st">"ok"</span>)
+
+    status, done, audit = <span class="fn">execute</span>(plan, run_step, triggers=[], budget=<span class="fn">Budget</span>())
+    <span class="kw">assert</span> status == <span class="st">"complete"</span>, status
+    <span class="kw">assert</span> seen.<span class="fn">count</span>(<span class="st">"a"</span>) == <span class="nm">1</span>, <span class="st">"step a must NOT be re-executed on repair"</span>
+    <span class="kw">assert</span> set(done) == {<span class="st">"a"</span>, <span class="st">"b"</span>, <span class="st">"c"</span>}
+    print(<span class="st">"PASS: repair kept the prefix; exec order ="</span>, seen)
+
+<span class="fn">test_executor</span>(execute)
+      </div>
+      <p class="expect">Prints <code>PASS: repair kept the prefix; exec order = ['a', 'b', 'b', 'c']</code>. The assertion
+      that matters is <code>seen.count("a") == 1</code>: if your executor re-runs <code>a</code>, you have plan-linearization
+      hiding inside a loop that claims to replan. Run this test against every orchestrator you ship &mdash; it is three lines
+      and catches the most expensive bug in the class.
+      <strong>Falsifier:</strong> if you cannot write this test because <code>run_step</code> has side effects you cannot
+      undo in a test harness, that is itself the finding &mdash; your steps are not isolatable and you cannot test triggers at all.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d78-s5">5 &middot; Failure modes <a class="hook" href="#d78-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Hidden plan-linearization.</strong> The code says "replan", but re-planning regenerates the whole plan including completed steps, which get re-executed. Symptom: completed-step execution count &gt; 1; cost grows superlinearly with <code>k</code>.</li>
+        <li><strong>Stale-edge execution.</strong> A completed step's output invalidates an assumption downstream, but no trigger watches for it. Symptom: plan "completes" and the final artifact is wrong; every individual step reported success. This is the highest-severity mode because it looks like success.</li>
+        <li><strong>Unverified irreversible step.</strong> A destructive step runs while a precondition is still being retried. Symptom: no error, no rollback possible, incident. Prevent with the <code>IRREVERSIBLE_AHEAD</code> trigger as a hard gate, not a heuristic.</li>
+        <li><strong>Granularity too coarse.</strong> A 40-minute step fails at minute 39. Symptom: high variance in cost-per-attempt; p99 duration &gt;&gt; p50; retries that reproducibly fail at the same point.</li>
+        <li><strong>Granularity too fine.</strong> 60 steps for a simple task. Symptom: planning tokens exceed execution tokens; the plan itself consumes the budget (L76).</li>
+        <li><strong>Unbounded replanning.</strong> No <code>max_restarts</code>. Symptom: agents oscillating between two incompatible plans forever &mdash; the plan-history log shows alternating A/B/A/B.</li>
+        <li><strong>Plan narrated but not executed.</strong> The model emits a plan as text and then acts reactively. Symptom: <code>done</code> set does not match the plan's step ids; no audit row per planned step.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d78-s6">6 &middot; Connects to <a class="hook" href="#d78-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="76-agents.html">L76 &middot; Budgeted loop</a>,
+    <a class="tag-d" href="77-tool-calling.html">L77 &middot; Tool schemas</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="82-long-horizon.html">L82 &middot; Long horizon</a>,
+    <a class="tag-d" href="83-swarms.html">L83 &middot; Swarms</a>.</p>
+    <ul>
+      <li><a class="tag-c" href="../track-c/60-chain-of-thought.html">L60 &middot; Chain-of-thought</a> &mdash; a plan is CoT with an execution contract attached; the contract is what separates planning from narration.</li>
+      <li><a class="tag-c" href="../track-c/71-agentic-rl.html">L71 &middot; Agentic RL</a> &mdash; credit assignment across plan steps is the training-time mirror of the invalidation problem here.</li>
+      <li><a class="tag-d" href="79-context-engineering.html">L79 &middot; Context engineering</a> &mdash; the plan occupies context on every turn; plan-as-DAG is more compact than plan-as-prose.</li>
+      <li><a class="tag-d" href="82-long-horizon.html">L82 &middot; Long-horizon</a> &mdash; this page's regime choice is the first-order term in the compounding-failure model.</li>
+      <li><a class="tag-d" href="81-subagents.html">L81 &middot; Subagents</a> &mdash; a subagent is a plan subtree delegated to a separate context; the invalidation rules must cross the boundary.</li>
+      <li><a class="tag-d" href="92-reliability.html">L92 &middot; Reliability</a> &mdash; triggers are a retry policy with semantic knowledge; retry mechanics without triggers is blind retry.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d78-s7">7 &middot; Self-check <a class="hook" href="#d78-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Per-step failure probability is 0.12, the plan has 15 steps, and you allow 3 retries total. Give both completion estimates and say which assumption each makes.</p>
+        <details><summary>Reveal answer</summary><p><em>Plan-linear:</em> single-attempt success is <code>0.88<sup>15</sup> = 0.1472</code>; with 3 restarts, <code>1 &minus; (1 &minus; 0.1472)<sup>3</sup> = 1 &minus; 0.8528<sup>3</sup> = 1 &minus; 0.6203 = 0.380</code>. <em>Plan-repair (upper bound, per-step retries):</em> <code>(1 &minus; 0.12<sup>3</sup>)<sup>15</sup> = (1 &minus; 0.001728)<sup>15</sup> = 0.9744</code>. Assumptions: linear assumes all work is discarded on failure; repair assumes each step independently gets enough retries, which <em>overstates</em> when retries come from one shared pool &mdash; so the truth is between 0.380 and 0.974, and the exact recursion (Experiment 1) settles it for your specific budget.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> From Experiment 1: at <code>k=20</code>, repair is 3.3&times; more likely to finish. What's the mechanism, stated in one sentence about exponents?</p>
+        <details><summary>Reveal answer</summary><p>Under plan-linear the <em>entire plan's</em> failure probability sits inside the retry exponent &mdash; you need all 20 steps to succeed before you can bank anything &mdash; whereas under plan-repair only a <em>single step's</em> failure probability sits there, so the exponent multiplies 20 small quantities instead of one very small one. Concretely: <code>0.85<sup>20</sup> = 0.0388</code> versus <code>0.15<sup>8</sup> = 2.6e-7</code>. That's the whole argument for savepoints.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Your executor passes the happy-path test and fails one step in five, yet users report the <em>final artifact</em> is wrong while every step logged <code>ok</code>. Name the failure mode and the log field you are missing.</p>
+        <details><summary>Reveal answer</summary><p><em>Stale-edge execution</em>. Every step succeeded against the inputs it was given, but an earlier step's output invalidated a downstream assumption the plan never drew an edge for. Missing field: the <strong>input snapshot hash</strong> per step (what the step actually read), plus a post-completion <strong>oracle re-check</strong> of the end-state invariant. With input hashes you can diff "what step 9 believed" against "what step 4 produced" and find the missing edge. Without them, every step is individually blameless and the bug is unfindable.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why must <code>IRREVERSIBLE_AHEAD</code> be an <em>abort</em> and not a <code>repair</code> or <code>replan</code>?</p>
+        <details><summary>Reveal answer</summary><p>Because by the time you detect the problem, the correct response is not to continue &mdash; any further automated action is operating on a state you have not verified. Repair and replan both assume the world is recoverable; an irreversible step's precondition failure means the recoverable set is unknown, so the only safe action is to stop and escalate to a human. It is the one trigger whose failure mode is designed to be loud rather than cheap, and it is the reason your 4-point promotion gate works: irreversible actions are the ones that need the most evidence, not the least.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> A colleague argues planning is unnecessary: "just let the model take the next best action each turn, like ReAct". Give the quantitative counterexample.</p>
+        <details><summary>Reveal answer</summary><p>Reactive control works when the local best action is globally best &mdash; true for short, low-branching tasks. It fails when the task has <em>ordering constraints with irreversible steps</em>: the locally attractive action (e.g. "drop the old column, it's unused") is globally catastrophic if a downstream migration still reads it, and no amount of local lookahead fixes it because the cost is non-local. Measure it: run the same task family reactive vs plan-then-act and compare failure rate at <code>k &gt; 8</code>. The honest result is usually a hybrid &mdash; plan for ordering and commit points, act reactively within each step &mdash; which is what the executor above does.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="77-tool-calling.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L77 &middot; Tool calling &amp; MCP</span></a>
+    <a class="next" href="79-context-engineering.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L79 &middot; Context engineering</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

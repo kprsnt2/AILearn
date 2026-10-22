@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="b30">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L30 · Mixture of Experts: Sparse Activation — AILearn</title>
+<meta name="description" content="Decouple parameter count from compute per token: a fixed top-k router over E experts makes memory scale with total parameters while the serving bill scales only with active ones.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track B &mdash; Scaling &amp; Architecture</a> <span>/</span> <span>L30</span></div>
+  <div class="track-tag">TRACK B &middot; SCALING &amp; ARCHITECTURE</div>
+  <h1>L30 &middot; Mixture of Experts: Sparse Activation</h1>
+  <p class="lede">A dense model makes you pay twice for capacity: once in training FLOPs and again on every token you ever serve. Sparse activation breaks the link &mdash; total parameters buy knowledge, active parameters buy your bill &mdash; at the price of memory, bandwidth and routing fragility.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: toy MoE router with load stats</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">sparse activation</span>
+  <span class="pill">top-k router</span>
+  <span class="pill">expert FFN</span>
+  <span class="pill">total vs active params</span>
+  <span class="pill">all-to-all comms</span>
+  <span class="pill">expert parallelism</span>
+  <span class="pill">capacity factor</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="b30-s1">1 &middot; Why it exists <a class="hook" href="#b30-s1">#</a></h2>
+
+    <p>Two lessons converged on a wall. L26 says loss falls as a power law in parameters. L28 says serving cost is
+    <strong>linear in parameters</strong>. Put them together and a dense model forces a bad trade: to get the loss of a 1.6T
+    model you must pay 1.6T-parameter prices on every single generated token, forever.</p>
+
+    <p>Price it. At 16-bit weights, 1.6T parameters is 1.6&times;10<sup>12</sup> &times; 2 bytes = 3.2&times;10<sup>12</sup> bytes
+    &asymp; 2.91 TiB just to hold the weights. You cannot fit that in one node; you must shard across a cluster, and every
+    token then requires reading all of it or communicating across all of it. Generating one token on such a dense model means
+    moving ~3 TB through HBM interconnects. The physics, not the budget, says no.</p>
+
+    <p>The escape: a transformer's FFN layers are the parameter bulk, and neighbouring tokens do not need the same
+    knowledge. If you split the FFN into <em>E</em> parallel experts and route each token to only the top <em>k</em> of them,
+    the model can hold N<sub>total</sub> parameters while spending only N<sub>active</sub> &asymp; N<sub>total</sub>&middot;k/E
+    FLOPs and bytes per token. That is the whole idea. Switch Transformer <span class="asof">arXiv:2101.03961</span> and
+    GShard <span class="asof">arXiv:2006.16668</span> are the canonical early references; every 2026 frontier model uses some
+    variant.</p>
+
+    <div class="callout boss">
+      <p>Sparse activation separates the two costs you were forced to bundle: <strong>knowledge scales with total
+      parameters, your bill scales with active parameters.</strong> A model can be 20&ndash;35&times; larger in memory than the
+      compute it spends per token &mdash; that ratio is the design knob.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="b30-s2">2 &middot; The mental model <a class="hook" href="#b30-s2">#</a></h2>
+
+    <p><strong>Analogy (labelled):</strong> a hospital with specialists. Every patient (token) is triaged by a generalist
+    (the router) and sent to two specialists. The hospital must <em>staff and house</em> all specialists (memory = total
+    parameters), but on any given day only the ones who see patients do work (compute = active parameters).</p>
+
+    <p>The break in that analogy: in a hospital, patients are routed over hours and can queue; here, routing decisions are made
+    inside the forward pass and must be <em>packed into dense matrix multiplies</em> to run efficiently on GPUs. That packing
+    is where the real engineering lives, and it is why the effective speedup is never k/E of the parameter count.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>What the analogy gets right</h4><p>Capacity decoupled from throughput; the generalist's decision
+      quality is a first-class concern (a bad router means the right specialist never sees the patient).</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A hospital can hire more specialists cheaply; an MoE with E = 256 pays a
+      <em>memory</em> bill of 256 experts whether or not they are used, plus an all-to-all network hop per MoE layer to move
+      tokens to wherever the experts live. And specialists can starve &mdash; the hospital has no union rules, so 90% of
+      patients can end up at two doctors (route collapse, L31).</p></div>
+    </div>
+
+    <h3>Where the parameters actually are</h3>
+    <p>Take a transformer with d<sub>model</sub> = 4096 and dense FFN width 14336. Each dense FFN layer is 3 &times; 4096
+    &times; 14336 &asymp; 0.176B parameters (three matrices: gate, up, down). Attention at d = 4096 with 32 heads is
+    roughly 4 &times; d<sup>2</sup> &asymp; 0.067B. So <strong>the FFN is ~2.6&times; the size of attention</strong> and it is
+    the obvious place to add capacity. Every real MoE sparsifies the FFN and leaves attention dense.</p>
+
+    <table class="table">
+      <thead><tr><th>Shape</th><th>FFN params per layer</th><th>Active FFN params per token (top-2)</th></tr></thead>
+      <tbody>
+        <tr><td>Dense</td><td>0.176B</td><td>0.176B</td></tr>
+        <tr><td>E = 32 experts</td><td>32 &times; 0.176 = 5.64B</td><td>2 &times; 0.176 = 0.352B</td></tr>
+        <tr><td>E = 64 experts</td><td>64 &times; 0.176 = 11.27B</td><td>2 &times; 0.176 = 0.352B</td></tr>
+        <tr><td>E = 128 experts</td><td>128 &times; 0.176 = 22.55B</td><td>2 &times; 0.176 = 0.352B</td></tr>
+      </tbody>
+    </table>
+
+    <p>Active compute is <em>identical</em> across all three; memory differs by 4&times;. That is the free lunch &mdash; and
+    the entire reason the answer to &ldquo;how big is the model?&rdquo; is now two numbers, never one.</p>
+  </section>
+
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="b30-s3">3 &middot; The mechanism <a class="hook" href="#b30-s3">#</a></h2>
+
+    <div class="formula">
+      router:&nbsp; s = softmax(W<sub>g</sub>&thinsp;x) &nbsp;&rarr;&nbsp; &TopK;(s, k) &nbsp;&rarr;&nbsp;
+      y = &sum;<sub>i &isin; top-k</sub> (s<sub>i</sub> / &sum;<sub>j &isin; top-k</sub> s<sub>j</sub>) &middot; FFN<sub>i</sub>(x)
+      <span class="note">W<sub>g</sub>: d_model &times; E. The gate weights on the selected experts are renormalised to sum to 1 so the output scale does not depend on k. N<sub>active</sub> = attention + k/E &times; FFN capacity; N<sub>total</sub> = everything on disk.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># minimal MoE FFN layer. numpy-free: this runs anywhere.</span>
+<span class="fn">import</span> random, math
+<span class="kw">def</span> <span class="fn">softmax</span>(z):
+    m = <span class="fn">max</span>(z); e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> z]; s = <span class="fn">sum</span>(e)
+    <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+
+E, K, D = <span class="nm">8</span>, <span class="nm">2</span>, <span class="nm">16</span>
+random.seed(<span class="nm">30</span>)
+Wg = [[random.gauss(<span class="nm">0</span>, <span class="nm">0.5</span>) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(D)] <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(E)]
+
+<span class="kw">def</span> <span class="fn">route</span>(x):
+    s = <span class="fn">softmax</span>([<span class="fn">sum</span>(wi * xi <span class="kw">for</span> wi, xi <span class="kw">in</span> <span class="fn">zip</span>(w, x)) <span class="kw">for</span> w <span class="kw">in</span> Wg])
+    top = <span class="fn">sorted</span>(<span class="fn">range</span>(E), key=<span class="kw">lambda</span> i: -s[i])[:K]
+    z = <span class="fn">sum</span>(s[i] <span class="kw">for</span> i <span class="kw">in</span> top)
+    <span class="kw">return</span> [(i, s[i] / z) <span class="kw">for</span> i <span class="kw">in</span> top]
+
+loads = [<span class="nm">0</span>] * E
+<span class="kw">for</span> t <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">1000</span>):
+    x = [random.gauss(<span class="nm">0</span>, <span class="nm">1</span>) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(D)]
+    <span class="kw">for</span> i, _ <span class="kw">in</span> <span class="fn">route</span>(x): loads[i] += <span class="nm">1</span>
+
+<span class="fn">print</span>(<span class="st">"loads:", loads)</span>
+<span class="fn">print</span>(<span class="st">"max/min ratio:", <span class="fn">max</span>(loads) / <span class="fn">max</span>(<span class="nm">1</span>, <span class="fn">min</span>(loads)))</span>
+<span class="fn">print</span>(<span class="st">"ideal per expert:", <span class="nm">1000</span> * K / E)</span>
+    </div>
+
+    <p>Three costs this pseudocode hides, all of which decide whether an MoE is actually faster than a dense model of the
+    same active size:</p>
+    <ol>
+      <li><strong>Memory.</strong> All E experts must be resident. At 16-bit, a 1.6T-total model is
+      1.6&times;10<sup>12</sup> &times; 2 bytes = 3.2&times;10<sup>12</sup> B = 2.91 TiB. Even at 8-bit it is 1.46 TiB. You
+      are forced into expert parallelism across nodes whether you want it or not.</li>
+      <li><strong>All-to-all.</strong> Each MoE layer moves every token's hidden vector to the node that holds its experts and
+      back. With batch B tokens, d<sub>model</sub> = 7168, k = 6, 16-bit: each token sends k vectors of d values out, and receives the same
+      volume back &mdash; B &times; 7168 &times; 6 &times; 2 bytes &times; 2 = B &times; 172,032 bytes per layer. At B = 4096 that is 0.705 GB
+      <em>per MoE layer</em>; at B = 32,768 it is 5.64 GB per layer. Across 61 layers: 43.0 GB and 343.9 GB respectively,
+      per batch. That traffic, not FLOPs, is what you optimise.</li>
+      <li><strong>Padding / capacity.</strong> To run as a dense matmul each expert gets a fixed slot count: capacity =
+      (tokens &times; k / E) &times; capacity_factor. Tokens beyond capacity are dropped or passed through the residual
+      unmodified &mdash; a silent quality leak when routing is imbalanced.</li>
+    </ol>
+
+    <h3>The 2026 shape, with verified numbers</h3>
+    <table class="table">
+      <thead><tr><th>Model <span class="asof">state as of 2026-10</span></th><th>Total</th><th>Active</th><th>Sparsity N<sub>act</sub>/N<sub>tot</sub></th><th>bf16 weights</th></tr></thead>
+      <tbody>
+        <tr><td>DeepSeek-V4-Flash</td><td>284B</td><td>13B</td><td>4.6%</td><td>529.0 GiB</td></tr>
+        <tr><td>DeepSeek-V4-Pro</td><td>1.6T</td><td>49B</td><td>3.1%</td><td>2,980 GiB</td></tr>
+        <tr><td>DeepSeek-V4.1-Flash</td><td>552B</td><td>8B input / 16B output</td><td>2.9% (output side)</td><td>1,028 GiB</td></tr>
+      </tbody>
+    </table>
+
+    <p>Every one of them sits at 3&ndash;5% sparsity. Note what that means for serving: V4-Pro holds 1.6T parameters of
+    <em>memory</em> but pays only 49B parameters of <em>arithmetic</em> per token &mdash; a 32.7&times; gap between what the
+    cluster must store and what a token costs. V4.1-Flash's split (8B for input, 16B for output) is a further refinement:
+    the two serving phases get different active widths because they are limited by different resources (L37).</p>
+
+    <div class="callout audit">
+      <p>Two numbers or the claim is unusable. Any MoE spec sheet that says only &ldquo;1.6T parameters&rdquo; is marketing:
+      the serving bill is set by 49B and the memory requirement by 1.6T, and those are 32.7&times; apart. Record both, plus
+      k, E and capacity factor, or you cannot reproduce the cost model.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="b30-s4">4 &middot; Your hands <a class="hook" href="#b30-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; does a random router balance? (the answer is yes, and that is the trap)</h4>
+      <p>Untrained router weights already produce near-uniform load. This matters because it means load imbalance in a real
+      run is <em>learned</em>, not incidental &mdash; which is why it needs a mechanism (L31), not a hope.</p>
+      <div class="code" data-lang="bash">
+python -c "
+import random, math
+def softmax(z):
+    m=max(z); e=[math.exp(v-m) for v in z]; s=sum(e); return [v/s for v in e]
+E,K,D=64,6,32
+random.seed(30)
+Wg=[[random.gauss(0,0.4) for _ in range(D)] for _ in range(E)]
+loads=[0]*E
+for t in range(20000):
+    x=[random.gauss(0,1) for _ in range(D)]
+    s=softmax([sum(a*b for a,b in zip(w,x)) for w in Wg])
+    for i in sorted(range(E), key=lambda i:-s[i])[:K]: loads[i]+=1
+ideal=20000*K/E
+print('ideal per expert', ideal, 'max', max(loads), 'min', min(loads))
+print('max/ideal %.3f  min/ideal %.3f' % (max(loads)/ideal, min(loads)/ideal))
+"
+      </div>
+      <p class="expect">Ideal is 20,000&times;6/64 = 1,875 per expert. With random weights the spread is small &mdash; roughly
+      within &plusmn;10% of ideal &mdash; because no expert has been trained to specialise. Falsification: if you see collapse
+      (one expert taking &gt;50% of tokens) with <em>random</em> weights, your softmax or top-k is wrong.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; compute the memory and comms bill for a shape you pick</h4>
+      <p>The two lines that decide feasibility. Set B, d, k, total parameters and get tebibytes and gigabytes.</p>
+      <div class="code" data-lang="python">
+<span class="kw">def</span> <span class="fn">moe_bill</span>(N_total, B, d_model, k, layers, bits=16):
+    w_bytes = N_total * bits / <span class="nm">8</span>
+    per_layer_a2a = B * d_model * k * <span class="nm">2</span> * bits / <span class="nm">8</span>   <span class="cm"># out and back</span>
+    <span class="kw">return</span> w_bytes / <span class="nm">1024</span>**<span class="nm">4</span>, per_layer_a2a * layers / <span class="nm">1e9</span>
+
+<span class="kw">for</span> N, B <span class="kw">in</span> [(<span class="nm">284e9</span>, <span class="nm">4096</span>), (<span class="nm">1.6e12</span>, <span class="nm">4096</span>), (<span class="nm">1.6e12</span>, <span class="nm">32768</span>)]:
+    tib, gb = <span class="fn">moe_bill</span>(N, B, <span class="nm">7168</span>, <span class="nm">6</span>, <span class="nm">61</span>)
+    <span class="fn">print</span>(<span class="st">f"N={N/1e12:4.2f}T B={B:6d}  weights={tib:7.2f} TiB  all-to-all={gb:8.2f} GB/token-batch"</span>)
+      </div>
+      <p class="expect">284B at B = 4096: 0.517 TiB of weights, 43.0 GB of all-to-all per batch. 1.6T at B = 4096:
+      2.91 TiB and also 43.0 GB. At B = 32,768 the all-to-all is 343.9 GB per batch &mdash; larger than most interconnects can move
+      in less than seconds. That is the bandwidth wall, and it is why MoE serving is a networking problem as much as a GPU one.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; measure the real speedup of sparsity (it is not 1/sparsity)</h4>
+      <p>A thought-experiment you can check against any benchmark: compare dense-layer FLOPs with MoE-layer FLOPs plus comms.
+      The point is to see the gap between the theoretical FLOPs saving and the achieved saving.</p>
+      <div class="code" data-lang="bash">
+python -c "
+Ntot, Nact = 1.6e12, 49e9
+flop_ratio = Ntot/Nact
+# achieved ratio also has routing + a2a + padding overhead; assume 35% of dense-savings survive
+for eff in (1.0, 0.5, 0.35, 0.2):
+    print(f'if {eff:.0%} of the FLOPs saving survives overhead: effective dense-equivalent size = {Nact/eff/1e9:.0f}B')
+print('raw ratio', round(flop_ratio,1))
+"
+      </div>
+      <p class="expect">The honest reading: an MoE's &ldquo;effective dense size&rdquo; for a given throughput is
+      N<sub>active</sub>/eff, and if only 35% of the saving survives you get the throughput of a 140B dense model. Still a
+      11&times; win over dense-at-1.6T, but nowhere near 32.7&times;. Any vendor quoting the raw ratio is quoting the ceiling.</p>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="b30-s5">5 &middot; Failure modes <a class="hook" href="#b30-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Route collapse.</strong> Symptom: a handful of experts receive most tokens, the others receive almost none and
+        their weights barely change; validation loss plateaus above the dense baseline. Detect with a load histogram per layer,
+        per step.</li>
+        <li><strong>Expert starvation at small batch.</strong> Symptom: throughput collapses at low concurrency. With E = 256 and
+        k = 8, you need B &ge; 128 tokens just to average 4 tokens per expert; a single-user request (a batch of one prompt) may
+        use an expert exactly once, so the matmul is a vector&#8594;matrix and the GPU idles. Symptom: latency per token is fine
+        at batch 1 but the FLOP utilisation is a few percent.</li>
+        <li><strong>Capacity overflow drops.</strong> Symptom: loss is worse than predicted and gets worse with longer sequences;
+        the drop counter for over-capacity tokens is non-zero on some layers. Silent because nothing errors.</li>
+        <li><strong>All-to-all saturation.</strong> Symptom: scaling efficiency falls when you add nodes; per-step time grows
+        super-linearly with node count and the network counters are saturated while GPU utilisation drops. The fix is usually a
+        smaller k or expert groups (L42).</li>
+        <li><strong>Load-balancing loss fights the LM objective.</strong> Symptom: an auxiliary loss weight that is too high
+        makes the router nearly uniform, so no expert specialises and quality drops even as balance looks perfect (L31).</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="b30-s6">6 &middot; Connects to <a class="hook" href="#b30-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> L28 (why dense serving is expensive) and L11 (the SwiGLU FFN you are splitting).
+    &nbsp; <strong>Unlocks:</strong> L31 (routing), L32 (DeepSeekMoE), L42 (expert parallelism).</p>
+    <ul>
+      <li><a class="tag-b" href="28-over-training.html">L28 &middot; Over-training</a> &mdash; the serving-cost argument that motivates sparsity.</li>
+      <li><a class="tag-a" href="../track-a/11-activations.html">L11 &middot; ReLU&rarr;GeLU&rarr;SwiGLU</a> &mdash; the FFN shape every expert copies.</li>
+      <li><a class="tag-b" href="31-moe-routing.html">L31 &middot; Router design &amp; load balancing</a> &mdash; what happens when the triage fails.</li>
+      <li><a class="tag-b" href="32-deepseek-moe.html">L32 &middot; DeepSeekMoE</a> &mdash; fine-grained experts and shared experts.</li>
+      <li><a class="tag-b" href="42-parallelism.html">L42 &middot; Parallelism</a> &mdash; expert parallelism and the all-to-all budget.</li>
+    </ul>
+  </section>
+
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="b30-s7">7 &middot; Self-check <a class="hook" href="#b30-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> A model has 552B total / 16B active. What is the sparsity ratio, the bf16 weight footprint in GiB, and the ratio of memory to serving cost?</p>
+        <details><summary>Reveal answer</summary><p>Sparsity = 16/552 = 2.9%. Weights = 552&times;10<sup>9</sup> &times; 2 B = 1.104&times;10<sup>12</sup> B
+        / 1024<sup>3</sup> = 1,028.2 GiB (1.004 TiB). Memory-to-serving ratio = 34.5&times;. So this model needs over a terabyte of
+        accelerator memory but costs about 1/34.5 of that in per-token arithmetic.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> d_model = 4096, dense ffn = 14336, E = 64, top-k = 2. What are the FFN params per layer and per token, and what is the parameter ratio?</p>
+        <details><summary>Reveal answer</summary><p>Per expert: 3 &times; 4096 &times; 14336 = 176,160,768 &asymp; 0.176B. Per layer total:
+        64 &times; 0.176 = 11.27B. Per token active: 2 &times; 0.176 = 0.352B. Ratio = 11.27/0.352 = 32&times; at this single layer
+        &mdash; note the whole-model ratio is lower (e.g. 4.6%) because attention and embeddings are dense.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: quality is excellent, but the serving cluster is network-bound at batch 32k while GPUs idle at 30%. Name the two most likely causes and the measurement that separates them.</p>
+        <details><summary>Reveal answer</summary><p>(a) all-to-all traffic per MoE layer is saturating the fabric &mdash; measure bytes moved per token per layer against the
+        NVLink/InfiniBand peak; (b) routing is unbalanced so some expert-parallel ranks finish late and everyone waits (straggler effect) &mdash; measure
+        per-rank compute time per layer and the variance across ranks. If per-rank times are similar but total time exceeds the sum, it is
+        bandwidth. If one rank takes far longer, it is imbalance.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> During decode, an MoE is bottlenecked by weight fetch. If you quantize only the experts to 8-bit, what happens to (a) memory footprint, (b) decode bytes per token, (c) whether the KV cache budget improves?</p>
+        <details><summary>Reveal answer</summary><p>(a) the expert portion halves &mdash; for a 552B-total model, 552&times;10<sup>9</sup>&times;1 B = 514 GiB instead
+        of 1,028 GiB. (b) decode fetches only the active experts, so bytes per token roughly halve too and decode gets close to 2&times; faster on a
+        bandwidth-bound kernel. (c) not directly &mdash; the KV cache size is set by layers, heads and context, not by expert weight precision; but
+        the memory you freed can now hold KV, so concurrency improves. Quantizing weights and quantizing the KV cache are separate levers (L40).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Your router loses 3% of tokens to capacity drops at layer 12. Is that acceptable, and how do you decide?</p>
+        <details><summary>Reveal answer</summary><p>Decide with the drop's effect on the objective, not the percentage: dropped tokens skip the MoE sublayer and pass the residual
+        straight through, so they lose one of many layer contributions. Measure validation loss with capacity_factor raised to 2.0 versus
+        1.0; if loss is unchanged, the drops are irrelevant. If loss is better at 2.0, you are trading quality for throughput and
+        you should know the exchange rate explicitly. Never accept a drop counter you have not priced.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="29-emergence.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L29 &middot; Emergence, and why it is partly a metric artifact</span></a>
+    <a class="next" href="31-moe-routing.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L31 &middot; Router design &amp; load balancing</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

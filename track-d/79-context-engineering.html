@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d79">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L79 · Context engineering: window budgets, compaction, summarization — AILearn</title>
+<meta name="description" content="The context window is a fixed budget shared by nine competing items. Conversation history eats 66% of it. A budget planner, a compaction policy, and the half-life arithmetic of lossy summarization.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L79</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L79 &middot; Context engineering: window budgets, compaction, summarization</h1>
+  <p class="lede">Conversation history is 66% of your context budget and the first thing eviction drops &mdash; so the agent forgets exactly what it just learned. Every compaction round multiplies a fact's survival by a factor below 1, which gives memory a measurable half-life.</p>
+  <div class="chips">
+    <span class="chip">~30 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9675;&#9675;</span>
+    <span class="chip">build: context budget planner</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">context as a budget</span>
+  <span class="pill">value-density allocation</span>
+  <span class="pill">compaction</span>
+  <span class="pill">summarization half-life</span>
+  <span class="pill">quadratic prefill</span>
+  <span class="pill">pin decisions vs summarize turns</span>
+  <span class="pill">context poisoning</span>
+  <span class="pill">output reserve</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d79-s1">1 &middot; Why it exists <a class="hook" href="#d79-s1">#</a></h2>
+
+    <p>The failure: <strong>an agent that gets worse the longer it works.</strong> Turn 8 is sharp. Turn 60 confidently
+    contradicts a decision it made at turn 12, because turn 12 was compacted out. The transcript reads as coherent &mdash; the
+    model is fluent about whatever it remembers &mdash; and the summarizer that replaced the memory had no idea which facts
+    would matter later.</p>
+
+    <p>This is not a capacity problem you can buy your way out of, because three costs rise with length simultaneously:
+    <strong>money</strong> (every token is billed every turn), <strong>latency</strong> (the attention term in prefill is
+    roughly quadratic in sequence length), and <strong>accuracy</strong> (long-context retrieval is uneven; the widely
+    reported "lost in the middle" pattern should be measured on your model, not assumed). On top of that, the same 3.2k
+    tokens of tool schemas are re-sent on a turn that writes one line of code and on a turn that uses all 26 tools.</p>
+
+    <div class="callout boss">
+      <p>Context is a <strong>fixed-capacity store with a lossy eviction policy you wrote by accident</strong>. Every design
+      decision &mdash; what lives in the system prompt, whether history is verbatim or summarized, whether a tool result is
+      echoed back &mdash; is an eviction-policy decision. The engineering question is never "does it fit" but <strong>"what is
+      each item's value density, and what is silently destroyed when the budget forces a choice"</strong>.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d79-s2">2 &middot; The mental model <a class="hook" href="#d79-s2">#</a></h2>
+
+    <p>The window is a knapsack. Items have sizes (tokens) and values (how much the next action depends on them). The
+    design work is the ranking &mdash; and the ranking changes as the task progresses, which is why static allocation fails.</p>
+
+    <table class="table">
+      <thead><tr><th>Item class</th><th>Size behaviour</th><th>Value over time</th><th>Eviction strategy</th></tr></thead>
+      <tbody>
+        <tr><td>System prompt / role</td><td>fixed, small</td><td>constant, high</td><td>never evict; keep byte-stable for prefix caching (L45)</td></tr>
+        <tr><td>Tool schemas</td><td>grows with catalogue</td><td>high only on tool turns</td><td>prune to task-relevant subset at session start</td></tr>
+        <tr><td>Retrieved chunks</td><td>large, bursty</td><td>spikes, then decays</td><td>re-retrieve per query; never accumulate</td></tr>
+        <tr><td><strong>Conversation history</strong></td><td><strong>grows fastest</strong></td><td>decays, except pinned decisions</td><td>summarize old turns, <em>pin</em> decisions verbatim</td></tr>
+        <tr><td>Plan / task state</td><td>small</td><td>constant, high</td><td>re-render from structured state; do not rely on history</td></tr>
+        <tr><td>File / code under edit</td><td>medium</td><td>high, localised</td><td>render the relevant region + line numbers, not the file</td></tr>
+        <tr><td>Tool outputs</td><td>very large, spiky</td><td>low after the tail is read</td><td>head+tail truncation with an explicit elision marker</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: an L1 cache with a policy you write</h4><p>Context is an L1 cache &mdash; fast, tiny, expensive on miss. Unlike a CPU cache, the replacement policy is yours and the "miss" is not slow, it is silent: the model reasons confidently from whatever replaced the truth.</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A CPU evicts by address and the program cannot observe it. Here the program <em>is</em> the model, and it has no way to know an eviction happened. So the cache analogy hides the real failure: not a miss but a <strong>silent cache poisoning</strong> where a lossy summary stands in for ground truth with no provenance marker attached.</p></div>
+    </div>
+
+    <p>The design rule that follows: <strong>anything that must survive compaction belongs in structured state, not in the
+    transcript.</strong> Decisions, plan state, file paths, and open questions live in a small object outside the conversation
+    and are re-rendered every turn. The transcript then becomes a narrative that can be summarized safely, because
+    nothing load-bearing is stored only in it.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d79-s3">3 &middot; The mechanism <a class="hook" href="#d79-s3">#</a></h2>
+
+    <p>Allocation by value density. Greedy is optimal for the fractional knapsack and near-optimal here because item
+    sizes are small relative to the budget.</p>
+
+    <div class="formula">
+      &rho;<sub>i</sub> = v<sub>i</sub> / t<sub>i</sub> &nbsp;&nbsp;&nbsp;&nbsp; take in descending &rho; while &sum; t<sub>i</sub> &le; W &minus; R
+      <span class="note"><code>v<sub>i</sub></code> = item priority (1&ndash;5), <code>t<sub>i</sub></code> = tokens, <code>W</code> = window, <code>R</code> = reserve for the next output plus tool-call JSON. Agents that fill the window to 100% cannot emit a reply at all.</span>
+    </div>
+
+    <p>The compaction rule. Do not compact when full &mdash; compact when growth predicts you will hit the reserve
+    <em>mid-step</em>, because compacting during a verification step deletes exactly the evidence that step needs.</p>
+
+    <div class="formula">
+      compact when &nbsp; C<sub>t</sub> + &Delta;<sub>avg</sub> &middot; n&#770; &gt; W &minus; R
+      <span class="note"><code>C<sub>t</sub></code> = current context tokens, <code>&Delta;<sub>avg</sub></code> = mean tokens added per turn, <code>n&#770;</code> = expected turns left in the current plan step. Triggering one step early is always cheaper than triggering in the middle of proving something.</span>
+    </div>
+
+    <p>The planner and the compaction policy together. The critical detail is that <code>decision</code> turns and pinned
+    turns are <strong>never</strong> summarized &mdash; they are re-rendered verbatim from structured state.</p>
+
+    <div class="code" data-lang="python">
+<span class="cm"># items: (name, tokens, priority 1..5). Greedy value-density allocation.</span>
+<span class="kw">def</span> <span class="fn">plan_budget</span>(window, reserve, items, pinned=<span class="fn">frozenset</span>()):
+    cap = window - reserve
+    ranked = <span class="fn">sorted</span>(items, key=<span class="kw">lambda</span> x: -(x[<span class="nm">2</span>] / x[<span class="nm">1</span>]))
+    used, keep, drop = <span class="nm">0</span>, [], []
+    <span class="kw">for</span> name, tok, pri <span class="kw">in</span> ranked:
+        <span class="kw">if</span> name <span class="kw">in</span> pinned <span class="kw">or</span> used + tok &lt;= cap:
+            used += tok; keep.<span class="fn">append</span>((name, tok, pri))
+        <span class="kw">else</span>:
+            drop.<span class="fn">append</span>((name, tok, pri))
+    <span class="kw">return</span> used, keep, drop
+
+
+<span class="kw">def</span> <span class="fn">render_context</span>(state, history, keep_recent=<span class="nm">6</span>):
+    <span class="cm"># 1. Structured state is authoritative and always rendered verbatim.</span>
+    parts = [<span class="fn">render_state</span>(state)]          <span class="cm"># plan, decisions, open questions, file paths</span>
+
+    <span class="cm"># 2. Tool outputs are truncated head+tail with an explicit marker the model can see.</span>
+    <span class="cm"># 3. Old non-decision turns are dropped entirely; the summary lives in `state`.</span>
+    rendered = []
+    <span class="kw">for</span> i, turn <span class="kw">in</span> <span class="fn">enumerate</span>(history):
+        age = <span class="fn">len</span>(history) - i
+        <span class="kw">if</span> turn.kind == <span class="st">"decision"</span>:
+            rendered.<span class="fn">append</span>(<span class="st">f"[DECISION {turn.id}] {turn.text}"</span>)   <span class="cm"># verbatim</span>
+        <span class="kw">elif</span> age &lt;= keep_recent:
+            rendered.<span class="fn">append</span>(turn.text)
+        <span class="kw">elif</span> turn.kind == <span class="st">"tool_output"</span>:
+            rendered.<span class="fn">append</span>(<span class="fn">head_tail</span>(turn.text, <span class="nm">200</span>, <span class="nm">400</span>,
+                              marker=<span class="st">"[elided {n} tokens]"</span>))
+        <span class="cm"># other old turns: omitted. Their content must already be in `state` or it is lost.</span>
+    parts.<span class="fn">append</span>(<span class="st">"\n"</span>.<span class="fn">join</span>(rendered))
+    <span class="kw">return</span> <span class="st">"\n\n"</span>.<span class="fn">join</span>(parts)
+    </div>
+
+    <p>Now the part almost nobody models: <strong>summarization is lossy and applied repeatedly</strong>. If each compaction
+    preserves a given fact with probability <code>a</code>, then after <code>r</code> rounds its survival is
+    <code>a<sup>r</sup></code>, and the number of rounds until it is more likely gone than present is:</p>
+
+    <div class="formula">
+      survival(r) = a<sup>r</sup> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; r<sub>1/2</sub> = ln(0.5) / ln(a)
+      <span class="note"><code>a</code> = per-compaction retention. With <code>a = 0.85</code> (15% of detail lost per round) the half-life is <code>ln(0.5)/ln(0.85) = 4.27</code> rounds. Four compaction rounds &mdash; a normal long agent session &mdash; and an unpinned fact is already a coin flip.</span>
+    </div>
+
+    <table class="table">
+      <thead><tr><th>Per-compaction retention <code>a</code></th><th>Fidelity after 6 rounds</th><th>After 12 rounds</th><th>Half-life (rounds)</th></tr></thead>
+      <tbody>
+        <tr><td>0.95 (very good summarizer)</td><td>0.666</td><td>0.492</td><td>13.5</td></tr>
+        <tr><td>0.90</td><td>0.478</td><td>0.256</td><td>6.6</td></tr>
+        <tr><td><strong>0.85 (realistic)</strong></td><td><strong>0.337</strong></td><td><strong>0.128</strong></td><td><strong>4.3</strong></td></tr>
+        <tr><td>0.75 (aggressive compaction)</td><td>0.157</td><td>0.028</td><td>2.4</td></tr>
+      </tbody>
+    </table>
+
+    <p>The conclusion is not "write a better summarizer". Even at 0.95 retention you lose half of an unpinned fact in 13
+    rounds. The conclusion is that <strong>facts which must survive must not be in the summarized channel at all</strong>.
+    Pin them. The table is the argument for structural state over better prose.</p>
+
+    <div class="callout audit">
+      <p>Audit test for a context system: take any fact the agent asserted at turn 10, then ask at turn 80 whether it still
+      holds. If your context builder cannot answer that from the rendered prompt alone, you do not know what the model knows.
+      Log the rendered prompt hash per turn (L90) &mdash; without it, "the agent forgot" is an unfalsifiable claim.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d79-s4">4 &middot; Your hands <a class="hook" href="#d79-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; See which item eviction kills first</h4>
+      <p>Nine realistic context items, three window sizes. The ranking is computed, not assumed.</p>
+      <div class="code" data-lang="python">
+ITEMS = [
+    (<span class="st">"system_prompt"</span>, <span class="nm">900</span>, <span class="nm">5</span>), (<span class="st">"tool_schemas_26"</span>, <span class="nm">3224</span>, <span class="nm">3</span>),
+    (<span class="st">"retrieved_chunks_top8"</span>, <span class="nm">6400</span>, <span class="nm">4</span>), (<span class="st">"conversation_history"</span>, <span class="nm">21000</span>, <span class="nm">3</span>),
+    (<span class="st">"plan_state"</span>, <span class="nm">1200</span>, <span class="nm">5</span>), (<span class="st">"file_under_edit"</span>, <span class="nm">4300</span>, <span class="nm">5</span>),
+    (<span class="st">"test_output_tail"</span>, <span class="nm">2800</span>, <span class="nm">4</span>), (<span class="st">"memory_summary"</span>, <span class="nm">1500</span>, <span class="nm">3</span>),
+    (<span class="st">"subagent_reports"</span>, <span class="nm">5200</span>, <span class="nm">2</span>),
+]
+
+<span class="kw">def</span> <span class="fn">plan_budget</span>(window, reserve, items):
+    cap = window - reserve
+    ranked = <span class="fn">sorted</span>(items, key=<span class="kw">lambda</span> x: -(x[<span class="nm">2</span>] / x[<span class="nm">1</span>]))
+    used, keep, drop = <span class="nm">0</span>, [], []
+    <span class="kw">for</span> name, tok, pri <span class="kw">in</span> ranked:
+        <span class="kw">if</span> used + tok &lt;= cap: used += tok; keep.<span class="fn">append</span>((name, tok, pri))
+        <span class="kw">else</span>: drop.<span class="fn">append</span>((name, tok, pri))
+    <span class="kw">return</span> used, keep, drop
+
+<span class="kw">for</span> w, r <span class="kw">in</span> ((<span class="nm">32_000</span>, <span class="nm">4_000</span>), (<span class="nm">128_000</span>, <span class="nm">8_000</span>), (<span class="nm">1_000_000</span>, <span class="nm">16_000</span>)):
+    used, keep, drop = <span class="fn">plan_budget</span>(w, r, ITEMS)
+    kept = <span class="fn">sum</span>(t <span class="kw">for</span> _, t, _ <span class="kw">in</span> keep)
+    print(<span class="st">f"W={w:>9,} kept={kept:>7,} ({kept/(w-r):5.1%}) dropped={[d[0] for d in drop]}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong>
+      <code>W=32,000 kept=25,524 (91.2%) dropped=['conversation_history']</code> &middot;
+      <code>W=128,000 kept=46,524 (38.8%) dropped=[]</code> &middot;
+      <code>W=1,000,000 kept=46,524 (4.7%) dropped=[]</code>.
+      The item list totals 46,524 tokens, so at 32k exactly one item fails to fit &mdash; and because history is the largest
+      it has the <em>lowest</em> value density (21000 tokens at priority 3 = 0.000143), so it is the one dropped.
+      That is the system working correctly and the agent getting dumber at the same time.
+      <strong>Falsifier:</strong> if your priorities put history at 5, nothing is ever dropped and you will hit the reserve
+      mid-step instead &mdash; test by running a long session and watching for hard truncation errors rather than graceful drops.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Measure the half-life of a summary</h4>
+      <p>Multiplicative decay with per-round noise. The point of the noise is realism: retention is not constant, it is
+      <code>N(1&minus;&alpha;, &sigma;)</code>, so survival is a random walk in log space with negative drift.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math, random
+
+<span class="kw">def</span> <span class="fn">drift</span>(alpha=<span class="nm">0.15</span>, variance=<span class="nm">0.05</span>, rounds=<span class="nm">12</span>, seed=<span class="nm">7</span>):
+    rng = random.<span class="fn">Random</span>(seed)
+    fid, curve = <span class="nm">1.0</span>, [<span class="nm">1.0</span>]
+    <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(rounds):
+        fid *= <span class="fn">max</span>(<span class="nm">0.0</span>, rng.<span class="fn">gauss</span>(<span class="nm">1</span> - alpha, variance))
+        curve.<span class="fn">append</span>(fid)
+    <span class="kw">return</span> curve
+
+c = <span class="fn">drift</span>()
+<span class="kw">for</span> r <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">0</span>, <span class="fn">len</span>(c), <span class="nm">2</span>):
+    print(<span class="st">f"round {r:2d}: fidelity {c[r]:.4f}"</span>)
+<span class="kw">for</span> a <span class="kw">in</span> (<span class="nm">0.05</span>, <span class="nm">0.10</span>, <span class="nm">0.15</span>, <span class="nm">0.25</span>):
+    print(<span class="st">f"alpha={a:.2f}  half-life = {math.log(0.5)/math.log(1-a):5.2f} rounds"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> for <code>alpha=0.15, seed=7</code> the sampled curve reads
+      <code>round 0: 1.0000</code>, <code>round 2: 0.7330</code>, <code>round 4: 0.5129</code>, <code>round 6: 0.3459</code>,
+      <code>round 8: 0.2729</code>, <code>round 10: 0.2123</code>, <code>round 12: 0.1586</code>.
+      The analytic half-lives are <code>alpha=0.05 &rarr; 13.51</code>, <code>0.10 &rarr; 6.58</code>,
+      <code>0.15 &rarr; 4.27</code>, <code>0.25 &rarr; 2.41</code> rounds. The sampled curve crosses 0.5 between rounds 4 and 6,
+      matching the predicted 4.27.
+      <strong>Falsifier:</strong> if you measure per-fact retention empirically and find the curve is <em>not</em> multiplicative
+      (e.g. facts disappear all at once at round 3 because the summarizer has a budget cliff), then model it as a cliff, not decay
+      &mdash; and the fix is a bigger summarizer reserve, not pinning.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Prove the quadratic prefill term is real (browser console)</h4>
+      <p>Rough FLOP model: <code>2NT</code> for the linear layers plus <code>2L T&sup2; d</code> for attention. At 100k to 1M tokens
+      with <code>L=60</code>, <code>d=5120</code>, the ratio tells you what "1M context" actually costs.</p>
+      <div class="code" data-lang="javascript">
+<span class="kw">const</span> N = <span class="nm">13e9</span>, L = <span class="nm">60</span>, d = <span class="nm">5120</span>;
+<span class="kw">const</span> <span class="fn">flops</span> = T =&gt; <span class="nm">2</span>*N*T + <span class="nm">2</span>*L*T*T*d;
+<span class="kw">const</span> s = [<span class="nm">1e4</span>, <span class="nm">1e5</span>, <span class="nm">3e5</span>, <span class="nm">1e6</span>];
+<span class="kw">for</span> (<span class="kw">let</span> i = <span class="nm">1</span>; i &lt; s.length; i++) {
+  console.<span class="fn">log</span>(<span class="st">`${s[i-1]/1e3}k -&gt; ${s[i]/1e3}k : ${(flops(s[i])/flops(s[i-1])).toFixed(2)}x FLOPs`</span>,
+              <span class="st">`attn share at ${s[i]/1e3}k: ${(2*L*s[i]*s[i]*d/flops(s[i])*100).toFixed(1)}%`</span>);
+}
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>10k -&gt; 100k : 27.20x FLOPs  attn share at 100k: 70.3%</code> &middot;
+      <code>100k -&gt; 300k : 7.22x FLOPs  attn share at 300k: 87.6%</code> &middot;
+      <code>300k -&gt; 1M : 10.15x FLOPs  attn share at 1M: 95.9%</code>.
+      Every multiplier exceeds its token multiplier (10&times;, 3&times;, 3.33&times;) because the quadratic term takes over: by 1M tokens
+      attention is <strong>95.9% of prefill FLOPs</strong>. Going 300k&rarr;1M is 3.33&times; the tokens for 10.15&times; the prefill compute.
+      That is the quantitative case for compaction even when the window technically fits.
+      <strong>Falsifier:</strong> if your serving stack uses a sparse or linear attention variant (DSA, L34), the quadratic term
+      is suppressed &mdash; rerun with the real attention pattern before quoting this ratio.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d79-s5">5 &middot; Failure modes <a class="hook" href="#d79-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Silent decision loss.</strong> A design decision was made at turn 12, compacted out at turn 30, and reversed at turn 45. Symptom: the agent re-litigates settled questions; the plan's "decided" list grows and shrinks.</li>
+        <li><strong>Summary-of-summary drift.</strong> Each compaction summarizes the previous summary. Symptom: fidelity decays as <code>a<sup>r</sup></code>; late-session answers reference details that were never in the original (confabulated specifics are the tell).</li>
+        <li><strong>Context poisoning.</strong> A wrong tool output or injected instruction sits in history forever and is re-read every turn. Symptom: the same wrong fact appears in outputs 20 turns later, traceable to one bad tool call. Fix: results carry provenance and a taint flag; tainted items are evicted, not summarized.</li>
+        <li><strong>Accumulating retrieval.</strong> Each query appends chunks instead of replacing them. Symptom: context grows monotonically across turns while answer quality drops; duplicate chunks from the same document.</li>
+        <li><strong>Full-window deadlock.</strong> No output reserve. Symptom: <code>context_length_exceeded</code> on the <em>response</em>, immediately after a successful call &mdash; or truncated JSON in a tool call.</li>
+        <li><strong>Prefix-cache invalidation.</strong> A timestamp or reordered system prompt at the top of the context. Symptom: cache hit rate near zero; cost per turn flat instead of declining with a warm cache.</li>
+        <li><strong>Compaction mid-verification.</strong> Triggered by token count rather than by step boundary. Symptom: test output is truncated exactly on the turn the agent needs it to diagnose a failure.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d79-s6">6 &middot; Connects to <a class="hook" href="#d79-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="76-agents.html">L76 &middot; Budgeted loop</a>,
+    <a class="tag-d" href="78-planning.html">L78 &middot; Plan state</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="80-memory.html">L80 &middot; Memory</a> (external state that survives compaction).</p>
+    <ul>
+      <li><a class="tag-a" href="../track-a/09-kv-cache.html">L09 &middot; KV cache</a> &mdash; why prefill dominates latency at long context.</li>
+      <li><a class="tag-b" href="../track-b/35-long-context.html">L35 &middot; Long context cost</a> &mdash; the full $/GB model for 1M-token contexts.</li>
+      <li><a class="tag-b" href="../track-b/45-caching.html">L45 &middot; Prefix caching</a> &mdash; byte-stable prefixes turn the tool-schema tax into a one-time cost.</li>
+      <li><a class="tag-a" href="../track-a/17-samplers.html">L17 &middot; Samplers</a> &mdash; max output tokens are part of the reserve and are easy to forget when sizing.</li>
+      <li><a class="tag-d" href="80-memory.html">L80 &middot; Memory</a> &mdash; the store that makes compaction non-destructive.</li>
+      <li><a class="tag-d" href="81-subagents.html">L81 &middot; Subagents</a> &mdash; the strongest use of context engineering: a subagent returns 300 tokens instead of 5,000.</li>
+      <li><a class="tag-c" href="../track-b/50-conditioning.html">L50 &middot; Conditioning</a> &mdash; why position and framing change what the model notices.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d79-s7">7 &middot; Self-check <a class="hook" href="#d79-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Why does priority-3 conversation history lose to a priority-2 subagent report in Experiment 1's ranking?</p>
+        <details><summary>Reveal answer</summary><p>Value density, not priority. History: <code>3/21000 = 0.000143</code>. Subagent reports: <code>2/5200 = 0.000385</code> &mdash; 2.7&times; higher. But notice history <em>did</em> get dropped while subagent reports were kept, which exposes the flaw: a coarse priority cannot represent "the last 3 turns are critical and turns 1&ndash;40 are worthless". The fix is to <strong>split history into segments</strong> before ranking (recent turns high, decisions pinned, rest low) rather than ranking the whole bucket as one item.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> A summarizer retains 88% of details per round. How many compaction rounds until an unpinned fact is more likely lost than present, and what should you do about a fact you absolutely need?</p>
+        <details><summary>Reveal answer</summary><p><code>r<sub>1/2</sub> = ln(0.5)/ln(0.88) = 5.42</code> rounds. So after ~5 compactions, an unpinned fact is a coin flip. Do not try to raise 0.88 to 0.99 &mdash; even 0.99 gives a half-life of only 69 rounds and you pay more summarizer tokens on every compaction. Instead move the fact out of the summarized channel: store it in structured state and re-render it verbatim each turn. The correct engineering response to a lossy channel is to stop routing critical data through it.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Your context is 40k tokens, window 128k, mean growth 2.5k/turn, expected 30 turns left in the step. Do you compact now? Show the arithmetic.</p>
+        <details><summary>Reveal answer</summary><p>Take <code>R = 8k</code> for output + tool JSON. Projected: <code>40k + 2.5k &times; 30 = 115k</code>. Cap: <code>128k &minus; 8k = 120k</code>. <code>115k &lt; 120k</code>, so you do <em>not</em> compact now &mdash; the step fits. But the headroom is only <code>120k &minus; 115k = 5k</code>, about two turns of growth, so compaction must land <em>between</em> steps: schedule it at the end of turn 28 so it never fires mid-verification. The reusable rule is that compaction is scheduled at step boundaries using the projection, never triggered by a token threshold inside a step.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: token usage per turn is flat at ~45k and never declines, and your bill is 3&times; your estimate. What is the most likely cause?</p>
+        <details><summary>Reveal answer</summary><p><em>Prefix-cache invalidation</em>, plus possibly accumulating retrieval. Flat usage means the prefix is being rebuilt every turn, so the cached portion is never reused &mdash; the usual causes are a timestamp, session id, or a re-sorted tool list at the top of the prompt. Check the cache-hit metric before touching the context; if the hit rate is near zero, the fix is making the first N tokens byte-identical across turns, which typically cuts cost far more than any compaction work.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Why is "just use the 1M-token window and stop compacting" a bad answer even when the bill is acceptable?</p>
+        <details><summary>Reveal answer</summary><p>Because prefill FLOPs grow quadratically (Experiment 3: 300k&rarr;1M is 3.33&times; tokens but 10.15&times; prefill FLOPs, and attention is 95.9% of the work at 1M), so latency and cost per turn rise much faster than the token count suggests; because a longer context makes retrieval less reliable at the middle; and because it makes every failure <em>harder</em> to attribute &mdash; you cannot tell whether the model ignored a fact or the fact was evicted, since nothing is ever evicted. A bounded, deliberately-built context is auditable; an unbounded one is merely large.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="78-planning.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L78 &middot; Planning</span></a>
+    <a class="next" href="80-memory.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L80 &middot; Memory</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

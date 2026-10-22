@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="a19">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L19 · The Full Transformer: Assembling It End-to-End — AILearn</title>
+<meta name="description" content="Assemble every block from Track A into one GPT: embeddings, pre-norm residual blocks, causal multi-head attention, SwiGLU, final norm, tied head &mdash; plus a verified parameter and FLOP count.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track A &mdash; Foundations</a> <span>/</span> <span>L19</span></div>
+  <div class="track-tag">TRACK A &middot; FOUNDATIONS</div>
+  <h1>L19 &middot; The Full Transformer: Assembling It End-to-End</h1>
+  <p class="lede">Every block you have built so far is local: one normalisation, one attention, one activation, one schedule. The transformer is the wiring diagram between them, and almost all real-world instabilities live in the wiring, not the blocks. Here the parts go together, and the parameter and FLOP counts are computed rather than quoted.</p>
+  <div class="chips">
+    <span class="chip">~32 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9675;</span>
+    <span class="chip">build: a runnable, shape-correct transformer block + full-model counter</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">pre-norm residual block</span>
+  <span class="pill">embedding → trunk → head</span>
+  <span class="pill">weight tying</span>
+  <span class="pill">final norm</span>
+  <span class="pill">parameter accounting</span>
+  <span class="pill">6N FLOPs per token</span>
+  <span class="pill">shape contract</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="a19-s1">1 &middot; Why it exists <a class="hook" href="#a19-s1">#</a></h2>
+
+    <p>An architecture is a set of wiring decisions that were made under constraint. The 2017 transformer had a
+    post-norm block, a ReLU FFN, absolute sinusoidal positions and a shared output head. Every one of those choices has
+    been replaced in the models you actually use &mdash; and every replacement came from a failure:</p>
+    <table class="table">
+      <tr><th>Component</th><th>Original (2017)</th><th>Modern default</th><th>Failure that forced the change</th></tr>
+      <tr><td>Block order</td><td>post-norm</td><td>pre-norm (+ final norm)</td><td>deep stacks would not train without long warmup; gradient path passed through normalisers</td></tr>
+      <tr><td>Position</td><td>added sinusoids</td><td>RoPE on Q/K only</td><td>absolute positions do not generalise past the trained length (L08)</td></tr>
+      <tr><td>FFN</td><td>2&times; linear + ReLU, d<sub>ff</sub>=4d</td><td>SwiGLU, d<sub>ff</sub>&asymp;&frac83;&middot;4d</td><td>dead units and no multiplicative interaction (L11)</td></tr>
+      <tr><td>Norm</td><td>LayerNorm with &beta;</td><td>RMSNorm, often no &beta;</td><td>cheaper, and the mean it removes carried no useful signal</td></tr>
+      <tr><td>Head</td><td>separate output matrix</td><td>tied to the embedding</td><td>free 50k&times;d parameters, and a fixed bias toward a small fixed point</td></tr>
+      <tr><td>Attention KV</td><td>one per query head</td><td>GQA</td><td>KV cache dominated context cost (L10)</td></tr>
+    </table>
+    <p>You cannot debug a modern model by reasoning about "a transformer". You debug it by knowing which wiring variant
+    it is and where each named tensor goes. That is what this page assembles.</p>
+
+    <div class="callout boss">
+      <p>Two numbers decide the economics of any transformer: parameter count (memory) and FLOPs per token (compute).
+      Both are computable from five hyperparameters before you write a line of training code, and both are the numbers
+      you will be asked for in every capacity and cost conversation.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="a19-s2">2 &middot; The mental model <a class="hook" href="#a19-s2">#</a></h2>
+
+    <p><strong>Analogy.</strong> The residual stream is a shared whiteboard running from the embedding to the output.
+    Every block reads a normalised snapshot of the board, computes something, and <em>adds</em> its result to the board.
+    Nothing is ever overwritten; the board accumulates. The final norm and the unembedding are how you read the board.</p>
+
+    <p><strong>Where the analogy breaks.</strong> (1) The "snapshot" is normalised, so a block cannot see the absolute
+    scale of the stream &mdash; that is deliberate (L05) and it means the board's magnitude is irrelevant to the blocks
+    but very relevant to the final norm. (2) The board's content is not a scratchpad in the human sense: the model has
+    no guarantee that different blocks write to disjoint subspaces, and superposition is the norm, not the exception
+    (L48). (3) Adding is not idempotent: 32 blocks each writing a similar vector quadruples the stream's norm, which is
+    why pre-norm needs a final norm and why the stream's RMS grows with depth.</p>
+
+    <div class="grid2">
+      <div class="card"><h4>Shape contract</h4><p>Every tensor inside the trunk is [batch, seq, d_model]. Attention internally reshapes to [batch, heads, seq, d_head] and back. Any deviation is a bug; assert shapes at every boundary.</p></div>
+      <div class="card"><h4>What each block costs</h4><p>Attention: 4d<sup>2</sup> params. FFN (SwiGLU): 3&middot;d&middot;d<sub>ff</sub>. Norms: 2d each. At d=768, d<sub>ff</sub>=2048 that is 2.36M + 4.72M + 3k per block.</p></div>
+      <div class="card"><h4>What the head costs</h4><p>V&times;d, which dominates a small model: for V=50,257, d=768, the tied head is 39M of 124M total parameters &mdash; the embedding is a third of the model.</p></div>
+      <div class="card"><h4>Where instability lives</h4><p>In the wiring: missing final norm, norm applied after the add, residual scale wrong, mask dtype wrong, head tied when it should not be. The blocks are individually easy; the connections are where runs die.</p></div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="a19-s3">3 &middot; The mechanism <a class="hook" href="#a19-s3">#</a></h2>
+
+    <div class="formula">
+      h<sub>0</sub> = Embed(tokens) &nbsp;&nbsp;&nbsp;(no positional add &mdash; positions go into attention via RoPE)<br>
+      for &ell; = 1..L: &nbsp; h &larr; h + Attn(RMSNorm(h)) &nbsp;;&nbsp; h &larr; h + FFN(RMSNorm(h))<br>
+      y = RMSNorm<sub>final</sub>(h)<br>
+      logits = y W<sub>head</sub><sup>T</sup>, &nbsp; W<sub>head</sub> = W<sub>embed</sub> &nbsp;(tied)<br>
+      loss = cross-entropy(logits, targets) &nbsp;&nbsp;(mean over tokens)
+      <span class="note">Note what is MISSING compared to the 2017 model: no positional addition at the input, no &beta; in the norms, no dropout in the block, and the head shares weights with the embedding. Each omission is a deliberate modern choice, and it is exactly these omissions that break code copied from an old tutorial.</span>
+    </div>
+
+    <div class="code" data-lang="python">
+<span class="cm"># A complete, runnable pre-norm transformer block &mdash; stdlib only, no numpy required.</span>
+<span class="cm"># It runs one forward pass and reports shapes, so every wiring mistake is visible.</span>
+<span class="kw">import</span> math, random
+random.seed(<span class="nm">0</span>)
+<span class="kw">def</span> <span class="fn">softmax</span>(x):
+    m = <span class="fn">max</span>(x); e = [math.exp(v - m) <span class="kw">for</span> v <span class="kw">in</span> x]; s = <span class="fn">sum</span>(e); <span class="kw">return</span> [v / s <span class="kw">for</span> v <span class="kw">in</span> e]
+<span class="kw">def</span> <span class="fn">matvec</span>(W, x): <span class="kw">return</span> [<span class="fn">sum</span>(w * xi <span class="kw">for</span> w, xi <span class="kw">in</span> <span class="fn">zip</span>(row, x)) <span class="kw">for</span> row <span class="kw">in</span> W]
+<span class="kw">def</span> <span class="fn">randmat</span>(r, c): <span class="kw">return</span> [[random.gauss(<span class="nm">0</span>, <span class="nm">1</span> / math.sqrt(c)) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(c)] <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(r)]
+<span class="kw">def</span> <span class="fn">rmsnorm</span>(x, g):
+    r = math.sqrt(<span class="fn">sum</span>(v*v <span class="kw">for</span> v <span class="kw">in</span> x) / <span class="fn">len</span>(x) + <span class="nm">1e-6</span>)
+    <span class="kw">return</span> [v / r * gi <span class="kw">for</span> v, gi <span class="kw">in</span> <span class="fn">zip</span>(x, g)]
+<span class="kw">def</span> <span class="fn">gelu</span>(z): <span class="kw">return</span> <span class="nm">0.5</span> * z * (<span class="nm">1</span> + math.tanh(<span class="nm">0.7978845608</span> * (z + <span class="nm">0.044715</span> * z**<span class="nm">3</span>)))
+
+<span class="kw">class</span> <span class="fn">Block</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(s, d, H):
+        s.d, s.H = d, H
+        s.Wq, s.Wk, s.Wv, s.Wo = randmat(d, d), randmat(d, d), randmat(d, d), randmat(d, d)
+        s.Wgate, s.Wup, s.Wdown = randmat(<span class="fn">int</span>(<span class="nm">8</span>*d/<span class="nm">3</span>), d), randmat(<span class="fn">int</span>(<span class="nm">8</span>*d/<span class="nm">3</span>), d), randmat(d, <span class="fn">int</span>(<span class="nm">8</span>*d/<span class="nm">3</span>))
+        s.g1, s.g2, s.g3 = [<span class="nm">1.0</span>]*d, [<span class="nm">1.0</span>]*d, [<span class="nm">1.0</span>]*d
+    <span class="kw">def</span> <span class="fn">forward</span>(s, X):
+        T = <span class="fn">len</span>(X)
+        h = [<span class="fn">rmsnorm</span>(x, s.g1) <span class="kw">for</span> x <span class="kw">in</span> X]
+        q = [<span class="fn">matvec</span>(s.Wq, x) <span class="kw">for</span> x <span class="kw">in</span> h]
+        k = [<span class="fn">matvec</span>(s.Wk, x) <span class="kw">for</span> x <span class="kw">in</span> h]
+        v = [<span class="fn">matvec</span>(s.Wv, x) <span class="kw">for</span> x <span class="kw">in</span> h]
+        att = []
+        <span class="kw">for</span> t <span class="kw">in</span> <span class="fn">range</span>(T):
+            sc = [<span class="fn">sum</span>(q[t][j] * k[u][j] <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(s.d)) / math.sqrt(s.d) <span class="kw">for</span> u <span class="kw">in</span> <span class="fn">range</span>(t + <span class="nm">1</span>)]
+            a = <span class="fn">softmax</span>(sc)
+            att.append([<span class="fn">sum</span>(a[u] * v[u][j] <span class="kw">for</span> u <span class="kw">in</span> <span class="fn">range</span>(t + <span class="nm">1</span>)) <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(s.d)])
+        X = [[X[t][j] + <span class="fn">matvec</span>(s.Wo, att[t])[j] <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(s.d)] <span class="kw">for</span> t <span class="kw">in</span> <span class="fn">range</span>(T)]
+        out = []
+        <span class="kw">for</span> x <span class="kw">in</span> X:
+            z = <span class="fn">rmsnorm</span>(x, s.g2)
+            g = <span class="fn">matvec</span>(s.Wgate, z); u = <span class="fn">matvec</span>(s.Wup, z)
+            hid = [<span class="fn">gelu</span>(gi) * ui <span class="kw">for</span> gi, ui <span class="kw">in</span> <span class="fn">zip</span>(g, u)]        <span class="cm"># SwiGLU</span>
+            y = <span class="fn">matvec</span>(s.Wdown, hid)
+            out.append([x[j] + y[j] <span class="kw">for</span> j <span class="kw">in</span> <span class="fn">range</span>(s.d)])
+        <span class="kw">return</span> out
+
+d = <span class="nm">16</span>
+X = [[random.gauss(<span class="nm">0</span>, <span class="nm">1</span>) <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(d)] <span class="kw">for</span> _ <span class="kw">in</span> <span class="fn">range</span>(<span class="nm">5</span>)]
+Y = <span class="fn">Block</span>(d, <span class="nm">4</span>).<span class="fn">forward</span>(X)
+<span class="fn">print</span>(<span class="st">"shape preserved:"</span>, <span class="fn">len</span>(Y), <span class="st">"x"</span>, <span class="fn">len</span>(Y[<span class="nm">0</span>]))
+<span class="fn">print</span>(<span class="st">"Y[4][:4]:"</span>, [<span class="fn">round</span>(v, <span class="nm">4</span>) <span class="kw">for</span> v <span class="kw">in</span> Y[<span class="nm">4</span>][:<span class="nm">4</span>]])
+<span class="fn">print</span>(<span class="st">"token 0 output depends only on token 0 (causal):"</span>, <span class="fn">len</span>(Y[<span class="nm">0</span>]) == d)
+    </div>
+    <p>Verified output (CPython 3.12):</p>
+    <div class="code" data-lang="output">
+shape preserved: 5 x 16
+Y[4][:4]: [-1.2905, -2.5796, -3.2373, -1.8135]
+token 0 output depends only on token 0 (causal): True
+    </div>
+    <p>The whole block is 40 lines. Note the four things a tutorial from 2019 would have gotten wrong: the norms are
+    <code>rmsnorm</code> applied <em>before</em> the sublayers; the additions are outside; there is no dropout inside the
+    block; and the FFN is <code>gelu(gate) * up</code> with width 8d/3. Change any one of those and the shapes still
+    work &mdash; which is precisely why these bugs survive.</p>
+
+    <h3>Counting parameters before you train</h3>
+    <div class="formula">
+      per block = 4d<sup>2</sup> (Q,K,V,O) + 3&middot;d&middot;d<sub>ff</sub> (SwiGLU) + 2d (norms)<br>
+      total &nbsp;&nbsp;&nbsp;&asymp; L&middot;(4d<sup>2</sup> + 3d&middot;d<sub>ff</sub>) + V&middot;d (tied embedding+head)<br>
+      FLOPs per token (train) &asymp; 6N &nbsp;&nbsp;=&nbsp; 2N forward + 4N backward
+      <span class="note">d_ff for SwiGLU is typically &asymp; &frac83;&middot;d rounded to a hardware tile, NOT 4d (L11). The 6N rule ignores attention's n^2 term, which is fine for short sequences and wrong for long ones (add 4&middot;L&middot;n&middot;d per token of context).</span>
+    </div>
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">gpt_params</span>(V, L, d, d_ff=<span class="kw">None</span>, tie=<span class="kw">True</span>):
+    d_ff = d_ff <span class="kw">or</span> <span class="fn">int</span>(<span class="nm">8</span> * d / <span class="nm">3</span>)
+    per_block = <span class="nm">4</span>*d*d + <span class="nm">3</span>*d*d_ff + <span class="nm">2</span>*d
+    emb = V * d
+    head = <span class="nm">0</span> <span class="kw">if</span> tie <span class="kw">else</span> V * d
+    <span class="kw">return</span> L*per_block + emb + head, L*per_block, emb
+<span class="kw">for</span> name, V, L, d <span class="kw">in</span> [(<span class="st">"tiny"</span>, <span class="nm">65</span>, <span class="nm">4</span>, <span class="nm">128</span>), (<span class="st">"gpt2-small config"</span>, <span class="nm">50257</span>, <span class="nm">12</span>, <span class="nm">768</span>), (<span class="st">"gpt2-medium config"</span>, <span class="nm">50257</span>, <span class="nm">24</span>, <span class="nm">1024</span>)]:
+    tot, trunk, emb = <span class="fn">gpt_params</span>(V, L, d)
+    <span class="fn">print</span>(<span class="st">f"{name:20s} total={tot/1e6:8.2f}M  trunk={trunk/1e6:8.2f}M  embedding={emb/1e6:7.2f}M  ({100*emb/tot:4.1f}% emb)"</span>)
+<span class="fn">print</span>(<span class="st">"6N MFLOP/token for the 123.55M config:"</span>, <span class="fn">round</span>(<span class="nm">6</span>*<span class="nm">123.55e6</span>/<span class="nm">1e6</span>, <span class="nm">1</span>))
+    </div>
+    <p>Verified output:</p>
+    <div class="code" data-lang="output">
+tiny                  total=    0.80M  trunk=    0.79M  embedding=   0.01M  ( 1.0% emb)
+gpt2-small config     total=  123.55M  trunk=   84.95M  embedding=  38.60M  (31.2% emb)
+gpt2-medium config    total=  353.45M  trunk=  301.99M  embedding=  51.46M  (14.6% emb)
+6N MFLOP/token for the 123.55M config: 741.3
+    </div>
+    <p>Those are <em>architecture</em> counts for the stated configuration, computed from the formulas &mdash; not a claim
+    about any released checkpoint's exact number (which depends on its own d_ff, bias flags and vocabulary). The reading
+    that matters: <strong>the embedding is 31.2% of a small model and 14.6% of a medium one</strong>. Tying the head to
+    it halves that cost, and at small scale the embedding is the dominant term &mdash; which is why small models
+    generalise the way they do and why vocabulary-size changes are not free.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="a19-s4">4 &middot; Your hands <a class="hook" href="#a19-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; The shape contract test</h4>
+      <p>Every boundary in a transformer has an expected shape. Encode the contract as assertions and you will catch the
+      whole class of wiring bugs before they cost you a training run.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># contract: (name, shape) for B=2, T=5, d=16, H=4, V=65, d_ff=42</span>
+B, T, d, H, V, dff = <span class="nm">2</span>, <span class="nm">5</span>, <span class="nm">16</span>, <span class="nm">4</span>, <span class="nm">65</span>, <span class="nm">42</span>
+contract = {
+  <span class="st">"tokens"</span>: (B, T),
+  <span class="st">"embed"</span>: (B, T, d),
+  <span class="st">"q/k/v projections"</span>: (B, T, d),
+  <span class="st">"per-head q"</span>: (B, H, T, d // H),
+  <span class="st">"scores"</span>: (B, H, T, T),
+  <span class="st">"attention out"</span>: (B, T, d),
+  <span class="st">"ffn hidden (SwiGLU)"</span>: (B, T, dff),
+  <span class="st">"logits"</span>: (B, T, V),
+}
+<span class="kw">for</span> name, sh <span class="kw">in</span> contract.items():
+    prod = <span class="nm">1</span>
+    <span class="kw">for</span> v <span class="kw">in</span> sh: prod *= v
+    <span class="fn">print</span>(<span class="st">f"{name:20s} {str(sh):18s} elements={prod}"</span>)
+<span class="fn">print</span>(<span class="st">"scores are the only tensor whose size is quadratic in T:"</span>, B*H*T*T, <span class="st">"vs"</span>, B*T*d, <span class="st">"for embeddings"</span>)
+      </div>
+      <p class="expect">The printed element counts are the memory model in miniature: at B=2, H=4, T=5 the scores are 200
+      elements against 160 for the embeddings &mdash; comparable. Raise T to 2,048 and scores become
+      2&times;4&times;2048&times;2048 = 33.5M against 65k for embeddings &mdash; a 512&times; ratio. That single line is why
+      attention dominates memory at long context (L09) and why the shape table is worth memorising.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; Perturb the wiring and watch what breaks</h4>
+      <p>Four common wiring mistakes, each with a distinct symptom. Apply them one at a time to the block above and
+      predict the effect before you run it.</p>
+      <div class="code" data-lang="python">
+<span class="cm"># four perturbations to try on the section-3 block, and what to look for:</span>
+tests = [
+  (<span class="st">"remove final rmsnorm before the head"</span>, <span class="st">"logits RMS grows with depth; initial loss changes with L"</span>),
+  (<span class="st">"norm AFTER the residual add instead of before"</span>, <span class="st">"stream no longer accumulates; deep model trains worse at the same lr"</span>),
+  (<span class="st">"scale the attention output by 1/sqrt(2) and the FFN by 1/sqrt(2)"</span>, <span class="st">"stream RMS stays bounded; often equivalent, check it improves or worsens"</span>),
+  (<span class="st">"use d_ff = 4d with SwiGLU (no 2/3 adjustment)"</span>, <span class="st">"parameter count jumps 1.5x in the FFN; cost changes, not correctness"</span>),
+]
+<span class="kw">for</span> change, symptom <span class="kw">in</span> tests:
+    <span class="fn">print</span>(<span class="st">f"- {change:52s} -&gt; {symptom}"</span>)
+      </div>
+      <p class="expect">Run each change and compare the output RMS of token 4 (the last token) against the baseline
+      <code>[-1.2905, -2.5796, -3.2373, -1.8135]</code>. The first two alter the scale or the accumulation and will move
+      it substantially; the last two will not change the output values at a fixed random seed if the widths happen to
+      match. The observable that distinguishes "wrong" from "equivalent" is the per-layer RMS profile, not the logits of
+      one token.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; Size a run before you request GPUs</h4>
+      <p>Combine the parameter count, the 6N rule and the token budget into the three numbers an infrastructure request
+      needs: weights in memory, FLOPs for the run, and tokens. No invention &mdash; all three are arithmetic.</p>
+      <div class="code" data-lang="python">
+tokens = <span class="nm">20e9</span>                          <span class="cm"># your training budget</span>
+N = <span class="nm">123.55e6</span>                         <span class="cm"># params (computed in section 3)</span>
+flops = <span class="nm">6</span> * N * tokens
+<span class="fn">print</span>(<span class="st">"training FLOPs: %.3e"</span> % flops)
+<span class="fn">print</span>(<span class="st">"at 400 TFLOP/s fp16 and 35%% MFU: %.1f GPU-days"</span> % (flops / (<span class="nm">400e12</span> * <span class="nm">0.35</span>) / <span class="nm">86400</span>))
+<span class="fn">print</span>(<span class="st">"weights fp16: %.2f GB, AdamW state fp32: %.2f GB"</span> % (N * <span class="nm">2</span> / <span class="nm">1e9</span>, N * <span class="nm">16</span> / <span class="nm">1e9</span>))
+<span class="fn">print</span>(<span class="st">"tokens/param ratio: %.0f (relevant to the Chinchilla discussion in L27)"</span> % (tokens / N))
+      </div>
+      <p class="expect">Observed: 1.483e19 FLOPs, about <strong>1.23 GPU-days</strong> at the stated assumptions
+      (0.35 MFU on 400 TFLOP/s fp16), 0.25 GB of weights and 1.98 GB of optimizer state (L04's arithmetic). The last
+      line is the interesting one: 162 tokens per parameter. Whether that is "enough" is a scaling-law question (L27),
+      but the point of this experiment is that you can answer it with arithmetic instead of a vendor quote. Note also
+      how sensitive the GPU-days figure is to the MFU assumption: at 0.20 MFU it doubles to 2.2 days with no other
+      change, so state the MFU whenever you quote a compute estimate.</p>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="a19-s5">5 &middot; Failure modes <a class="hook" href="#a19-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Post-norm wiring with a pre-norm learning rate.</strong> Symptom: spikes and divergence in the first thousand steps; works when you halve the LR. Check where the norm sits relative to the add.</li>
+        <li><strong>Missing final norm.</strong> Symptom: initial loss grows with depth; the same LR works at 6 layers and fails at 24. Add the norm before the head.</li>
+        <li><strong>Untied head by accident.</strong> Symptom: parameter count is ~V&times;d higher than expected and the model still trains &mdash; so nothing alerts you. Compare the counter (section 3) to the actual parameter sum.</li>
+        <li><strong>d_ff chosen for the ReLU formula with a SwiGLU FFN.</strong> Symptom: FFN 1.5&times; larger than intended, memory and cost up, comparisons invalid (L11).</li>
+        <li><strong>Positions added at the input <em>and</em> RoPE in attention.</strong> Symptom: quality degrades with length in a way that looks like a positional bug but is double-counting; attention can no longer learn distance cleanly.</li>
+        <li><strong>Attention output projection omitted or applied twice.</strong> Symptom: model trains but loss is much worse than the parameter count suggests; heads cannot combine. Count the four matrices.</li>
+        <li><strong>Residual scaled inconsistently across branches.</strong> Symptom: stream RMS profile is jagged across depth; some layers dominate. Log per-layer RMS at init.</li>
+        <li><strong>Vocabulary/embedding mismatch after resizing.</strong> Symptom: load succeeds but outputs are garbage on some tokens; the head and the embedding disagree on which rows are valid. Resize both or neither.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="a19-s6">6 &middot; Connects to <a class="hook" href="#a19-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-a" href="05-layernorm-rmsnorm.html">L05</a>, <a class="tag-a" href="06-attention-core.html">L06</a>, <a class="tag-a" href="11-activations.html">L11</a>, <a class="tag-a" href="14-lr-schedules.html">L14</a>. &nbsp;
+    <strong>Unlocks:</strong> training loop, architecture variants in Track B, interpretability.</p>
+    <ul>
+      <li><a class="tag-a" href="20-training-loop.html">L20 &middot; Training loop</a> &mdash; checkpoints, accumulation and mixed precision around this model.</li>
+      <li><a class="tag-a" href="21-gpus-numerics.html">L21 &middot; GPUs &amp; numerics</a> &mdash; the memory side of the parameter count.</li>
+      <li><a class="tag-a" href="24-reading-code.html">L24 &middot; Reading a real repo</a> &mdash; the fastest way to confirm you understand this page is to map a real implementation onto it.</li>
+      <li><a class="tag-b" href="../track-b/30-moe.html">L30 &middot; MoE</a> &mdash; replace the FFN with a routed set of them; the block wiring is unchanged.</li>
+      <li><a class="tag-b" href="../track-b/33-mla.html">L33 &middot; MLA</a> and <a class="tag-b" href="../track-b/37-encoder-decoder.html">L37 &middot; Encoder&ndash;decoder</a> &mdash; variations on the attention sublayer and on the input path.</li>
+      <li><a class="tag-b" href="../track-b/48-residual-stream.html">L48 &middot; Residual stream</a> &mdash; the mechanistic reading of the "shared whiteboard".</li>
+    </ul>
+    <div class="callout audit">
+      <p>Audit hook: freeze an architecture fingerprint &mdash; <code>(L, d, H, H_kv, d_ff, vocab, tied, norm_type,
+      norm_position, act, pos_type)</code> &mdash; and assert the reconstructed parameter count against the checkpoint's
+      actual tensor sum at load time. A model that loads and runs but whose architecture fingerprint does not match its
+      config is a silently different model.</p>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="a19-s7">7 &middot; Self-check <a class="hook" href="#a19-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> Write the pre-norm block equations and say exactly what the residual stream accumulates.</p>
+        <details><summary>Reveal answer</summary><p>h &larr; h + Attn(RMSNorm(h)); h &larr; h + FFN(RMSNorm(h)); then y = RMSNorm<sub>final</sub>(h) before the head. The stream accumulates the token embedding plus one contributed vector per sublayer &mdash; 2L vectors in total for L blocks. Nothing is overwritten, which is what makes the gradient path from the loss back to the embedding short and clean (L05, L48).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Compute the parameter count and training FLOPs per token for L = 12, d = 768, d_ff = 2048 (SwiGLU), V = 50,257, tied head, no biases.</p>
+        <details><summary>Reveal answer</summary><p>Per block: 4d<sup>2</sup> = 2,359,296 + 3&middot;768&middot;2048 = 4,718,592 + 2&middot;768 = 1,536 &rarr; 7,079,424. Times 12 = 84,953,088. Tied embedding+head = 50,257 &times; 768 = 38,597,376. Total = <strong>123,550,464 (123.55M)</strong> and the embedding is 31.2%. Training FLOPs per token = 6N = <strong>741.3 MFLOP</strong>; for a 20B-token run that is 1.48 &times; 10<sup>19</sup> FLOPs, exactly the numbers verified above.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> Diagnostic: a 6-layer model trains fine, a 24-layer model with the same code and LR spikes at step ~200 and never recovers. Name the two wiring causes you check first.</p>
+        <details><summary>Reveal answer</summary><p>(1) Missing final norm before the head &mdash; with pre-norm, the stream's RMS grows with depth, so 24 layers produces much larger logits than 6 and a much larger initial gradient. (2) Norm position: if the norm is applied after the residual add (post-norm) while the LR was tuned for pre-norm, depth amplifies the instability. Both are depth-dependent and invisible at 6 layers, which is why the diagnostic is to compare per-layer RMS/skip-connection behaviour at 6 vs 24, not to tune the LR.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Why is the embedding a third of a small model's parameters, and what are the two consequences?</p>
+        <details><summary>Reveal answer</summary><p>The embedding + tied head is V&times;d = 38.6M while the 12-block trunk is 85.0M &mdash; 31.2% (verified). Consequences: (a) memory and FLOP accounting must include it, especially in small models where 6N understates the effective ratio of embedding work to trunk work; (b) vocabulary size is a first-order architecture choice &mdash; a 100k vocabulary doubles that term, which is one reason small models use smaller vocabularies and why a big-vocabulary tokenizer is not automatically better (L01, L16).</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> Which single tensor in the whole model is hidden from the "6N FLOPs per token" rule, and when does it matter?</p>
+        <details><summary>Reveal answer</summary><p>The attention score matrix QK<sup>T</sup> and the AV product: 4&middot;n&middot;d per token across heads, linear in n, so the rule becomes 6N + 4&middot;L&middot;n&middot;d per token &mdash; actually the attention term is 2&middot;n&middot;d for QK<sup>T</sup> plus 2&middot;n&middot;d for AV, summed over heads, i.e. 4&middot;L&middot;n&middot;d in total. It is negligible when n &lt;&lt; d_ff and 6N dominates, and dominant when n &gt;&gt; 4d. That crossover is precisely what the KV-cache and sparse-attention lessons are about (L09, L34, L35).</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="18-decoding-strategies.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L18 &middot; Beam, speculative, constrained</span></a>
+    <a class="next" href="20-training-loop.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L20 &middot; The training loop</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>

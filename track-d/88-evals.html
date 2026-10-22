@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-page="d88">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L88 · Evals: golden sets, statistical power, pass@k vs pass^k — AILearn</title>
+<meta name="description" content="An eval result without an interval is an opinion. Wilson intervals with real arithmetic, the n you actually need, McNemar paired designs, and why pass@k and pass^k answer different questions.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../_shell.css">
+</head>
+<body>
+<div class="bg-aurora" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="../index.html">AILearn<span class="dot"></span></a>
+    <div class="nav-links">
+      <a href="../index.html">Course</a>
+      <a href="index.html">Track</a>
+      <a href="../resources/papers.html">Papers</a>
+      <a href="../resources/blogs.html">Blogs</a>
+      <a href="../resources/videos.html">Videos</a>
+      <a href="../about/prashanth.html">Profile</a>
+    </div>
+    <div class="nav-tools">
+      <span class="progress-mini" id="progress-mini" title="Lessons completed">0%</span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">&#9686;</button>
+    </div>
+  </div>
+  <div class="nav-progress"><i id="progress-bar"></i></div>
+</nav>
+
+<main class="wrap">
+
+<header class="page-head reveal">
+  <div class="crumb"><a href="../index.html">AILearn</a> <span>/</span> <a href="index.html">Track D &mdash; Agents, RAG, Evals, Production</a> <span>/</span> <span>L88</span></div>
+  <div class="track-tag">TRACK D &middot; AGENTS, RAG, EVALS, PRODUCTION</div>
+  <h1>L88 &middot; Evals: golden sets, statistical power, pass@k vs pass^k</h1>
+  <p class="lede">A pass rate is an estimate from a finite sample, and most eval claims are unsupported by their own arithmetic. Detecting a 3-point lift at 60% baseline needs <strong>4,129 items per arm</strong>. Detecting an 8-point lift on a paired set needs <strong>150</strong>. The design, not the model, decides whether you can see the effect.</p>
+  <div class="chips">
+    <span class="chip">~40 min</span>
+    <span class="chip">difficulty &#9679;&#9679;&#9679;&#9679;&#9679;</span>
+    <span class="chip">build: eval harness with confidence intervals</span>
+  </div>
+</header>
+
+<div class="concept-pills">
+  <span class="pill">Wilson interval</span>
+  <span class="pill">golden-set sizing</span>
+  <span class="pill">power analysis</span>
+  <span class="pill">McNemar paired design</span>
+  <span class="pill">pass@k</span>
+  <span class="pill">pass^k (consistency)</span>
+  <span class="pill">sample-size estimator bias</span>
+  <span class="pill">multiple comparisons</span>
+</div>
+
+<div class="layout">
+  <aside class="toc" id="toc"></aside>
+  <article class="prose">
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="1" data-title="1 · Why it exists">
+    <h2 id="d88-s1">1 &middot; Why it exists <a class="hook" href="#d88-s1">#</a></h2>
+
+    <p>The failure that makes evals worthless: <strong>"we improved pass rate from 71% to 74%" is a claim about 100 coin
+    flips, not about the system.</strong> With 100 items and <code>p=0.72</code>, the 95% Wilson interval is
+    <code>[0.625, 0.799]</code> &mdash; 17.3 points wide. A 3-point measured "improvement" is inside the noise of a single
+    re-run. Teams ship on this, then the next run reverses it, then they stop trusting evals and go back to vibes.</p>
+
+    <p>The second failure is a category error that infects agent evaluation specifically. <strong>pass@k and pass^k look like the
+    same metric and answer opposite questions.</strong> <code>pass@k</code> is "will at least one of <code>k</code> attempts
+    succeed" &mdash; the right question for a coding assistant where the user rerolls. <code>pass^k</code> is "will all
+    <code>k</code> attempts succeed" &mdash; the right question for an autonomous agent that runs unattended once. At
+    <code>p=0.70</code>: <code>pass@5 = 0.969</code> but <code>pass^5 = 0.031</code>. A system optimised for the first is
+    actively bad for the second, and vendor tables usually quote the first.</p>
+
+    <p>The third failure is the sample-size estimator. <code>pass@k</code> computed from <code>n</code> samples is only valid
+    when <code>n &ge; k</code>, and when <code>n&minus;c &lt; k</code> the estimator saturates at exactly <code>1.0</code>. With 10 samples
+    and 7 correct, <code>pass@5 = 1.000</code> &mdash; not because the system is perfect but because it is mathematically
+    impossible to draw 5 failures from 3 failures.</p>
+
+    <div class="callout boss">
+      <p>An eval number is a <strong>confidence interval plus a declaration of what was measured</strong>. The interval comes from
+      the item count; the declaration must say whether it is pass@1, pass@k, or pass^k, and at what <code>n</code>. Ship criteria
+      should be stated on the <em>lower</em> bound of the interval, not the point estimate &mdash; that is the number that would
+      survive a rerun.</p>
+    </div>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="2" data-title="2 · The mental model">
+    <h2 id="d88-s2">2 &middot; The mental model <a class="hook" href="#d88-s2">#</a></h2>
+
+    <p>An eval set is a <strong>measuring instrument</strong>, and like any instrument it has a resolution. <code>n</code> items set
+    the resolution; the item mix sets the bias. You cannot detect an effect smaller than the resolution, and no amount of
+    statistical cleverness recovers it &mdash; you can only add items or reduce variance by pairing.</p>
+
+    <table class="table">
+      <thead><tr><th>Quantity</th><th>Determined by</th><th>What it controls</th></tr></thead>
+      <tbody>
+        <tr><td>Point estimate <code>p&#770;</code></td><td>item outcomes</td><td>the headline number</td></tr>
+        <tr><td>Confidence interval width</td><td><code>n</code> and <code>p&#770;</code></td><td>resolution: the smallest effect you can see</td></tr>
+        <tr><td>Power (1&minus;&beta;)</td><td><code>n</code>, effect size, design</td><td>probability you detect a real effect</td></tr>
+        <tr><td>Bias</td><td>item mix vs production distribution</td><td>whether the number means anything</td></tr>
+        <tr><td>Variance reduction</td><td>paired vs unpaired design</td><td>effective <code>n</code> for free</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid2">
+      <div class="card"><h4>Analogy: a ruler with 1cm marks cannot measure millimetres</h4><p>An eval with 100 items and <code>p&asymp;0.7</code> has ~7cm marks. You can tell 60% from 80%; you cannot tell 71% from 74%. The fix is not a better statistical method &mdash; it is a finer ruler (more items) or a smarter measurement procedure (paired comparison, which removes item-difficulty variance).</p></div>
+      <div class="card"><h4>Where it breaks</h4><p>A ruler is unbiased: repeated measurements scatter around the truth. An eval set is <em>biased</em> if its items do not match the production distribution &mdash; and no interval reveals that, because the interval only measures sampling noise <em>within</em> the chosen item set. A 1,000-item set of easy questions gives a beautifully narrow interval around a number that predicts nothing. Precision is not accuracy.</p></div>
+    </div>
+
+    <p>Which is why golden-set <em>construction</em> matters more than golden-set <em>size</em>. Sample items from the production
+    input distribution, stratify by difficulty and by task family, and keep a held-out slice that is never used for iteration.
+    An honest 300-item stratified set beats a lazy 3,000-item one, and it is the only version whose interval means what you
+    think it means.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="3" data-title="3 · The mechanism">
+    <h2 id="d88-s3">3 &middot; The mechanism <a class="hook" href="#d88-s3">#</a></h2>
+
+    <p>Three formulas carry this page. First, the interval &mdash; Wilson, because Wald fails exactly where evals live (near
+    0 and 1, small <code>n</code>):</p>
+
+    <div class="formula">
+      CI<sub>95</sub> = [ p&#770; + z&sup2;/2n &plusmn; z&radic;( p&#770;(1&minus;p&#770;)/n + z&sup2;/4n&sup2; ) ] / (1 + z&sup2;/n), &nbsp; z = 1.96
+      <span class="note">At <code>n=100, p&#770;=0.72</code>: centre <code>0.7118</code>, half-width <code>0.0847</code>, so <strong>[0.625, 0.799]</strong>. The interval's half-width is your measurement resolution; state it with every number you report.</span>
+    </div>
+
+    <p>Second, the sample size needed to detect an absolute difference <code>&Delta;</code> between two independent arms at
+    power <code>1&minus;&beta;</code>:</p>
+
+    <div class="formula">
+      n<sub>arm</sub> = [ z<sub>&alpha;</sub>&radic;(2p&#772;(1&minus;p&#772;)) + z<sub>&beta;</sub>&radic;(p<sub>1</sub>(1&minus;p<sub>1</sub>) + p<sub>2</sub>(1&minus;p<sub>2</sub>)) ]&sup2; / &Delta;&sup2;
+      <span class="note"><code>p&#772;</code> = pooled rate, <code>z<sub>&alpha;</sub>=1.96</code> for 95% confidence, <code>z<sub>&beta;</sub>=0.8416</code> for 80% power. At baseline 0.60 detecting +0.05: <strong>1,471 items per arm</strong>. Detecting +0.03: <strong>4,129</strong>. This is why "small eval, big conclusion" is always wrong.</span>
+    </div>
+
+    <p>Third, the paired design, which is the cheapest real win available. Score both systems on the <em>same</em> items and
+    test only the discordant pairs (McNemar). Item difficulty variance cancels:</p>
+
+    <div class="formula">
+      &chi;&sup2;<sub>McNemar</sub> = (b &minus; c)&sup2; / (b + c), &nbsp;&nbsp; n<sub>items</sub> &asymp; (z<sub>&alpha;</sub>+z<sub>&beta;</sub>)&sup2; &middot; (p<sub>01</sub>+p<sub>10</sub>) / (p<sub>10</sub>&minus;p<sub>01</sub>)&sup2;
+      <span class="note"><code>b</code> = items A fails and B passes, <code>c</code> = items A passes and B fails; <code>p<sub>01</sub>, p<sub>10</sub></code> their per-item probabilities. For a 10-point net gain with discordant rates (0.05, 0.15), only ~<strong>150</strong> items are needed versus 356 unpaired &mdash; because the items that <em>both</em> systems get right (or both fail) carry no information about which is better.</span>
+    </div>
+
+    <p>And the pass@k estimator, which must be used correctly or it lies:</p>
+
+    <div class="formula">
+      pass@k = 1 &minus; C(n&minus;c, k) / C(n, k) &nbsp;&nbsp;&nbsp;&nbsp; pass^k = (c/n)<sup>k</sup>
+      <span class="note"><code>n</code> = total samples per problem, <code>c</code> = correct samples, <code>k</code> = attempts. The unbiased estimator avoids the naive <code>1&minus;(1&minus;c/n)<sup>k</sup></code> bias. When <code>n&minus;c &lt; k</code> the estimator returns exactly <strong>1.0</strong> by construction &mdash; it is <em>censored</em>, not perfect. <code>pass^k</code> assumes independent runs, which fails for cached or near-deterministic serving (L94) &mdash; measure the actual run-to-run agreement rather than assuming it.</span>
+    </div>
+
+    <p>The harness. It refuses to report a number the design cannot support.</p>
+
+    <div class="code" data-lang="python">
+<span class="kw">import</span> math
+
+<span class="kw">def</span> <span class="fn">wilson</span>(p, n, z=<span class="nm">1.96</span>):
+    <span class="kw">if</span> n == <span class="nm">0</span>: <span class="kw">return</span> (<span class="nm">0.0</span>, <span class="nm">1.0</span>)
+    d = <span class="nm">1</span> + z*z/n
+    c = (p + z*z/(<span class="nm">2</span>*n)) / d
+    h = z * math.<span class="fn">sqrt</span>(p*(<span class="nm">1</span>-p)/n + z*z/(<span class="nm">4</span>*n*n)) / d
+    <span class="kw">return</span> (<span class="fn">max</span>(<span class="nm">0.0</span>, c-h), <span class="fn">min</span>(<span class="nm">1.0</span>, c+h))
+
+<span class="kw">def</span> <span class="fn">report</span>(passes, n, metric=<span class="st">"pass@1"</span>, min_resolution=<span class="nm">0.05</span>):
+    p = passes / n
+    lo, hi = <span class="fn">wilson</span>(p, n)
+    width = hi - lo
+    warn = [] <span class="kw">if</span> width &lt;= min_resolution <span class="kw">else</span> [
+        <span class="st">f"CI width {width:.3f} &gt; {min_resolution}: cannot resolve effects below {width/2:.3f}"</span>]
+    <span class="kw">return</span> {<span class="st">"metric"</span>: metric, <span class="st">"n"</span>: n, <span class="st">"p"</span>: <span class="fn">round</span>(p, <span class="nm">4</span>),
+            <span class="st">"ci95"</span>: (<span class="fn">round</span>(lo, <span class="nm">4</span>), <span class="fn">round</span>(hi, <span class="nm">4</span>)),
+            <span class="st">"lower_bound"</span>: <span class="fn">round</span>(lo, <span class="nm">4</span>), <span class="st">"warnings"</span>: warn}
+
+<span class="kw">def</span> <span class="fn">n_required</span>(p1, p2, z_alpha=<span class="nm">1.96</span>, z_beta=<span class="nm">0.8416</span>):
+    pbar = (p1 + p2) / <span class="nm">2</span>
+    num = (z_alpha*math.<span class="fn">sqrt</span>(<span class="nm">2</span>*pbar*(<span class="nm">1</span>-pbar))
+           + z_beta*math.<span class="fn">sqrt</span>(p1*(<span class="nm">1</span>-p1) + p2*(<span class="nm">1</span>-p2)))**<span class="nm">2</span>
+    <span class="kw">return</span> math.<span class="fn">ceil</span>(num / (p2-p1)**<span class="nm">2</span>)
+
+<span class="kw">def</span> <span class="fn">mcnemar</span>(b, c, z=<span class="nm">1.96</span>):
+    <span class="cm"># b: A fails &amp; B passes ; c: A passes &amp; B fails</span>
+    <span class="kw">if</span> b + c == <span class="nm">0</span>: <span class="kw">return</span> {<span class="st">"verdict"</span>: <span class="st">"identical on this set"</span>}
+    stat = (b - c)**<span class="nm">2</span> / (b + c)
+    <span class="kw">return</span> {<span class="st">"b"</span>: b, <span class="st">"c"</span>: c, <span class="st">"chi2"</span>: <span class="fn">round</span>(stat, <span class="nm">3</span>),
+            <span class="st">"significant_95"</span>: stat &gt; <span class="nm">3.841</span>,
+            <span class="st">"net_effect"</span>: <span class="fn">round</span>((b - c) / (b + c), <span class="nm">3</span>)}
+    </div>
+
+    <p>Three things in that code are the lesson. <strong>(1) <code>report</code> returns <code>lower_bound</code> as a first-class field</strong>
+    &mdash; that is the number a ship gate should use, because it is the value the system is likely to beat on a rerun.
+    <strong>(2) It warns when the interval is wider than your claimed resolution</strong>, so "no significant difference" cannot be
+    silently reported as "same". <strong>(3) <code>mcnemar</code> ignores concordant items entirely</strong>, which is why the paired
+    design is more powerful: it spends all its information where the systems actually differ.</p>
+
+    <div class="callout audit">
+      <p>The audit artifact is not the pass rate &mdash; it is the <strong>eval manifest</strong>: golden-set version hash, item count,
+      per-item outcomes, the metric definition (pass@1 / pass@k with k / pass^k with k), and the computed interval. With those,
+      a reviewer reruns the arithmetic and confirms the claim. Without them, every reported gain is a number someone typed.</p>
+    </div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="4" data-title="4 · Your hands">
+    <h2 id="d88-s4">4 &middot; Your hands <a class="hook" href="#d88-s4">#</a></h2>
+
+    <div class="lab">
+      <h4>Experiment 1 &mdash; Your interval is wider than your claim</h4>
+      <p>Wilson intervals across <code>n</code> and <code>p</code>. This is the sizing chart; the readings are the answer to
+      "how many items do I need?".</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">wilson</span>(p, n, z=<span class="nm">1.96</span>):
+    d = <span class="nm">1</span> + z*z/n
+    c = (p + z*z/(<span class="nm">2</span>*n)) / d
+    h = z * math.<span class="fn">sqrt</span>(p*(<span class="nm">1</span>-p)/n + z*z/(<span class="nm">4</span>*n*n)) / d
+    <span class="kw">return</span> c - h, c + h
+
+print(<span class="st">"  n    p     95% CI              width"</span>)
+<span class="kw">for</span> n <span class="kw">in</span> (<span class="nm">20</span>, <span class="nm">50</span>, <span class="nm">100</span>, <span class="nm">300</span>, <span class="nm">500</span>, <span class="nm">1000</span>):
+    <span class="kw">for</span> p <span class="kw">in</span> (<span class="nm">0.90</span>, <span class="nm">0.60</span>):
+        lo, hi = <span class="fn">wilson</span>(p, n)
+        print(<span class="st">f"{n:5d} {p:5.2f}  [{lo:.3f}, {hi:.3f}]     {hi-lo:6.3f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> <code>20 0.90 [0.699, 0.972] 0.273</code> &middot;
+      <code>20 0.60 [0.387, 0.781] 0.395</code> &middot; <code>100 0.90 [0.826, 0.945] 0.119</code> &middot;
+      <code>100 0.60 [0.502, 0.691] 0.189</code> &middot; <code>300 0.90 [0.861, 0.929] 0.068</code> &middot;
+      <code>500 0.90 [0.871, 0.923] 0.053</code> &middot; <code>1000 0.90 [0.880, 0.917] 0.037</code>.
+      Notice the shape: width falls as <code>1/&radic;n</code>, so to halve the interval you need <strong>4&times; the items</strong>. At
+      <code>n=20</code> the interval is <strong>27 points wide</strong> for a 90% system &mdash; any conclusion from 20 items is
+      unsupported. <code>p=0.90</code> also gives narrower intervals than <code>p=0.60</code> (variance is <code>p(1&minus;p)</code>),
+      which is why a high-accuracy agent is <em>easier</em> to measure than a mid-accuracy one.
+      <strong>Falsifier:</strong> if your reported gain exceeds the interval width at your <code>n</code>, it is at least
+      potentially real &mdash; but check the paired-design number before running an expensive 1,000-item eval.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 2 &mdash; The n you need, and why pairing saves you</h4>
+      <p>Power analysis for independent arms, then the paired-design comparison. The gap between them is the point.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+<span class="kw">def</span> <span class="fn">n_per_arm</span>(p1, p2, za=<span class="nm">1.96</span>, zb=<span class="nm">0.8416</span>):
+    pb = (p1 + p2) / <span class="nm">2</span>
+    num = (za*math.<span class="fn">sqrt</span>(<span class="nm">2</span>*pb*(<span class="nm">1</span>-pb)) + zb*math.<span class="fn">sqrt</span>(p1*(<span class="nm">1</span>-p1)+p2*(<span class="nm">1</span>-p2)))**<span class="nm">2</span>
+    <span class="kw">return</span> math.<span class="fn">ceil</span>(num / (p2-p1)**<span class="nm">2</span>)
+
+<span class="kw">for</span> base <span class="kw">in</span> (<span class="nm">0.60</span>, <span class="nm">0.75</span>, <span class="nm">0.90</span>):
+    <span class="kw">for</span> lift <span class="kw">in</span> (<span class="nm">0.10</span>, <span class="nm">0.05</span>, <span class="nm">0.03</span>, <span class="nm">0.01</span>):
+        print(<span class="st">f"baseline={base:.2f} lift={lift:.2f} -&gt; {n_per_arm(base, base+lift):6d} per arm"</span>)
+
+<span class="kw">print</span>(<span class="st">"\nPAIRED (McNemar) vs unpaired"</span>)
+<span class="kw">def</span> <span class="fn">paired_n</span>(p01, p10, za=<span class="nm">1.96</span>, zb=<span class="nm">0.8416</span>):
+    d = p10 - p01
+    var = p01 + p10 - d**<span class="nm">2</span>
+    <span class="kw">return</span> math.<span class="fn">ceil</span>((za+zb)**<span class="nm">2</span> * var / d**<span class="nm">2</span>)
+<span class="kw">for</span> p01, p10 <span class="kw">in</span> ((<span class="nm">0.05</span>,<span class="nm">0.15</span>), (<span class="nm">0.10</span>,<span class="nm">0.20</span>)):
+    print(<span class="st">f"  discordant=({p01},{p10}) -&gt; {paired_n(p01,p10)} items"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> baseline 0.60 &mdash; lift 0.10 &rarr; <strong>356</strong> per arm, 0.05 &rarr;
+      <strong>1,471</strong>, 0.03 &rarr; <strong>4,129</strong>, 0.01 &rarr; <strong>37,513</strong>. Baseline 0.90 &mdash; lift 0.10 &rarr;
+      <strong>74</strong>, 0.05 &rarr; <strong>435</strong>, 0.03 &rarr; <strong>1,356</strong>. Paired design with discordant rates
+      (0.05, 0.15) &rarr; <strong>~150 items</strong> for a 10-point net gain, versus 356 unpaired.
+      The arithmetic is the argument: <strong>detecting a 1-point lift requires ~37,500 items per arm</strong> at 60% baseline, which
+      is why nobody honestly detects 1-point improvements. And the paired design cuts the requirement by more than half for the
+      same effect, because it removes the item-difficulty variance that dominates an unpaired comparison.
+      <strong>Falsifier:</strong> if you claim a 5-point gain on 100 items, the power calculation says you had roughly a coin's chance
+      of detecting it even if real &mdash; report the interval, or rerun paired.</p>
+    </div>
+
+    <div class="lab">
+      <h4>Experiment 3 &mdash; pass@k diverges from pass^k, and the estimator lies</h4>
+      <p>Same system, same <code>p</code>, two metrics that move in opposite directions &mdash; then the censoring bug.</p>
+      <div class="code" data-lang="python">
+<span class="kw">import</span> math
+
+<span class="kw">def</span> <span class="fn">pass_at_k</span>(n, c, k):
+    <span class="kw">if</span> k &gt; n: <span class="kw">raise</span> <span class="fn">ValueError</span>(<span class="st">"k must be &lt;= n samples"</span>)
+    <span class="kw">if</span> n - c &lt; k: <span class="kw">return</span> <span class="nm">1.0</span>          <span class="cm"># CENSORED, not perfect</span>
+    <span class="kw">return</span> <span class="nm">1</span> - math.<span class="fn">comb</span>(n-c, k) / math.<span class="fn">comb</span>(n, k)
+
+<span class="kw">def</span> <span class="fn">pass_hat_k</span>(p, k): <span class="kw">return</span> p**k
+
+p = <span class="nm">0.70</span>
+print(<span class="st">" k   pass@k    pass^k    gap"</span>)
+<span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">1</span>,<span class="nm">2</span>,<span class="nm">3</span>,<span class="nm">5</span>,<span class="nm">10</span>):
+    a, b = <span class="nm">1</span>-(<span class="nm">1</span>-p)**k, <span class="fn">pass_hat_k</span>(p, k)
+    print(<span class="st">f"{k:3d} {a:8.4f} {b:9.4f} {a-b:7.4f}"</span>)
+
+print(<span class="st">"\ncensoring: n=10 samples, c=7 correct"</span>)
+<span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">5</span>, <span class="nm">10</span>):
+    print(<span class="st">f"  pass@{k} = {pass_at_k(10, 7, k):.4f}"</span>)
+print(<span class="st">"n=10, c=3 correct:"</span>)
+<span class="kw">for</span> k <span class="kw">in</span> (<span class="nm">1</span>, <span class="nm">5</span>, <span class="nm">10</span>):
+    print(<span class="st">f"  pass@{k} = {pass_at_k(10, 3, k):.4f}"</span>)
+      </div>
+      <p class="expect"><strong>Observed output:</strong> at <code>p=0.70</code>:
+      <code>k=1: pass@1=0.5000 pass^1=0.5000</code> (identical by definition), but
+      <code>k=2: 0.7500 vs 0.2500</code>, <code>k=3: 0.8750 vs 0.1250</code>, <code>k=5: 0.9688 vs 0.0312</code>,
+      <code>k=10: 0.9990 vs 0.0010</code>.
+      The gap at <code>k=5</code> is <strong>0.9375</strong> &mdash; the two metrics describe opposite systems.
+      Censoring: with <code>n=10, c=7</code>: <code>pass@1=0.7000</code>, <code>pass@5=1.0000</code>, <code>pass@10=1.0000</code>.
+      With <code>n=10, c=3</code>: <code>pass@1=0.3000</code>, <code>pass@5=0.9167</code>, <code>pass@10=1.0000</code>.
+      <code>pass@10 = 1.000</code> in <em>both</em> cases is the censoring artefact &mdash; you cannot select 10 distinct
+      items from the failure set when it has fewer than 10 members. Reporting that number as a capability is the single most
+      common eval error in agent benchmarks.
+      <strong>Falsifier:</strong> if your <code>pass@k</code> equals exactly 1.0, check <code>n&minus;c &gt; k</code> before believing it.</p>
+    </div>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="5" data-title="5 · Failure modes">
+    <h2 id="d88-s5">5 &middot; Failure modes <a class="hook" href="#d88-s5">#</a></h2>
+
+    <div class="fail">
+      <ul>
+        <li><strong>Point estimate without interval.</strong> "Pass rate 74%" on 100 items. Symptom: the next run shows 68% and the team argues about model drift instead of randomness.</li>
+        <li><strong>Underpowered A/B.</strong> Claiming a 3-point gain on 200 items. Symptom: wins reverse between runs; the team's confidence and the evidence diverge permanently.</li>
+        <li><strong>Unpaired comparison.</strong> Two arms scored on different item sets. Symptom: large apparent differences that shrink to nothing when re-scored on the intersection.</li>
+        <li><strong>Censored pass@k.</strong> <code>k &ge; n&minus;c</code>, so the estimator returns 1.0. Symptom: perfect scores on hard benchmarks; the number is a sample-size artefact.</li>
+        <li><strong>pass@k where pass^k was needed.</strong> Optimising for "any of k succeeds" in an unattended single-shot agent. Symptom: benchmark looks strong, production reliability is <code>p<sup>k</sup></code> and collapses on long runs (L82).</li>
+        <li><strong>Non-stratified golden set.</strong> Items skewed easy. Symptom: narrow interval around a number that over-predicts production; user complaints do not match the dashboard.</li>
+        <li><strong>Multiple comparisons.</strong> Tuning 20 prompt variants and reporting the best. Symptom: the winner does not reproduce; with 20 comparisons at 95%, you expect ~1 false positive by chance alone.</li>
+        <li><strong>Golden-set drift.</strong> Items edited between runs. Symptom: score changes you cannot reproduce; version hash absent from the manifest.</li>
+        <li><strong>Train/test leak.</strong> The set used for iteration is also the set reported. Symptom: measured gain well above what the final holdout confirms.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="6" data-title="6 · Connects to">
+    <h2 id="d88-s6">6 &middot; Connects to <a class="hook" href="#d88-s6">#</a></h2>
+
+    <p><strong>Depends on:</strong> <a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG metrics</a> &nbsp;
+    <strong>Unlocks:</strong> <a class="tag-d" href="89-llm-as-judge.html">L89 &middot; Judges</a>,
+    <a class="tag-d" href="95-rake-reporting-harness.html">L95 &middot; RAKE</a>,
+    <a class="tag-d" href="99-capstone.html">L99 &middot; Capstone</a>.</p>
+    <ul>
+      <li><a class="tag-d" href="87-rag-evaluation.html">L87 &middot; RAG evaluation</a> &mdash; supplies the three metrics whose intervals this page sizes.</li>
+      <li><a class="tag-d" href="82-long-horizon.html">L82 &middot; Long horizon</a> &mdash; <code>pass^k</code> is the metric that predicts long-run autonomy; <code>pass@k</code> predicts best-of-n.</li>
+      <li><a class="tag-c" href="../track-c/61-test-time-compute.html">L61 &middot; Test-time compute</a> &mdash; best-of-n is a pass@k strategy; its value depends on verifier quality, not sample count.</li>
+      <li><a class="tag-c" href="../track-c/74-eval-contamination.html">L74 &middot; Contamination</a> &mdash; the other way an eval number lies: not noise, but leakage.</li>
+      <li><a class="tag-c" href="../track-c/63-verifiable-rewards.html">L63 &middot; Verifiable rewards</a> &mdash; an oracle is a metric with a hard ground truth; use it where available instead of a judge.</li>
+      <li><a class="tag-d" href="89-llm-as-judge.html">L89 &middot; LLM-as-judge</a> &mdash; when no oracle exists, the judge becomes the measurement instrument and needs its own calibration interval.</li>
+      <li><a class="tag-d" href="94-determinism.html">L94 &middot; Determinism</a> &mdash; <code>pass^k</code> assumes independent runs; measure run-to-run agreement before trusting it.</li>
+      <li><a class="tag-a" href="../track-a/16-loss-perplexity.html">L16 &middot; Perplexity</a> &mdash; the other kind of measurement, useful for LM quality but not for task pass rates.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="sec reveal" data-n="7" data-title="7 · Self-check">
+    <h2 id="d88-s7">7 &middot; Self-check <a class="hook" href="#d88-s7">#</a></h2>
+
+    <div class="quiz">
+      <div class="quiz-q">
+        <p><strong>Q1.</strong> You have 150 items, your system passes 111. Report the result properly and state the smallest effect you could detect.</p>
+        <details><summary>Reveal answer</summary><p><code>p&#770; = 111/150 = 0.74</code>. Wilson: <code>1 + z&sup2;/n = 1 + 3.8416/150 = 1.025611</code>; centre <code>(0.74 + 0.012805)/1.025611 = 0.73420</code>; half-width <code>1.96&times;&radic;(0.74&times;0.26/150 + 3.8416/90000)/1.025611 = 1.96&times;0.036407/1.025611 = 0.06958</code>. Interval <strong>[0.664, 0.804]</strong>, width 0.139 (computed). Report <code>pass@1 = 0.74 [0.664, 0.804], n=150</code>. Detectable effect: an unpaired comparison needs roughly a <strong>14-point</strong> separation to be conclusive; a paired design could see far less. Anything smaller is not measurable at this <code>n</code>.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q2.</strong> Do the arithmetic: paired test with b=18 (A fails, B passes), c=6 (A passes, B fails) out of 200 items. Is B better?</p>
+        <details><summary>Reveal answer</summary><p><code>&chi;&sup2; = (18&minus;6)&sup2;/(18+6) = 144/24 = 6.0</code>, which exceeds 3.841 &mdash; <strong>significant at 95%</strong>. Net effect: <code>(18&minus;6)/24 = 0.5</code> of discordant items. On point estimates, A ≈ 0.91, B ≈ 0.97 overall if concordant items split evenly &mdash; but the honest statement is about the discordant pairs, because the 176 concordant items carried no information about the difference. Note also that the unpaired view (two 200-item arms) would likely have been inconclusive for this effect size.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q3.</strong> A vendor reports pass@10 = 0.97 with n=10 samples. What exactly is being claimed, and what is wrong?</p>
+        <details><summary>Reveal answer</summary><p>They are claiming "at least one of 10 attempts succeeds 97% of the time", estimated from 10 samples per problem. Two problems. First, <code>k=n</code> means the estimator is <strong>fully censored</strong>: it returns exactly 1.0 whenever <code>c &ge; 1</code>, so a system that gets one problem right out of ten would report pass@10 = 1.000 for that problem. It says nothing beyond "at least one sample succeeded". Second, even a legitimate pass@10 is <em>best-of-10</em> &mdash; a user rerolling 10 times. It tells you nothing about <code>pass^10</code>, which for a p=0.70 system is 0.028. Ask for <code>n</code>, the per-problem sample count, and whether pass^k was measured.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q4.</strong> Diagnostic: two sprint runs of the same unchanged system gave 71% and 78% on 120 items. Is the system drifting?</p>
+        <details><summary>Reveal answer</summary><p>Almost certainly not &mdash; this is sampling noise. At <code>n=120, p&asymp;0.745</code>, the Wilson interval is <code>[0.660, 0.815]</code> (computed), about 15.5 points wide. Two draws from the same system landing at 0.71 and 0.78 is entirely expected. The diagnostic test for real drift is to compare on <em>matched</em> items: which specific questions changed outcome? If the same items flip, that is system nondeterminism (L94). If different items flip with no pattern, it is sampling variance and you need a bigger <code>n</code> to see anything.</p></details>
+      </div>
+      <div class="quiz-q">
+        <p><strong>Q5.</strong> You need to ship only if the true pass rate exceeds 85%. How many items do you need for the lower confidence bound to be above 0.85 when the observed rate is 0.92?</p>
+        <details><summary>Reveal answer</summary><p>Solve for the smallest <code>n</code> where the Wilson lower bound at <code>p=0.92</code> exceeds 0.85. Computed values: <code>n=50 &rarr; 0.8116</code> (fails), <code>n=60 &rarr; 0.8235</code> (fails), <code>n=100 &rarr; 0.850</code> (exactly at the line), <code>n=200 &rarr; 0.874</code> (passes), <code>n=300 &rarr; 0.8837</code>. So you need roughly <strong>150&ndash;200 items</strong> to have the lower bound comfortably above 0.85 &mdash; 100 puts you exactly on the boundary, which is not a gate you can defend. The general principle: gate on the lower bound, and derive <code>n</code> from the decision rule rather than choosing <code>n</code> first and setting the rule afterwards.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <nav class="pager">
+    <a class="prev" href="87-rag-evaluation.html"><span class="dir">&larr; PREVIOUS</span><span class="ttl">L87 &middot; RAG evaluation</span></a>
+    <a class="next" href="89-llm-as-judge.html"><span class="dir">NEXT &rarr;</span><span class="ttl">L89 &middot; LLM-as-judge</span></a>
+  </nav>
+
+  </article>
+</div>
+</main>
+
+<footer>
+  AILearn &middot; written for <a href="../about/prashanth.html">Prashanth Kumar Kadasi</a> &middot;
+  <a href="../about/calibration.html">Level calibration</a> &middot;
+  <a href="../resources/papers.html">Reading list</a>
+</footer>
+
+<script src="../_shell.js"></script>
+</body>
+</html>
