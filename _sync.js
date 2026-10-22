@@ -1,93 +1,78 @@
 /* ==========================================================================
    AILearn — cross-device sync
    --------------------------------------------------------------------------
-   DESIGN
-   -------
-   The course is static, so sync cannot live in the site itself. It uses a
-   "sync code" the learner creates once on their first device and types on
-   every other device.
+   The course is static, so sync needs a small endpoint. This one is hosted by
+   the learner's own app (kprsnt.in on Vercel, backed by Vercel KV), which
+   means no third party ever holds the data.
 
-   The sync code is TWO parts joined by a dash:
-       <22-char random id> - <8-char write password>
-
-   The id is the storage key; the password is what authorises writes. Anyone
-   holding only the id can READ the blob (it holds nothing personal beyond
-   lesson numbers and flashcard intervals), but only someone with the
-   password can write. That means a leaked read link is low-risk, while a
-   leaked full code is equivalent to a leaked account — hence the explicit
-   warning in the UI.
-
-   TRANSPORT
+   SYNC CODE
    ---------
-   Any plain JSON key/value bucket that (a) supports CORS from a browser,
-   (b) accepts a PUT of arbitrary JSON and (c) allows a GET by key. The
-   default adapter targets jsonblob.com, which is public, free and needs no
-   account. The adapter is isolated in `Remote` below so it can be swapped
-   for a self-hosted endpoint (Cloudflare Worker + KV, Vercel KV, Supabase,
-   Firebase) without touching the app logic.
+   Two parts joined by a dash:   <22-char id> - <8-char password>
+   The id addresses the record; the password authorises writes and is checked
+   server-side (only its hash is stored). Losing the code loses the ability to
+   write to that record — but local progress is never touched, so nothing is
+   actually lost, only unsynced.
 
    MERGE SEMANTICS
    ---------------
-   Last-writer-wins is wrong for study progress: a device that has been
-   offline for a week would erase a week of learning on the other device.
-   So the merge is per-record:
-     - lesson completion: union (once done, done) with earliest timestamp
-     - flashcard state:   the record with the GREATER `reps` wins (more
-                          study), ties broken by the later `due` date
-     - calibration draft: newest `savedAt` wins
-   This makes offline study on any device safe by construction.
+   Last-writer-wins is wrong for study progress: a device offline for a week
+   would erase a week of learning done elsewhere. So merge is per-record:
+     lessons      union, earliest completion timestamp wins
+     flashcards   the record with MORE reps wins; ties -> later due date
+     calibration  newest savedAt wins
+     streak       max
+   That makes studying offline on any device safe by construction.
+
+   FAILURE BEHAVIOUR
+   -----------------
+   Every network path is best-effort. If the endpoint is down, offline, or
+   unconfigured, the course keeps working entirely on localStorage and sync
+   retries later. The learner is never blocked and never shown an error they
+   cannot act on.
    ========================================================================== */
 (function () {
   'use strict';
 
   var KEY_CODE = 'AILearn::sync-code';
   var KEY_STATE = 'AILearn::sync-state';   /* {lastPush, lastPull, remoteHash} */
-  var KEY_DIRTY = 'AILearn::sync-dirty';
 
   var SRS = 'AILearn::srs';
   var DONE = 'AILearn::done';
   var CAL = 'AILearn::calibration::v1';
+  var STREAK = 'AILearn::srs-streak';
 
   /* ------------------------------------------------------------------ */
-  /* transport                                                          */
+  /* transport — swap `endpoint` to self-host elsewhere                  */
   /* ------------------------------------------------------------------ */
   var Remote = {
-    base: 'https://jsonblob.com/api/jsonBlob',
-
-    _headers: function (code) {
-      var parts = code.split('-');
-      return {
-        'Content-Type': 'application/json',
-        'X-Sync-Password': parts[1] || ''
-      };
-    },
+    endpoint: 'https://kprsnt.in/api/ailearn/sync',
 
     read: function (code) {
-      var id = code.split('-')[0];
-      return fetch(Remote.base + '/' + encodeURIComponent(id), {
-        method: 'GET', cache: 'no-store'
-      }).then(function (r) {
-        if (r.status === 404) return null;
-        if (!r.ok) throw new Error('read failed: HTTP ' + r.status);
-        return r.json();
+      var url = Remote.endpoint + '?code=' + encodeURIComponent(code) + '&t=' + Date.now();
+      return fetch(url, { method: 'GET', cache: 'no-store' }).then(function (r) {
+        if (r.status === 404) return null;                 /* never written yet */
+        if (!r.ok) throw new Error('read HTTP ' + r.status);
+        return r.json().then(function (j) {
+          if (!j || !j.ok) throw new Error((j && j.error) || 'read failed');
+          return j.doc;
+        });
       });
     },
 
-    write: function (code, payload) {
-      var id = code.split('-')[0];
-      return fetch(Remote.base + '/' + encodeURIComponent(id), {
-        method: 'PUT',
-        headers: Remote._headers(code),
-        body: JSON.stringify(payload)
+    write: function (code, data) {
+      return fetch(Remote.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code, data: data })
       }).then(function (r) {
-        if (!r.ok) throw new Error('write failed: HTTP ' + r.status);
-        return r.json().catch(function () { return payload; });
+        return r.json().then(function (j) {
+          if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || ('write HTTP ' + r.status));
+          return j.doc;
+        });
       });
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* crypto-ish helpers                                                 */
   /* ------------------------------------------------------------------ */
   var ALPHA = 'abcdefghijkmnpqrstuvwxyz23456789'; /* no look-alike chars */
 
@@ -104,7 +89,6 @@
   }
 
   function hash(str) {
-    /* FNV-1a: only used to detect "did anything change", not for security */
     var h = 0x811c9dc5;
     for (var i = 0; i < str.length; i++) {
       h ^= str.charCodeAt(i);
@@ -119,14 +103,12 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* state assembly + merge                                             */
-  /* ------------------------------------------------------------------ */
   function snapshot() {
     var srs = ls(SRS, {}) || {};
     var done = ls(DONE, {}) || {};
     var cal = ls(CAL, null);
+    var streak = ls(STREAK, { n: 0 });
 
-    /* strip anything that is not portable */
     var flashcards = {};
     Object.keys(srs).forEach(function (k) {
       var r = srs[k];
@@ -143,23 +125,19 @@
       lessons: done,
       flashcards: flashcards,
       calibration: cal,
-      counters: {
-        flashStreak: ls('AILearn::srs-streak', { n: 0 })
-      }
+      counters: { flashStreak: { n: (streak && streak.n) || 0, d: (streak && streak.d) || '' } }
     };
   }
 
   function merge(local, remote) {
     if (!remote || !remote.v) return local;
 
-    /* lessons: union, earliest completion wins */
     var lessons = Object.assign({}, remote.lessons || {});
     Object.keys(local.lessons || {}).forEach(function (k) {
       var a = lessons[k], b = local.lessons[k];
       lessons[k] = (a && b) ? Math.min(a, b) : (a || b);
     });
 
-    /* flashcards: more reps wins; tie -> later due date */
     var fc = Object.assign({}, remote.flashcards || {});
     Object.keys(local.flashcards || {}).forEach(function (k) {
       var r = remote.flashcards && remote.flashcards[k];
@@ -170,7 +148,6 @@
       else if (l.reps === r.reps && (l.due || '') > (r.due || '')) fc[k] = l;
     });
 
-    /* calibration: newest snapshot wins */
     var cal = local.calibration;
     if (remote.calibration) {
       var lt = (local.calibration && local.calibration.savedAt) || '';
@@ -178,10 +155,9 @@
       if (rt > lt) cal = remote.calibration;
     }
 
-    var streak = Math.max(
-      (local.counters && local.counters.flashStreak && local.counters.flashStreak.n) || 0,
-      (remote.counters && remote.counters.flashStreak && remote.counters.flashStreak.n) || 0
-    );
+    var ln = (local.counters && local.counters.flashStreak) || { n: 0, d: '' };
+    var rn = (remote.counters && remote.counters.flashStreak) || { n: 0, d: '' };
+    var best = (ln.n || 0) >= (rn.n || 0) ? ln : rn;
 
     return {
       v: 1,
@@ -189,14 +165,13 @@
       lessons: lessons,
       flashcards: fc,
       calibration: cal,
-      counters: { flashStreak: { n: streak, d: new Date().toISOString().slice(0, 10) } }
+      counters: { flashStreak: { n: best.n || 0, d: best.d || '' } }
     };
   }
 
   function applyToLocal(state) {
     try { localStorage.setItem(DONE, JSON.stringify(state.lessons || {})); } catch (e) {}
     try {
-      /* merge flashcards into whatever is local so nothing is lost */
       var cur = ls(SRS, {}) || {};
       Object.keys(state.flashcards || {}).forEach(function (k) {
         var r = state.flashcards[k];
@@ -209,10 +184,17 @@
     if (state.calibration) {
       try { localStorage.setItem(CAL, JSON.stringify(state.calibration)); } catch (e) {}
     }
+    if (state.counters && state.counters.flashStreak) {
+      try { localStorage.setItem(STREAK, JSON.stringify(state.counters.flashStreak)); } catch (e) {}
+    }
   }
 
-  /* ------------------------------------------------------------------ */
-  /* public API                                                         */
+  function stamp(patch) {
+    var st = ls(KEY_STATE, {}) || {};
+    Object.assign(st, patch);
+    try { localStorage.setItem(KEY_STATE, JSON.stringify(st)); } catch (e) {}
+  }
+
   /* ------------------------------------------------------------------ */
   var Sync = {
     getCode: function () { try { return localStorage.getItem(KEY_CODE) || ''; } catch (e) { return ''; } },
@@ -229,14 +211,13 @@
     newCode: function () {
       var code = randomId(22) + '-' + randomId(8);
       Sync.setCode(code);
+      synced = false;
       return code;
     },
 
-    status: function () {
-      return ls(KEY_STATE, {}) || {};
-    },
+    status: function () { return ls(KEY_STATE, {}) || {}; },
 
-    /* push local -> remote (after merging first, so we never clobber) */
+    /* push local -> remote, merging remote first so nothing is clobbered */
     push: function () {
       var code = Sync.getCode();
       if (!code) return Promise.reject(new Error('no sync code set'));
@@ -244,10 +225,8 @@
       return Remote.read(code).then(function (remote) {
         var merged = merge(local, remote);
         return Remote.write(code, merged).then(function () {
-          var st = Sync.status();
-          st.lastPush = new Date().toISOString();
-          st.remoteHash = hash(JSON.stringify(merged));
-          try { localStorage.setItem(KEY_STATE, JSON.stringify(st)); } catch (e) {}
+          stamp({ lastPush: new Date().toISOString(), remoteHash: hash(JSON.stringify(merged)) });
+          synced = true;
           return merged;
         });
       });
@@ -259,14 +238,12 @@
       if (!code) return Promise.reject(new Error('no sync code set'));
       var local = snapshot();
       return Remote.read(code).then(function (remote) {
-        if (!remote) return Sync.push();          /* nothing there yet */
+        if (!remote) return Sync.push();               /* first device */
         var merged = merge(local, remote);
         applyToLocal(merged);
         return Remote.write(code, merged).then(function () {
-          var st = Sync.status();
-          st.lastPull = new Date().toISOString();
-          st.remoteHash = hash(JSON.stringify(merged));
-          try { localStorage.setItem(KEY_STATE, JSON.stringify(st)); } catch (e) {}
+          stamp({ lastPull: new Date().toISOString(), remoteHash: hash(JSON.stringify(merged)) });
+          synced = true;
           return merged;
         });
       });
@@ -276,15 +253,19 @@
     merge: merge,
     hash: hash,
 
-    /* best-effort background sync; never throws, never blocks the page */
+    /* opportunistic background sync: at most once a minute, swallows errors */
     autoSync: function () {
       if (!Sync.getCode()) return;
       var st = Sync.status();
       var last = st.lastPull ? new Date(st.lastPull).getTime() : 0;
-      if (Date.now() - last < 60 * 1000) return;   /* at most once a minute */
-      Sync.pull().catch(function () { /* offline / endpoint down: stay local */ });
+      if (Date.now() - last < 60 * 1000) return;
+      Sync.pull().catch(function () { /* offline or endpoint down: stay local */ });
     }
   };
+
+  /* a page that loads after a sync may need a refresh to show the new state */
+  var synced = false;
+  Object.defineProperty(Sync, 'justSynced', { get: function () { return synced; } });
 
   window.AILearnSync = Sync;
 })();
